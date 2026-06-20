@@ -3,23 +3,23 @@
 #  deploy-app.sh — despliega una app de MKE a un entorno.
 #
 #  Uso:
-#    scripts/deploy-app.sh <app> <local|home|cloud> [tag]
+#    scripts/deploy-app.sh <app> <local|stage|cloud> [tag]
 #
 #  Ejemplos:
 #    scripts/deploy-app.sh hello-mishi local
-#    REGISTRY=ghcr.io/OWNER scripts/deploy-app.sh hello-mishi home v0.1.0
+#    REGISTRY=ghcr.io/OWNER scripts/deploy-app.sh hello-mishi stage v0.1.0
 #
 #  - local : build + `k3d image import` + apply overlay local (no necesita registry).
-#  - home  : build + push a $REGISTRY + apply overlay home  (kubectl context mke-home).
+#  - stage : build + push a $REGISTRY + apply overlay stage (kubectl context mke-stage).
 #  - cloud : build + push a $REGISTRY + apply overlay cloud (kubectl context mke-cloud).
 #
-#  Nota: para home/cloud lo RECOMENDADO en MKE es GitOps (Argo/Flux) en vez de un
+#  Nota: para stage/cloud lo RECOMENDADO en MKE es GitOps (Argo/Flux) en vez de un
 #  apply imperativo. Este script sirve para bootstrap y para el bucle de local.
 # =============================================================================
 set -euo pipefail
 
-APP="${1:?uso: deploy-app.sh <app> <local|home|cloud> [tag]}"
-TARGET="${2:?uso: deploy-app.sh <app> <local|home|cloud> [tag]}"
+APP="${1:?uso: deploy-app.sh <app> <local|stage|cloud> [tag]}"
+TARGET="${2:?uso: deploy-app.sh <app> <local|stage|cloud> [tag]}"
 TAG="${3:-dev}"
 
 MKE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -41,9 +41,9 @@ case "$TARGET" in
     echo "  • k3d image import $IMAGE -c mke"
     k3d image import "$IMAGE" -c mke
     ;;
-  home|cloud)
+  stage|cloud)
     CONTEXT="mke-$TARGET"
-    : "${REGISTRY:?exporta REGISTRY=ghcr.io/OWNER para home/cloud}"
+    : "${REGISTRY:?exporta REGISTRY=ghcr.io/OWNER para stage/cloud}"
     IMAGE="$REGISTRY/$APP:$TAG"
     echo "  • docker build + push $IMAGE"
     docker build -t "$IMAGE" "$APP_DIR"
@@ -51,7 +51,7 @@ case "$TARGET" in
     echo "  ⚠ asegúrate de que el overlay $TARGET apunta a $IMAGE (o usa GitOps)."
     ;;
   *)
-    echo "✗ target inválido: $TARGET (usa local|home|cloud)" >&2; exit 1 ;;
+    echo "✗ target inválido: $TARGET (usa local|stage|cloud)" >&2; exit 1 ;;
 esac
 
 echo "  • kubectl --context $CONTEXT apply -k $OVERLAY"
