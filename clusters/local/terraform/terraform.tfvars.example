@@ -1,0 +1,18 @@
+# Copia a terraform.tfvars y rellena. terraform.tfvars está en .gitignore (no se commitea).
+#
+# Cómo obtener cada valor:
+#   - account_id : Cloudflare dashboard -> cualquier dominio -> sidebar derecho "Account ID".
+#   - zone_id    : dashboard -> mishi.com.co -> Overview -> sidebar derecho "Zone ID".
+#   - api_token  : dashboard -> My Profile -> API Tokens -> Create Token (Custom).
+#                  Permisos: Account > Cloudflare Tunnel:Edit  +  Zone > DNS:Edit (zona mishi.com.co).
+
+cloudflare_api_token  = "PEGA_TU_API_TOKEN"
+cloudflare_account_id = "PEGA_TU_ACCOUNT_ID"
+cloudflare_zone_id    = "PEGA_TU_ZONE_ID"
+
+zone_name = "mishi.com.co"
+hostnames = ["*.mishi.com.co"]
+
+# Pon false si el clúster k3d no está arriba al hacer apply (creas el Secret a mano luego).
+create_k8s_secret = true
+kube_context      = "k3d-mke"

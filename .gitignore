@@ -1,0 +1,20 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+# NOTA: .terraform.lock.hcl SÍ se commitea (pinea versiones de providers).
+
+# Secretos / kubeconfig
+*.pem
+*-credentials.json
+kubeconfig*

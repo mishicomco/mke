@@ -1,0 +1,17 @@
+# Config del túnel locally-managed. Las reglas de ingress mandan TODO *.mishi.com.co
+# a Traefik dentro del clúster; Traefik desmultiplexa por Host.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudflared-config
+  namespace: cloudflare
+data:
+  config.yaml: |
+    tunnel: mke-local
+    credentials-file: /etc/creds/credentials.json
+    metrics: 0.0.0.0:2000
+    no-autoupdate: true
+    ingress:
+      - hostname: "*.mishi.com.co"
+        service: http://traefik.ingress.svc.cluster.local:80
+      - service: http_status:404

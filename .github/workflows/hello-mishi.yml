@@ -1,0 +1,130 @@
+name: hello-mishi
+
+# Flujo MKE:
+#   local  -> bucle de desarrollo en tu laptop (NO pasa por CI; usa scripts/deploy-app.sh).
+#   home   -> deploy automático en cada push a main (con gate de entorno).
+#   cloud  -> deploy en cada release tag (hello-mishi-v*), con aprobación manual.
+#
+# Clusters detrás de NAT (home/cloud): CI NO recibe acceso entrante. En su lugar
+# construye+publica la imagen y "bumpea" el tag en el overlay; Argo CD / Flux
+# reconcilia desde Git (GitOps pull-based). Alternativa push-based comentada abajo.
+
+on:
+  push:
+    branches: [main]
+    tags: ["hello-mishi-v*"]
+    paths:
+      - "apps/hello-mishi/**"
+      - ".github/workflows/hello-mishi.yml"
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/hello-mishi
+  APP_DIR: apps/hello-mishi
+
+jobs:
+  # ---------------------------------------------------------------------------
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,format=short
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.APP_DIR }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
+  # GitOps: actualiza el tag de imagen del overlay y commitea. Argo/Flux despliega.
+  deploy-home:
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: home # protección/aprobación configurable en GitHub
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar kustomize
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh | bash
+          sudo mv kustomize /usr/local/bin/
+      - name: Bump tag en overlay home
+        run: |
+          cd ${{ env.APP_DIR }}/k8s/overlays/home
+          kustomize edit set image hello-mishi=${{ env.IMAGE }}:${{ needs.build-and-push.outputs.tag }}
+      - name: Commit cambio (GitOps)
+        run: |
+          git config user.name "mke-ci"
+          git config user.email "ci@mishi.com.co"
+          git commit -am "deploy(home): hello-mishi ${{ needs.build-and-push.outputs.tag }}" || echo "sin cambios"
+          git push
+
+  deploy-cloud:
+    needs: build-and-push
+    if: startsWith(github.ref, 'refs/tags/hello-mishi-v')
+    runs-on: ubuntu-latest
+    environment: cloud # exige aprobación manual (entorno protegido)
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Instalar kustomize
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh | bash
+          sudo mv kustomize /usr/local/bin/
+      - name: Bump tag en overlay cloud
+        run: |
+          cd ${{ env.APP_DIR }}/k8s/overlays/cloud
+          kustomize edit set image hello-mishi=${{ env.IMAGE }}:${{ needs.build-and-push.outputs.tag }}
+      - name: Commit cambio (GitOps)
+        run: |
+          git config user.name "mke-ci"
+          git config user.email "ci@mishi.com.co"
+          git commit -am "deploy(cloud): hello-mishi ${{ needs.build-and-push.outputs.tag }}" || echo "sin cambios"
+          git push
+
+# -----------------------------------------------------------------------------
+# ALTERNATIVA push-based (si NO usas GitOps y el cluster es alcanzable o hay
+# self-hosted runner en la red del cluster). Requiere secret KUBECONFIG_<ENV>:
+#
+#   - name: Deploy directo
+#     env:
+#       KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_HOME }}
+#     run: |
+#       echo "$KUBECONFIG_DATA" | base64 -d > kubeconfig
+#       export KUBECONFIG=$PWD/kubeconfig
+#       cd ${{ env.APP_DIR }}/k8s/overlays/home
+#       kustomize edit set image hello-mishi=${{ env.IMAGE }}:${{ needs.build-and-push.outputs.tag }}
+#       kubectl apply -k .
+#       kubectl -n hello-mishi rollout status deploy/hello-mishi

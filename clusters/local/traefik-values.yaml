@@ -1,0 +1,21 @@
+ingressClass:
+  enabled: true
+  isDefaultClass: true
+service:
+  type: LoadBalancer # k3d/servicelb mapea a los puertos 80/443 del host
+ports:
+  web:
+    port: 8000
+    expose:
+      default: true
+    exposedPort: 80
+  websecure:
+    port: 8443
+    expose:
+      default: true
+    exposedPort: 443
+providers:
+  kubernetesIngress:
+    enabled: true
+  kubernetesCRD:
+    enabled: true # habilita IngressRoute si lo prefieres
