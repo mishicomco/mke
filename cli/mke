@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Shim del CLI `mke`. Corre el entrypoint TS con tsx sin paso de build.
+# Instalalo en el PATH:  ln -s ~/mishicomco/mke/cli/mke ~/.local/bin/mke
+set -euo pipefail
+DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+exec node --import tsx "$DIR/src/mke.ts" "$@"
