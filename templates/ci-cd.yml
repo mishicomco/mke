@@ -1,0 +1,102 @@
+# Plantilla CI/CD ESTÁNDAR del ecosistema mishicomco — invoca el CLI `mke`.
+#
+# Objetivo de convergencia (CLAUDE.md / skill mke-deploy): el workflow NO corre
+# kubectl/docker/cloudflared sueltos. El conocimiento de plataforma (cluster,
+# namespaces, tunnels, PVC de static-mishi, build→import→apply→rollout→doctor)
+# vive UNA sola vez en el CLI `mke`; el workflow solo decide el entorno y llama
+# al comando. Así un cambio de plataforma se hace en el CLI, no en N workflows.
+#
+# Contrato de triggers (CLAUDE.md):
+#   - Pull Request      -> quality (lint + build) en runner HOSPEDADO por GitHub.
+#   - push a `main`     -> deploy a STAGE.
+#   - push de tag `v*`  -> deploy a PROD.
+#   - workflow_dispatch -> deploy manual al env elegido (escape hatch).
+#
+# Los jobs de deploy corren en el RUNNER SELF-HOSTED del PC gamer
+# (labels: self-hosted, mke, pc-gamer), que vive al lado del cluster k3d y tiene
+# el CLI `mke` en el PATH. El CLI hace build local -> k3d image import (SIN GHCR)
+# -> apply -k -> rollout -> doctor.
+#
+# Cómo adoptarla en un app:
+#   1. Copiá este archivo a `<app>/.github/workflows/ci-cd.yml`.
+#   2. Ajustá `APP` (id interno del app) y, si el subdominio difiere, pasá
+#      `--host <fqdn>` al comando.
+#   3. Elegí el/los comando(s) según el tipo de app (ver el job `deploy`):
+#        - backend/pod                -> `mke deploy <app> <env>`
+#        - front estático (static-mishi) -> `mke publish <front> <env>`
+#        - app con front+back juntos  -> ambos (publish del front + deploy del back).
+#   4. Build-args públicos (client id, pixels) = repo Variables (`gh variable set`),
+#      no secretos. Pasalos al Dockerfile vía `--build-arg` si el CLI lo necesita.
+
+name: ci-cd <APP> (MKE)
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Entorno destino"
+        type: choice
+        options: [stage, prod]
+        default: stage
+
+concurrency:
+  group: ci-cd-<APP>-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  APP: <APP> # id interno del app (= subdominio salvo override con --host)
+
+jobs:
+  # Quality gate de PRs: lint + build en runner hospedado por GitHub. No toca el
+  # cluster; solo valida que compila antes de mergear.
+  quality:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run build
+
+  # Deploy vía CLI `mke` en el runner self-hosted. Resuelve el entorno del trigger
+  # y delega TODO al CLI (build→import→apply→rollout→doctor).
+  deploy:
+    if: github.event_name != 'pull_request'
+    runs-on: [self-hosted, mke, pc-gamer]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolver entorno destino
+        id: tgt
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ENV="${{ inputs.environment }}"
+          elif [ "${{ startsWith(github.ref, 'refs/tags/v') }}" = "true" ]; then
+            ENV="prod"
+          else
+            ENV="stage"
+          fi
+          echo "env=$ENV" >> "$GITHUB_OUTPUT"
+          echo "Destino => $ENV"
+
+      - name: Deploy (mke CLI)
+        run: |
+          export PATH="$PATH:/usr/local/bin:$HOME/.local/bin"
+          ENV="${{ steps.tgt.outputs.env }}"
+          # --dir apunta el CLI al checkout de CI (no a <appsRoot>/<app>).
+          # Si el subdominio difiere del id interno, agregá: --host <app>-$ENV.mishi.com.co
+          #
+          # Backend / app que corre como pod:
+          mke deploy "$APP" "$ENV" --dir "$GITHUB_WORKSPACE"
+          #
+          # Front estático servido por static-mishi (descomentá si aplica):
+          # mke publish "$APP" "$ENV" --dir "$GITHUB_WORKSPACE"
