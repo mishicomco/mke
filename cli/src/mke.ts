@@ -1,12 +1,14 @@
 #!/usr/bin/env -S node --import tsx
 // CLI `mke` — operaciones deterministas de la plataforma MKE.
-// deploy · expose · rollout · dns · doctor · ls
+// deploy · publish · expose · rollout · dns · doctor · ls · db provision
 
 import { expose } from "./expose.js";
 import { ensureDns } from "./dns.js";
 import { doctor } from "./doctor.js";
 import { deploy } from "./deploy.js";
+import { publish } from "./publish.js";
 import { rollout } from "./rollout.js";
+import { dbProvision } from "./dbProvision.js";
 import { ls } from "./ls.js";
 import { hostFor } from "./mkeConfig.js";
 
@@ -35,8 +37,12 @@ const HELP = `mke — CLI de plataforma MKE
 
   mke deploy <app> <env>                        build → k3d import → apply -k overlays/<env> → rollout → doctor
         opciones: --tag <t>  --dir <repo>  --deploy <nombre-deployment>  --host <fqdn>
+  mke publish <front> <env>                      front estático: build imagen contenido → Job al PVC de static-mishi → doctor
+        opciones: --tag <t>  --dir <repo>  --host <fqdn>   (env = stage | prod)
   mke rollout <app> <env>                        rollout restart + status (sin rebuild; tag mutable / reciclar pods)
         opciones: --deploy <nombre-deployment>
+  mke db provision <app> <env>                   crea BD+rol de la app en postgres-mishi (idempotente; imprime DATABASE_URL)
+        opciones: --password <pw>   (prod → ns databases · stage/local → databases-dev)
   mke expose <app> <env> --host-port <N>        expone un servicio del HOST (systemd) en <app><suffix>.mishi.com.co
   mke expose <app> <env> --svc <name:port>      expone un servicio del CLUSTER ya existente
         opciones: --host <fqdn>  (override del subdominio)   --path </>
@@ -66,10 +72,28 @@ async function main() {
       });
       break;
     }
+    case "publish": {
+      const [front, env] = positional;
+      if (!front || !env) return fail("uso: mke publish <front> <env> [--tag t] [--dir repo] [--host fqdn]");
+      await publish(front, env, {
+        tag: typeof flags.tag === "string" ? flags.tag : undefined,
+        dir: typeof flags.dir === "string" ? flags.dir : undefined,
+        host: typeof flags.host === "string" ? flags.host : undefined,
+      });
+      break;
+    }
     case "rollout": {
       const [app, env] = positional;
       if (!app || !env) return fail("uso: mke rollout <app> <env> [--deploy name]");
       await rollout(app, env, typeof flags.deploy === "string" ? flags.deploy : undefined);
+      break;
+    }
+    case "db": {
+      const [action, app, env] = positional;
+      if (action !== "provision" || !app || !env) return fail("uso: mke db provision <app> <env> [--password pw]");
+      await dbProvision(app, env, {
+        password: typeof flags.password === "string" ? flags.password : undefined,
+      });
       break;
     }
     case "ls": {

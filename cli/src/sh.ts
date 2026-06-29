@@ -9,12 +9,17 @@ export interface RunResult {
   stderr: string;
 }
 
-/** Corre un comando sin shell. Nunca lanza: devuelve code != 0 en error. */
-export async function run(cmd: string, args: string[]): Promise<RunResult> {
+/**
+ * Corre un comando sin shell. Nunca lanza: devuelve code != 0 en error.
+ * `input` se escribe al stdin del proceso (p.ej. SQL para `kubectl exec -i ... psql`).
+ */
+export async function run(cmd: string, args: string[], input?: string): Promise<RunResult> {
   try {
-    const { stdout, stderr } = await execFileAsync(cmd, args, {
-      maxBuffer: 32 * 1024 * 1024,
-    });
+    const child = execFileAsync(cmd, args, { maxBuffer: 32 * 1024 * 1024 });
+    if (input !== undefined) {
+      child.child.stdin?.end(input);
+    }
+    const { stdout, stderr } = await child;
     return { code: 0, stdout: stdout.trim(), stderr: stderr.trim() };
   } catch (err) {
     const e = err as { code?: number; stdout?: string; stderr?: string; message?: string };
