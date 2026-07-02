@@ -63,6 +63,46 @@ export const ENVS: Record<string, EnvSpec> = {
 
 export const DOMAIN = "mishi.com.co";
 
+/**
+ * Clúster de PREVIEWS por FEATURE (Studio v2). Cluster k3d SEPARADO del de prod
+ * (nunca se toca mke-prod). Cada feature = un namespace efímero; cada preview
+ * lleva su propio postgres efímero y su CNAME `<feature>-pre.mishi.com.co`.
+ *
+ * El túnel `mke-preview` se crea en bootstrap-preview.sh; su UUID se resuelve en
+ * runtime (`cloudflared tunnel list`) para no hardcodearlo. Zone id de la zona
+ * mishi.com.co (para borrar DNS vía API en `preview down`).
+ */
+export const PREVIEW = {
+  context: "k3d-mke-preview",
+  cluster: "mke-preview",
+  tunnelName: "mke-preview",
+  /** sufijo público: `<feature>-pre.mishi.com.co` (patrón con GUIÓN, sin wildcard). */
+  hostSuffix: "-pre",
+  /** zona Cloudflare de mishi.com.co (constante; la descubrió el token dns-api). */
+  zoneId: "00efc72c39940d1e3c22f2916641efc0",
+} as const;
+
+/** host público de un preview: `<feature>-pre.mishi.com.co`. */
+export function previewHost(feature: string): string {
+  return `${feature}${PREVIEW.hostSuffix}.${DOMAIN}`;
+}
+
+/**
+ * slug de una rama git → nombre de feature apto para DNS/namespace:
+ * minúsculas, `/` y no-alfanumérico → `-`, colapsa y recorta guiones, máx 40.
+ * ej: `feat/Cobros-Omni` → `feat-cobros-omni`; `studio-escenarios` igual.
+ */
+export function slugFeature(rama: string): string {
+  const s = rama
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+    .replace(/^-+|-+$/g, "");
+  if (!s) throw new Error(`no pude derivar un feature válido de la rama '${rama}'`);
+  return s;
+}
+
 /** host público por convención; el id interno del app puede diferir del subdominio. */
 export function hostFor(app: string, env: string): string {
   const spec = ENVS[env];
