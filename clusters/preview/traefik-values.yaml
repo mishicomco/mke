@@ -1,0 +1,13 @@
+# Traefik para mke-preview (previews efímeros por FEATURE de Studio v2).
+# Mismo modelo "tunnel-only" que prod: cloudflared in-cluster habla con Traefik
+# por ClusterIP; nadie entra por puertos del host. TLS lo termina Cloudflare.
+ingressClass:
+  enabled: true
+  isDefaultClass: true
+service:
+  type: ClusterIP
+providers:
+  kubernetesIngress:
+    enabled: true
+  kubernetesCRD:
+    enabled: true

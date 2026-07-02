@@ -1,0 +1,22 @@
+# Config del túnel mke-preview (locally-managed).
+# Catch-all -> Traefik, igual que prod: el túnel solo recibe tráfico de hostnames
+# cuyo CNAME apunta a ESTE túnel. Cada preview crea su PROPIO CNAME con guiones
+# `<feature>-pre.mishi.com.co` -> este túnel (mke preview up), y lo borra al bajar
+# (mke preview down). Traefik desmultiplexa por Host, un namespace por feature.
+#
+# NO hay wildcard: el patrón `*.pre.mishi.com.co` se descartó porque el Universal
+# SSL de Cloudflare solo cubre UN nivel de subdominio (`*.mishi.com.co`), no dos.
+# Por eso los previews viven en un solo nivel con guión: `<feature>-pre`.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudflared-config
+  namespace: cloudflare
+data:
+  config.yaml: |
+    tunnel: mke-preview
+    credentials-file: /etc/creds/credentials.json
+    metrics: 0.0.0.0:2000
+    no-autoupdate: true
+    ingress:
+      - service: http://traefik.ingress.svc.cluster.local:80

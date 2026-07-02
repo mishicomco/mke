@@ -1,0 +1,47 @@
+# cloudflared in-cluster para mke-preview (túnel locally-managed).
+# - Secret    "tunnel-credentials": el <uuid>.json del túnel mke-preview (creado por CLI, NO en Git).
+# - ConfigMap "cloudflared-config": las reglas de ingress (ver configmap.yaml).
+# 1 réplica: el pc gamer es un solo nodo en casa (HA en caliente archivado).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+  namespace: cloudflare
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloudflared
+  template:
+    metadata:
+      labels:
+        app: cloudflared
+    spec:
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:2026.6.1 # versión verificada 2026-06-19
+          args:
+            - tunnel
+            - --config
+            - /etc/cloudflared/config.yaml
+            - run
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: 2000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/cloudflared
+              readOnly: true
+            - name: creds
+              mountPath: /etc/creds
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: cloudflared-config
+        - name: creds
+          secret:
+            secretName: tunnel-credentials
