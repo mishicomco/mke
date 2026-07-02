@@ -47,9 +47,9 @@ const HELP = `mke — CLI de plataforma MKE
   mke expose <app> <env> --host-port <N>        expone un servicio del HOST (systemd) en <app><suffix>.mishi.com.co
   mke expose <app> <env> --svc <name:port>      expone un servicio del CLUSTER ya existente
         opciones: --host <fqdn>  (override del subdominio)   --path </>
-  mke preview up <app> <rama>                    preview EFÍMERO por feature: build rama → import a mke-preview → manifests (backend + postgres efímero + ingress) → CNAME <feature>-pre → verifica
+  mke preview up <app> <rama>                    preview EFÍMERO por feature: build rama → import a mke-preview → manifests (backend + postgres efímero + ingress) → CNAME <slugApp>-<feature>-pre → verifica
         opciones: --feature <nombre>  --dir <repo>
-  mke preview down <feature>                      borra el namespace del feature + su CNAME (vía API Cloudflare)
+  mke preview down <nombre>                       borra el preview <slugApp>-<feature> (el que muestra ls): namespace + CNAME (vía API Cloudflare)
   mke preview ls                                  lista los previews vivos en mke-preview
   mke dns <host|app> <env>                       crea/repara el CNAME al tunnel correcto del entorno
   mke doctor <host> [path]                       diagnostica la cadena pública y dice qué capa está rota
@@ -116,9 +116,9 @@ async function main() {
           dir: typeof flags.dir === "string" ? flags.dir : undefined,
         });
       } else if (action === "down") {
-        const [feature] = pargs;
-        if (!feature) return fail("uso: mke preview down <feature>");
-        await previewDown(feature);
+        const [nombre] = pargs;
+        if (!nombre) return fail("uso: mke preview down <nombre>  (el <slugApp>-<feature> que muestra `mke preview ls`)");
+        await previewDown(nombre);
       } else if (action === "ls" || action === undefined) {
         await previewLs();
       } else {

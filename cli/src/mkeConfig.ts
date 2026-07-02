@@ -66,7 +66,8 @@ export const DOMAIN = "mishi.com.co";
 /**
  * Clúster de PREVIEWS por FEATURE (Studio v2). Cluster k3d SEPARADO del de prod
  * (nunca se toca mke-prod). Cada feature = un namespace efímero; cada preview
- * lleva su propio postgres efímero y su CNAME `<feature>-pre.mishi.com.co`.
+ * lleva su propio postgres efímero y su CNAME `<slugApp>-<feature>-pre.mishi.com.co`
+ * (el slug público de la app al inicio para que con muchas apps se sepa qué es qué).
  *
  * El túnel `mke-preview` se crea en bootstrap-preview.sh; su UUID se resuelve en
  * runtime (`cloudflared tunnel list`) para no hardcodearlo. Zone id de la zona
@@ -76,15 +77,26 @@ export const PREVIEW = {
   context: "k3d-mke-preview",
   cluster: "mke-preview",
   tunnelName: "mke-preview",
-  /** sufijo público: `<feature>-pre.mishi.com.co` (patrón con GUIÓN, sin wildcard). */
+  /** sufijo público: `<slugApp>-<feature>-pre.mishi.com.co` (patrón con GUIÓN, sin wildcard). */
   hostSuffix: "-pre",
   /** zona Cloudflare de mishi.com.co (constante; la descubrió el token dns-api). */
   zoneId: "00efc72c39940d1e3c22f2916641efc0",
 } as const;
 
-/** host público de un preview: `<feature>-pre.mishi.com.co`. */
-export function previewHost(feature: string): string {
-  return `${feature}${PREVIEW.hostSuffix}.${DOMAIN}`;
+/**
+ * host público de un preview: `<nombre>-pre.mishi.com.co`, donde `nombre` es
+ * `<slugApp>-<feature>` (ej. bank-studio-escenarios-pre.mishi.com.co).
+ */
+export function previewHost(nombre: string): string {
+  return `${nombre}${PREVIEW.hostSuffix}.${DOMAIN}`;
+}
+
+/**
+ * nombre completo del preview: `<slugApp>-<feature>`. Si el feature ya empieza
+ * con el slug (rama `bank-fix-x` con slug `bank`), no lo duplica.
+ */
+export function previewName(slug: string, feature: string): string {
+  return feature === slug || feature.startsWith(`${slug}-`) ? feature : `${slug}-${feature}`;
 }
 
 /**

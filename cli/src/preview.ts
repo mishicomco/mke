@@ -5,8 +5,12 @@
 //   · postgres efímero (postgres:16-alpine, emptyDir — sin PVC)
 //   · Secret del app (DATABASE_URL -> pg efímero + llaves fail-closed + PREVIEW=true)
 //   · el Deployment del app (su k8s/base, imagen construida desde la rama)
-//   · un Ingress Traefik con host <feature>-pre.mishi.com.co (path / -> backend)
-//   · un CNAME <feature>-pre -> UUID del túnel mke-preview (--overwrite-dns)
+//   · un Ingress Traefik con host <slugApp>-<feature>-pre.mishi.com.co (path / -> backend)
+//   · un CNAME <slugApp>-<feature>-pre -> UUID del túnel mke-preview (--overwrite-dns)
+//
+// El NOMBRE del preview (= namespace = prefijo del host) es `<slugApp>-<feature>`:
+// el slug público de la app al inicio para que con muchas apps se sepa qué es qué.
+// `down` recibe ese nombre completo (lo que muestra `ls`).
 //
 // `up` construye desde la RAMA (git worktree efímero + docker build + k3d import),
 // aplica los manifests, crea el DNS y verifica alcance (curl con reintentos).
@@ -16,7 +20,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { appsRoot, PREVIEW, previewHost, slugFeature } from "./mkeConfig.js";
+import { appsRoot, PREVIEW, previewHost, previewName, slugFeature } from "./mkeConfig.js";
 import { previewApp, type PreviewApp, type SecretValue } from "./previewApps.js";
 import { deleteRecordsByName } from "./cf.js";
 import { run, ok, bad, warn, info, dim } from "./sh.js";
@@ -52,10 +56,12 @@ export interface PreviewUpOpts {
 
 export async function previewUp(app: string, rama: string, opts: PreviewUpOpts): Promise<void> {
   const feature = opts.feature ? slugFeature(opts.feature) : slugFeature(rama);
-  const ns = feature;
-  const host = previewHost(feature);
   const appDir = opts.dir ?? join(appsRoot(), app);
   const cfg = previewApp(app);
+  // nombre del preview = <slugApp>-<feature> (sin duplicar si la rama ya lo trae)
+  const nombre = previewName(cfg.slug, feature);
+  const ns = nombre;
+  const host = previewHost(nombre);
   const image = `${app}:pre-${feature}`;
   const baseDir = join(appDir, "k8s", "base");
 
@@ -112,7 +118,7 @@ export async function previewUp(app: string, rama: string, opts: PreviewUpOpts):
     if (st.code !== 0) console.log(warn(`el backend no convergió aún: ${st.stderr || st.stdout}`));
     else console.log(ok(st.stdout.split("\n").pop() ?? "backend listo"));
 
-    // 7) DNS: CNAME <feature>-pre -> túnel (UUID + overwrite, gana sobre el wildcard)
+    // 7) DNS: CNAME <slugApp>-<feature>-pre -> túnel (UUID + overwrite, gana sobre el wildcard)
     console.log(info(`DNS: ${host} → túnel ${uuid}`));
     const dns = await run("cloudflared", ["tunnel", "route", "dns", "--overwrite-dns", uuid, host]);
     if (dns.code !== 0) console.log(warn(`cloudflared route dns: ${dns.stderr || dns.stdout}`));
@@ -136,8 +142,9 @@ export async function previewUp(app: string, rama: string, opts: PreviewUpOpts):
   if (!builtOk) process.exitCode = 1;
 }
 
-export async function previewDown(feature: string): Promise<void> {
-  const ns = slugFeature(feature);
+/** baja un preview por su NOMBRE completo `<slugApp>-<feature>` (lo que muestra `ls`). */
+export async function previewDown(nombre: string): Promise<void> {
+  const ns = slugFeature(nombre);
   const host = previewHost(ns);
   console.log(info(`bajando preview ${dim(ns)} (${host})`));
 

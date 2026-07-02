@@ -11,6 +11,12 @@
 export type SecretValue = string | { fromSecret: string };
 
 export interface PreviewApp {
+  /**
+   * nombre PÚBLICO "pelado" de la app (convención del ecosistema: id interno ≠
+   * subdominio público; `mishi-bank`→`bank`, `omni-whatsapp`→`omni`). Prefija el
+   * host y el namespace del preview: `<slug>-<feature>-pre.mishi.com.co`.
+   */
+  slug: string;
   /** puerto del contenedor del backend (la base ya mapea el Service 80->targetPort). */
   containerPort: number;
   /** nombre del Deployment en la base (si difiere del id del app). */
@@ -31,9 +37,11 @@ export interface PreviewApp {
 }
 
 // Fallback genérico para apps aún no registradas: intenta `<app>-secrets` con solo
-// DATABASE_URL. Si la base pide más llaves, el arranque fallará y el doctor lo dirá.
+// DATABASE_URL y slug = id interno. Si la base pide más llaves, el arranque
+// fallará y el doctor lo dirá.
 function fallback(app: string): PreviewApp {
   return {
+    slug: app,
     containerPort: 3000,
     secretName: `${app}-secrets`,
     secretLiterals: {},
@@ -43,6 +51,7 @@ function fallback(app: string): PreviewApp {
 
 const REGISTRY: Record<string, PreviewApp> = {
   "mishi-bank": {
+    slug: "bank",
     containerPort: 3000,
     deployName: "mishi-bank",
     dockerfile: "apps/backend/Dockerfile",
