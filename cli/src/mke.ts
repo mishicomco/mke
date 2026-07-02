@@ -10,6 +10,7 @@ import { publish } from "./publish.js";
 import { rollout } from "./rollout.js";
 import { dbProvision } from "./dbProvision.js";
 import { ls } from "./ls.js";
+import { previewUp, previewDown, previewLs } from "./preview.js";
 import { hostFor } from "./mkeConfig.js";
 
 function parseFlags(args: string[]): { positional: string[]; flags: Record<string, string | boolean> } {
@@ -46,6 +47,10 @@ const HELP = `mke — CLI de plataforma MKE
   mke expose <app> <env> --host-port <N>        expone un servicio del HOST (systemd) en <app><suffix>.mishi.com.co
   mke expose <app> <env> --svc <name:port>      expone un servicio del CLUSTER ya existente
         opciones: --host <fqdn>  (override del subdominio)   --path </>
+  mke preview up <app> <rama>                    preview EFÍMERO por feature: build rama → import a mke-preview → manifests (backend + postgres efímero + ingress) → CNAME <feature>-pre → verifica
+        opciones: --feature <nombre>  --dir <repo>
+  mke preview down <feature>                      borra el namespace del feature + su CNAME (vía API Cloudflare)
+  mke preview ls                                  lista los previews vivos en mke-preview
   mke dns <host|app> <env>                       crea/repara el CNAME al tunnel correcto del entorno
   mke doctor <host> [path]                       diagnostica la cadena pública y dice qué capa está rota
   mke ls [env]                                    inventario de ingresses (host → servicio) por entorno
@@ -99,6 +104,26 @@ async function main() {
     case "ls": {
       const [env] = positional;
       await ls(env);
+      break;
+    }
+    case "preview": {
+      const [action, ...pargs] = positional;
+      if (action === "up") {
+        const [app, rama] = pargs;
+        if (!app || !rama) return fail("uso: mke preview up <app> <rama> [--feature nombre] [--dir repo]");
+        await previewUp(app, rama, {
+          feature: typeof flags.feature === "string" ? flags.feature : undefined,
+          dir: typeof flags.dir === "string" ? flags.dir : undefined,
+        });
+      } else if (action === "down") {
+        const [feature] = pargs;
+        if (!feature) return fail("uso: mke preview down <feature>");
+        await previewDown(feature);
+      } else if (action === "ls" || action === undefined) {
+        await previewLs();
+      } else {
+        return fail("uso: mke preview up|down|ls");
+      }
       break;
     }
     case "expose": {
