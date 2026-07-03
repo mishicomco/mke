@@ -11,7 +11,8 @@ MKE (Mishi Kubernetes Engine) = la plataforma que sirve `*.mishi.com.co`. Un mis
 - **Cluster único `k3d-mke-prod`** en el PC gamer (`SantiGamer`, WSL2): stage y prod son **namespaces** (`stage` / `prod`) del mismo cluster, no clusters separados. `mke-stage` como cluster fue eliminado.
 - **`mke-local`**: k3d en el laptop (WSL2) para dev. Wildcard `*.mishi.com.co → mke-local`.
 - **`mke-cloud`**: futuro (GKE + prod-mke como fallback); sin desplegar.
-- **CLI `mke`** es la interfaz canónica (deploy/rollout/expose/dns/doctor/ls). No hacer kubectl/docker/cloudflared a mano salvo fallback. Ver skill `mke-deploy`.
+- **CLI `mke`** es la interfaz canónica (deploy/rollout/expose/dns/doctor/ls/**app init**). No hacer kubectl/docker/cloudflared a mano salvo fallback. Ver skill `mke-deploy`.
+- **`mke app init <app>` (2026-07-03, en main):** nacimiento de plataforma en un comando, idempotente — BD+rol en postgres-mishi (con fix de owner), `mishi-secret set mke/<app>/<env>/database-url`, Secret k8s (`<app>-secrets` con DATABASE_URL+SESSION_SECRET), DNS dash-form; `--env stage|prod`, `--subdominio`, `--dry-run`. Lo invoca `mishi-studio app nacer` como paso plataforma.
 - Ingress: Traefik en ns `ingress`. Entrada pública vía cloudflared in-cluster (túnel `mke-prod`).
 - Apps desplegadas de referencia: `hello-mishi` (stateless) y `mesh-central` (MeshCentral, stateful, PVCs). Las apps reales del ecosistema (omni, bank, polla, travelhabit) despliegan por su propio CI/CD hacia este cluster.
 
