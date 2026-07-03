@@ -9,6 +9,7 @@ import { deploy } from "./deploy.js";
 import { publish } from "./publish.js";
 import { rollout } from "./rollout.js";
 import { dbProvision } from "./dbProvision.js";
+import { appInit } from "./appInit.js";
 import { ls } from "./ls.js";
 import { previewUp, previewDown, previewLs } from "./preview.js";
 import { hostFor } from "./mkeConfig.js";
@@ -44,6 +45,9 @@ const HELP = `mke — CLI de plataforma MKE
         opciones: --deploy <nombre-deployment>
   mke db provision <app> <env>                   crea BD+rol de la app en postgres-mishi (idempotente; imprime DATABASE_URL)
         opciones: --password <pw>   (prod → ns databases · stage/local → databases-dev)
+  mke app init <app>                             nacimiento de plataforma para una app nueva, EN UN COMANDO (idempotente):
+                                                  BD+rol → mishi-secret → namespace+Secret k8s (DATABASE_URL+SESSION_SECRET) → DNS
+        opciones: --env stage|prod (default stage)  --subdominio <name>  --dry-run
   mke expose <app> <env> --host-port <N>        expone un servicio del HOST (systemd) en <app><suffix>.mishi.com.co
   mke expose <app> <env> --svc <name:port>      expone un servicio del CLUSTER ya existente
         opciones: --host <fqdn>  (override del subdominio)   --path </>
@@ -59,7 +63,8 @@ const HELP = `mke — CLI de plataforma MKE
   ej:  mke deploy polla-futbolera stage
        mke expose agents-mishi stage --host-port 8787
        mke doctor agents-stage.mishi.com.co
-       mke ls stage`;
+       mke ls stage
+       mke app init barrio-mishi --env stage --dry-run`;
 
 async function main() {
   const [, , cmd, ...rest] = process.argv;
@@ -98,6 +103,16 @@ async function main() {
       if (action !== "provision" || !app || !env) return fail("uso: mke db provision <app> <env> [--password pw]");
       await dbProvision(app, env, {
         password: typeof flags.password === "string" ? flags.password : undefined,
+      });
+      break;
+    }
+    case "app": {
+      const [action, app] = positional;
+      if (action !== "init" || !app) return fail("uso: mke app init <app> [--env stage|prod] [--subdominio nombre] [--dry-run]");
+      const env = typeof flags.env === "string" ? flags.env : "stage";
+      await appInit(app, env, {
+        subdominio: typeof flags.subdominio === "string" ? flags.subdominio : undefined,
+        dryRun: flags["dry-run"] === true,
       });
       break;
     }

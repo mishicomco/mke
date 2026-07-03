@@ -11,15 +11,16 @@ export interface DbProvisionOpts {
 
 // El postgres-mishi vive SIEMPRE en el cluster prod; stage/local apuntan a la
 // instancia dev (ns databases-dev), prod a la instancia prod (ns databases).
-const EXEC_CONTEXT = "k3d-mke-prod";
-const POD = "postgres-0";
+export const EXEC_CONTEXT = "k3d-mke-prod";
+export const POD = "postgres-0";
 
-function nsForEnv(env: string): string {
+/** namespace del postgres-mishi que sirve cada entorno (compartido con appInit.ts). */
+export function nsForEnv(env: string): string {
   return env === "prod" ? "databases" : "databases-dev";
 }
 
 /** snake_case válido para postgres: `omni-whatsapp` -> `omni_whatsapp`. */
-function toSnake(app: string): string {
+export function toSnake(app: string): string {
   return app.replace(/-/g, "_").toLowerCase();
 }
 
