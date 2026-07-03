@@ -1,0 +1,38 @@
+# AI_REPO_STATE — mke
+
+> Regla: estado, no bitácora. Qué es verdad HOY. La historia vive en git.
+
+## Qué es
+
+MKE (Mishi Kubernetes Engine) = la plataforma que sirve `*.mishi.com.co`. Un mismo sabor de k8s (k3d/k3s) replicado por overlays Kustomize, cambiando solo configuración, nunca código. Repo de la plataforma (clusters, componentes base in-cluster, scripts); las apps viven en sus propios repos.
+
+## Estado actual
+
+- **Cluster único `k3d-mke-prod`** en el PC gamer (`SantiGamer`, WSL2): stage y prod son **namespaces** (`stage` / `prod`) del mismo cluster, no clusters separados. `mke-stage` como cluster fue eliminado.
+- **`mke-local`**: k3d en el laptop (WSL2) para dev. Wildcard `*.mishi.com.co → mke-local`.
+- **`mke-cloud`**: futuro (GKE + prod-mke como fallback); sin desplegar.
+- **CLI `mke`** es la interfaz canónica (deploy/rollout/expose/dns/doctor/ls). No hacer kubectl/docker/cloudflared a mano salvo fallback. Ver skill `mke-deploy`.
+- Ingress: Traefik en ns `ingress`. Entrada pública vía cloudflared in-cluster (túnel `mke-prod`).
+- Apps desplegadas de referencia: `hello-mishi` (stateless) y `mesh-central` (MeshCentral, stateful, PVCs). Las apps reales del ecosistema (omni, bank, polla, travelhabit) despliegan por su propio CI/CD hacia este cluster.
+
+## Convenciones
+
+- Subdominios: no-prod con guion (`<app>-local`, `<app>-stage`), prod pelado (`<app>`). Detalle y footguns en `AI_ARCHITECTURE.md`.
+- Overlays Kustomize por entorno: `local` / `stage` / `prod` (+ `cloud` futuro).
+- Un nodo → resiliencia por backups off-site, no HA en caliente.
+
+## Verificación rápida
+
+```bash
+mke doctor
+mke ls
+ssh mke-home 'bash -lc "k3d cluster list; kubectl config get-contexts"'
+curl -sS -o /dev/null -w "%{http_code}\n" https://hello.mishi.com.co
+```
+
+## Decisiones y diseño
+
+- **`AI_ARCHITECTURE.md`** — cadena de red Cloudflare→cloudflared→Traefik, convención de subdominios, gotchas DNS/túnel, checklist de apps detrás del reverse proxy (TLS-offload, X-Forwarded-Proto, `@kubernetescrd`), SSH remoto.
+- **MeshCentral admins/credenciales** — gestionados por la skill `mesh-central-admin` (passwords en GPG, nunca en repo).
+- **Deploy** — skill `mke-deploy`.
+- Meta CI/CD del ecosistema: loop cerrado con runner self-hosted (build local → k3d import → apply); ver `../CLAUDE.md`.
