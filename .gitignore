@@ -21,3 +21,5 @@ kubeconfig*
 
 # Contexto AI (tiene Zone/Account IDs, IPs, referencias a secretos) — no commitear
 # AI_CONTEXT.md removed: state now in tracked AI_REPO_STATE.md
+
+.claude/worktrees/
