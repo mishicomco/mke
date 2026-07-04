@@ -52,6 +52,7 @@ async function resolveSecret(v: SecretValue): Promise<string> {
 export interface PreviewUpOpts {
   feature?: string;
   dir?: string;
+  dryRun?: boolean;
 }
 
 export async function previewUp(app: string, rama: string, opts: PreviewUpOpts): Promise<void> {
@@ -69,6 +70,18 @@ export async function previewUp(app: string, rama: string, opts: PreviewUpOpts):
   if (!existsSync(baseDir)) throw new Error(`el app no tiene k8s/base: ${baseDir}`);
 
   console.log(info(`preview ${dim(app)} · rama ${dim(rama)} · feature ${dim(feature)} → ${dim(host)}`));
+
+  if (opts.dryRun) {
+    console.log(info("DRY RUN — no se toca nada. Plan:"));
+    console.log(`  1. git worktree efímero de \`${rama}\` en ${appDir}`);
+    console.log(`  2. docker build -t ${image} (Dockerfile: ${cfg.dockerfile ?? "auto-detectado"})`);
+    console.log(`  3. k3d image import ${image} → ${PREVIEW.cluster}`);
+    console.log(`  4. namespace \`${ns}\` (${CTX}): postgres efímero (${cfg.db.name}/${cfg.db.user}) + Secret \`${cfg.secretName}\` + Deployment/Ingress de la base`);
+    console.log(`  5. DNS: ${host} → túnel ${PREVIEW.tunnelName} (--overwrite-dns)`);
+    console.log(`  6. esperar rollout + verificar https://${host}/health`);
+    console.log(info("nada ejecutado (--dry-run)"));
+    return;
+  }
 
   // 0) resolvé el túnel ANTES de trabajar (falla rápido si no hay bootstrap)
   const uuid = await tunnelUuid();
@@ -143,10 +156,18 @@ export async function previewUp(app: string, rama: string, opts: PreviewUpOpts):
 }
 
 /** baja un preview por su NOMBRE completo `<slugApp>-<feature>` (lo que muestra `ls`). */
-export async function previewDown(nombre: string): Promise<void> {
+export async function previewDown(nombre: string, opts: { dryRun?: boolean } = {}): Promise<void> {
   const ns = slugFeature(nombre);
   const host = previewHost(ns);
   console.log(info(`bajando preview ${dim(ns)} (${host})`));
+
+  if (opts.dryRun) {
+    console.log(info("DRY RUN — no se toca nada. Plan:"));
+    console.log(`  1. kubectl --context ${CTX} delete namespace ${ns}`);
+    console.log(`  2. borrar CNAME ${host} (API Cloudflare)`);
+    console.log(info("nada ejecutado (--dry-run)"));
+    return;
+  }
 
   const del = await run("kubectl", ["--context", CTX, "delete", "namespace", ns, "--ignore-not-found", "--wait=false"]);
   if (del.code === 0) console.log(ok(del.stdout || `namespace ${ns} borrándose`));
