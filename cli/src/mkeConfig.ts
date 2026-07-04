@@ -84,11 +84,55 @@ export const PREVIEW = {
 } as const;
 
 /**
+ * RAMAS del harness v2 (verbo `mke rama`). Reusa el MISMO clúster/túnel de
+ * previews (mke-preview; jamás mke-prod), pero es un mecanismo distinto:
+ *  - SIN imagen por rama: una imagen genérica de runner clona la rama en el
+ *    arranque, instala, construye el front y corre el backend (mismo origen).
+ *  - Todas las ramas viven en UN namespace compartido `ramas`; cada rama es un
+ *    Deployment+Service+Ingress(+ConfigMap) con nombre `<app>-<slug(rama)>`.
+ *  - Host público `<app>-<slug(rama)>-feat.mishi.com.co` (patrón con GUIÓN de un
+ *    nivel, como previews; el Universal SSL de Cloudflare cubre un solo nivel).
+ */
+export const RAMA = {
+  context: PREVIEW.context,
+  cluster: PREVIEW.cluster,
+  tunnelName: PREVIEW.tunnelName,
+  zoneId: PREVIEW.zoneId,
+  namespace: "ramas",
+  /** sufijo público: `<app>-<slug(rama)>-feat.mishi.com.co`. */
+  hostSuffix: "-feat",
+  /** imagen genérica del runner (ver images/rama-runner). */
+  runnerImage: "mke-rama-runner:node22",
+} as const;
+
+/**
  * host público de un preview: `<nombre>-pre.mishi.com.co`, donde `nombre` es
  * `<slugApp>-<feature>` (ej. bank-studio-escenarios-pre.mishi.com.co).
  */
 export function previewHost(nombre: string): string {
   return `${nombre}${PREVIEW.hostSuffix}.${DOMAIN}`;
+}
+
+/**
+ * nombre de una rama encendida: `<app>-<slug(rama)>`, saneado y recortado a un
+ * límite seguro para nombres de k8s y labels DNS (un segmento del host va hasta
+ * 63; dejamos margen para el sufijo `-feat`). Sirve de nombre de los recursos y
+ * de prefijo del host.
+ */
+export function ramaName(app: string, rama: string): string {
+  const s = `${app}-${slugFeature(rama)}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 50)
+    .replace(/^-+|-+$/g, "");
+  if (!s) throw new Error(`no pude derivar un nombre de rama válido de '${app}'/'${rama}'`);
+  return s;
+}
+
+/** host público de una rama encendida: `<app>-<slug(rama)>-feat.mishi.com.co`. */
+export function ramaHost(app: string, rama: string): string {
+  return `${ramaName(app, rama)}${RAMA.hostSuffix}.${DOMAIN}`;
 }
 
 /**

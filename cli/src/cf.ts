@@ -53,12 +53,15 @@ export async function findRecords(name: string): Promise<CfRecord[]> {
 
 /**
  * Borra TODOS los records cuyo nombre sea exactamente `name`. Idempotente:
- * si no hay ninguno, no hace nada. Guardarraíl: solo borra hosts que terminen
- * en `-pre.mishi.com.co` — jamás toca prod ni otros hosts.
+ * si no hay ninguno, no hace nada. Guardarraíl: solo borra hosts efímeros que
+ * terminen en `-pre.mishi.com.co` (previews) o `-feat.mishi.com.co` (ramas) —
+ * jamás toca prod ni otros hosts.
  */
+const SUFIJOS_EFIMEROS = [`${PREVIEW.hostSuffix}.mishi.com.co`, "-feat.mishi.com.co"];
+
 export async function deleteRecordsByName(name: string): Promise<number> {
-  if (!name.endsWith(`${PREVIEW.hostSuffix}.mishi.com.co`)) {
-    throw new Error(`rechazo borrar DNS de '${name}': solo hosts *${PREVIEW.hostSuffix}.mishi.com.co`);
+  if (!SUFIJOS_EFIMEROS.some((s) => name.endsWith(s))) {
+    throw new Error(`rechazo borrar DNS de '${name}': solo hosts efímeros ${SUFIJOS_EFIMEROS.join(" / ")}`);
   }
   const records = await findRecords(name);
   for (const rec of records) {

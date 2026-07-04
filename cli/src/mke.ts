@@ -12,7 +12,9 @@ import { dbProvision } from "./dbProvision.js";
 import { appInit } from "./appInit.js";
 import { ls } from "./ls.js";
 import { previewUp, previewDown, previewLs } from "./preview.js";
+import { ramaUp, ramaDown, ramaLs } from "./rama.js";
 import { hostFor } from "./mkeConfig.js";
+import { fileURLToPath } from "node:url";
 
 function parseFlags(args: string[]): { positional: string[]; flags: Record<string, string | boolean> } {
   const positional: string[] = [];
@@ -55,6 +57,11 @@ const HELP = `mke — CLI de plataforma MKE
         opciones: --feature <nombre>  --dir <repo>
   mke preview down <nombre>                       borra el preview <slugApp>-<feature> (el que muestra ls): namespace + CNAME (vía API Cloudflare)
   mke preview ls                                  lista los previews vivos en mke-preview
+  mke rama up <app> <rama>                        enciende un "pod de rama" (harness v2): imagen genérica que clona la rama al arrancar (git), instala, construye el front y corre backend+front mismo origen + postgres efímero; CNAME <app>-<slug>-feat
+        opciones: --json  --dry-run (imprime manifiestos)  --sin-dns (no toca Cloudflare)  --repo-url <url>
+  mke rama down <app> <rama>                      apaga la rama: borra deployment/service/ingress/configmap/secret + CNAME (idempotente)
+        opciones: --json  --sin-dns
+  mke rama ls [<app>]                             lista las ramas encendidas (edad/estado)  · opción: --json
   mke dns <host|app> <env>                       crea/repara el CNAME al tunnel correcto del entorno
   mke doctor <host> [path]                       diagnostica la cadena pública y dice qué capa está rota
   mke ls [env]                                    inventario de ingresses (host → servicio) por entorno
@@ -138,6 +145,32 @@ async function main() {
         await previewLs();
       } else {
         return fail("uso: mke preview up|down|ls");
+      }
+      break;
+    }
+    case "rama": {
+      const [action, ...rargs] = positional;
+      const imagesDir = fileURLToPath(new URL("../../images/rama-runner", import.meta.url));
+      if (action === "up") {
+        const [app, rama] = rargs;
+        if (!app || !rama) return fail("uso: mke rama up <app> <rama> [--json] [--dry-run] [--sin-dns] [--repo-url url]");
+        await ramaUp(app, rama, imagesDir, {
+          json: flags.json === true,
+          dryRun: flags["dry-run"] === true,
+          sinDns: flags["sin-dns"] === true,
+          repoUrl: typeof flags["repo-url"] === "string" ? flags["repo-url"] : undefined,
+        });
+      } else if (action === "down") {
+        const [app, rama] = rargs;
+        if (!app || !rama) return fail("uso: mke rama down <app> <rama> [--json] [--sin-dns]");
+        await ramaDown(app, rama, {
+          json: flags.json === true,
+          sinDns: flags["sin-dns"] === true,
+        });
+      } else if (action === "ls" || action === undefined) {
+        await ramaLs(rargs[0], { json: flags.json === true });
+      } else {
+        return fail("uso: mke rama up|down|ls");
       }
       break;
     }
