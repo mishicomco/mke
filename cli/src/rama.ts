@@ -9,7 +9,7 @@
 //
 // Anatomía del pod (todo en el clúster `mke-preview`, ns `ramas`; JAMÁS mke-prod):
 //   · initContainer `preparar` (imagen runner): git clone --depth 1 --branch <rama>
-//     → npm install → npm run build -w apps/frontend, en un emptyDir /workspace.
+//     → npm install → npm run build (turbo respeta el orden contract→front), emptyDir /workspace.
 //   · contenedor `backend` (imagen runner): espera al postgres, corre migraciones
 //     (drizzle) + siembra (seed:escenario feliz si existe) y `npm run dev`.
 //   · contenedor `web` (caddy): sirve /workspace/repo/apps/frontend/dist y hace
@@ -59,8 +59,8 @@ fi
 cd repo
 echo "[rama] npm install"
 npm install --no-audit --no-fund
-echo "[rama] build front"
-npm run build -w apps/frontend
+echo "[rama] build (turbo: contract → front, orden de dependencias)"
+npm run build
 echo "[rama] preparado: $(git rev-parse --short HEAD)"
 `;
 
