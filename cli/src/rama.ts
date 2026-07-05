@@ -311,7 +311,7 @@ async function resolveRepoUrl(app: string, override: string | undefined, dryRun:
   if (dryRun) return base; // en dry-run nunca metemos el token (no se imprime)
   // token de clone read-only opcional (infra, NO secreto de app). Si existe, se
   // inyecta en la URL para clonar repos privados; si no, clone anónimo (público).
-  const t = await run("mishi-secret", ["get", "github-rama-token"]);
+  const t = await run("mishi-secret", ["get", "mishi-studio-gh-read-pat"]);
   if (t.code === 0 && t.stdout.trim()) {
     return `https://x-access-token:${t.stdout.trim()}@github.com/mishicomco/${app}.git`;
   }
