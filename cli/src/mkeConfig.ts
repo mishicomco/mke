@@ -18,6 +18,18 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+  RAMA_NAMESPACE,
+  RAMA_HOST_SUFFIX,
+  RAMA_RUNNER_IMAGE,
+  slugFeature,
+  ramaName,
+  ramaHost,
+} from "@mishicomco/rama-receta";
+
+// slug/nombres/host de ramas viven en @mishicomco/rama-receta (dueño ÚNICO de la
+// receta, compartido con Mishi Studio). Se re-exportan para no romper importadores.
+export { slugFeature, ramaName, ramaHost };
 
 export interface EnvSpec {
   /** contexto kubectl */
@@ -98,11 +110,12 @@ export const RAMA = {
   cluster: PREVIEW.cluster,
   tunnelName: PREVIEW.tunnelName,
   zoneId: PREVIEW.zoneId,
-  namespace: "ramas",
+  // ns / sufijo / imagen los DUEÑA la receta compartida (@mishicomco/rama-receta).
+  namespace: RAMA_NAMESPACE,
   /** sufijo público: `<app>-<slug(rama)>-feat.mishi.com.co`. */
-  hostSuffix: "-feat",
+  hostSuffix: RAMA_HOST_SUFFIX,
   /** imagen genérica del runner (ver images/rama-runner). */
-  runnerImage: "mke-rama-runner:node22",
+  runnerImage: RAMA_RUNNER_IMAGE,
 } as const;
 
 /**
@@ -114,49 +127,11 @@ export function previewHost(nombre: string): string {
 }
 
 /**
- * nombre de una rama encendida: `<app>-<slug(rama)>`, saneado y recortado a un
- * límite seguro para nombres de k8s y labels DNS (un segmento del host va hasta
- * 63; dejamos margen para el sufijo `-feat`). Sirve de nombre de los recursos y
- * de prefijo del host.
- */
-export function ramaName(app: string, rama: string): string {
-  const s = `${app}-${slugFeature(rama)}`
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 50)
-    .replace(/^-+|-+$/g, "");
-  if (!s) throw new Error(`no pude derivar un nombre de rama válido de '${app}'/'${rama}'`);
-  return s;
-}
-
-/** host público de una rama encendida: `<app>-<slug(rama)>-feat.mishi.com.co`. */
-export function ramaHost(app: string, rama: string): string {
-  return `${ramaName(app, rama)}${RAMA.hostSuffix}.${DOMAIN}`;
-}
-
-/**
  * nombre completo del preview: `<slugApp>-<feature>`. Si el feature ya empieza
  * con el slug (rama `bank-fix-x` con slug `bank`), no lo duplica.
  */
 export function previewName(slug: string, feature: string): string {
   return feature === slug || feature.startsWith(`${slug}-`) ? feature : `${slug}-${feature}`;
-}
-
-/**
- * slug de una rama git → nombre de feature apto para DNS/namespace:
- * minúsculas, `/` y no-alfanumérico → `-`, colapsa y recorta guiones, máx 40.
- * ej: `feat/Cobros-Omni` → `feat-cobros-omni`; `studio-escenarios` igual.
- */
-export function slugFeature(rama: string): string {
-  const s = rama
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40)
-    .replace(/^-+|-+$/g, "");
-  if (!s) throw new Error(`no pude derivar un feature válido de la rama '${rama}'`);
-  return s;
 }
 
 /** host público por convención; el id interno del app puede diferir del subdominio. */

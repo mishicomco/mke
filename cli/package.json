@@ -11,6 +11,9 @@
     "lint": "tsc --noEmit",
     "test": "node --import tsx --test \"src/**/*.test.ts\""
   },
+  "dependencies": {
+    "@mishicomco/rama-receta": "file:../packages/rama-receta"
+  },
   "devDependencies": {
     "@types/node": "^22.10.5",
     "tsx": "^4.19.2",

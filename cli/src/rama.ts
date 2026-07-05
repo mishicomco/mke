@@ -21,7 +21,8 @@
 // + Deployment + Service + Ingress, todos con nombre `<app>-<slug(rama)>` y el
 // label `mke.rama/name` para un borrado limpio. Host `<...>-feat.mishi.com.co`.
 
-import { RAMA, ramaHost, ramaName, slugFeature } from "./mkeConfig.js";
+import { RAMA, ramaHost, ramaName } from "./mkeConfig.js";
+import { manifiestosRama } from "@mishicomco/rama-receta";
 import { deleteRecordsByName } from "./cf.js";
 import { run, spawnStream, ok, bad, warn, info, dim } from "./sh.js";
 
@@ -46,236 +47,13 @@ export interface RamaLsOpts {
   json?: boolean;
 }
 
-// ─── scripts embebidos (van a un ConfigMap; el pod los ejecuta) ──────────────
+// La receta (manifiestos PUROS + slug/nombres/host) vive en @mishicomco/rama-receta,
+// compartida con Mishi Studio. Acá solo la serializamos a un List JSON para kubectl.
 
-/** initContainer: clona la rama, instala y construye el front. */
-const PREPARE_SH = `#!/bin/sh
-set -eu
-echo "[rama] preparando $APP@$RAMA"
-cd /workspace
-if [ ! -d repo/.git ]; then
-  git clone --depth 1 --branch "$RAMA" "$REPO_URL" repo
-fi
-cd repo
-echo "[rama] npm install"
-npm install --no-audit --no-fund
-echo "[rama] build (turbo: contract → front, orden de dependencias)"
-npm run build
-echo "[rama] preparado: $(git rev-parse --short HEAD)"
-`;
-
-/** backend: espera postgres, migra, siembra y corre dev. */
-const BOOT_BACKEND_SH = `#!/bin/sh
-set -eu
-cd /workspace/repo
-echo "[rama] esperando postgres…"
-until pg_isready -h 127.0.0.1 -p 5432 -U rama >/dev/null 2>&1; do sleep 2; done
-echo "[rama] migraciones"
-npm run db:migrate -w apps/backend || echo "[rama] db:migrate falló (sigo)"
-if npm run -w apps/backend 2>/dev/null | grep -q 'seed:escenario'; then
-  echo "[rama] seed escenario feliz"
-  npm run seed:escenario -w apps/backend -- feliz || echo "[rama] seed falló (sigo)"
-fi
-echo "[rama] backend dev en :$PORT"
-npm run dev -w apps/backend
-`;
-
-/** caddy: front estático + reverse-proxy /api y /health al backend (mismo origen). */
-const CADDYFILE = `:8080 {
-	handle /api/* {
-		reverse_proxy 127.0.0.1:{$PORT}
-	}
-	handle /health* {
-		reverse_proxy 127.0.0.1:{$PORT}
-	}
-	handle {
-		root * /workspace/repo/apps/frontend/dist
-		try_files {path} /index.html
-		file_server
-	}
-}
-`;
-
-// ─── generación de manifiestos (PURA y testeable) ────────────────────────────
-
-export interface ManifestInput {
-  app: string;
-  rama: string;
-  name: string;
-  host: string;
-  repoUrl: string;
-}
-
-const b64 = (s: string): string => Buffer.from(s, "utf8").toString("base64");
-const yamlBlock = (text: string, indent: string): string =>
-  text.split("\n").map((l) => `${indent}${l}`).join("\n");
-
-/** Namespace + Secret + ConfigMap + Deployment + Service + Ingress de la rama. */
-export function manifiestosRama(inp: ManifestInput): string {
-  const { app, rama, name, host, repoUrl } = inp;
-  const ramaSlug = slugFeature(rama);
-  const labelEntries = [
-    `mke.rama/managed: "true"`,
-    `mke.rama/name: ${name}`,
-    `mke.rama/app: ${app}`,
-    `mke.rama/rama: ${ramaSlug}`,
-  ];
-  const labelsAt = (indent: string): string => labelEntries.map((l) => `${indent}${l}`).join("\n");
-  const labels = labelsAt("    "); // metadata.labels de recursos de nivel raíz
-  const podLabels = labelsAt("        "); // spec.template.metadata.labels (más anidado)
-
-  return `apiVersion: v1
-kind: Namespace
-metadata:
-  name: ${NS}
-  labels:
-    app.kubernetes.io/part-of: mke-rama
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: ${name}-git
-  namespace: ${NS}
-  labels:
-${labels}
-type: Opaque
-data:
-  REPO_URL: ${b64(repoUrl)}
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ${name}-scripts
-  namespace: ${NS}
-  labels:
-${labels}
-data:
-  prepare.sh: |
-${yamlBlock(PREPARE_SH, "    ")}
-  boot-backend.sh: |
-${yamlBlock(BOOT_BACKEND_SH, "    ")}
-  Caddyfile: |
-${yamlBlock(CADDYFILE, "    ")}
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ${name}
-  namespace: ${NS}
-  labels:
-${labels}
-spec:
-  replicas: 1
-  # la rama es efímera y clona en cada arranque: nunca dos pods a la vez.
-  strategy: { type: Recreate }
-  selector:
-    matchLabels:
-      app: ${name}
-  template:
-    metadata:
-      labels:
-        app: ${name}
-${podLabels}
-    spec:
-      securityContext:
-        fsGroup: 1000
-      initContainers:
-        - name: preparar
-          image: ${RAMA.runnerImage}
-          imagePullPolicy: IfNotPresent
-          command: ["sh", "/rama/prepare.sh"]
-          env:
-            - { name: APP, value: "${app}" }
-            - { name: RAMA, value: "${rama}" }
-            - name: REPO_URL
-              valueFrom: { secretKeyRef: { name: ${name}-git, key: REPO_URL } }
-          volumeMounts:
-            - { name: workspace, mountPath: /workspace }
-            - { name: scripts, mountPath: /rama }
-      containers:
-        - name: postgres
-          image: postgres:16-alpine
-          env:
-            - { name: POSTGRES_USER, value: "rama" }
-            - { name: POSTGRES_PASSWORD, value: "rama" }
-            - { name: POSTGRES_DB, value: "rama" }
-            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
-          ports: [{ containerPort: 5432 }]
-          readinessProbe:
-            exec: { command: ["pg_isready", "-U", "rama", "-d", "rama"] }
-            periodSeconds: 3
-            failureThreshold: 40
-          volumeMounts:
-            - { name: pgdata, mountPath: /var/lib/postgresql/data }
-        - name: backend
-          image: ${RAMA.runnerImage}
-          imagePullPolicy: IfNotPresent
-          command: ["sh", "/rama/boot-backend.sh"]
-          env:
-            - { name: APP, value: "${app}" }
-            - { name: RAMA, value: "${rama}" }
-            - { name: RAMA_ENCENDIDA, value: "true" }
-            - { name: NODE_ENV, value: "development" }
-            - { name: PORT, value: "3000" }
-            - { name: DATABASE_URL, value: "postgres://rama:rama@127.0.0.1:5432/rama" }
-          volumeMounts:
-            - { name: workspace, mountPath: /workspace }
-            - { name: scripts, mountPath: /rama }
-        - name: web
-          image: caddy:2-alpine
-          command: ["caddy", "run", "--config", "/rama/Caddyfile", "--adapter", "caddyfile"]
-          env:
-            - { name: PORT, value: "3000" }
-          ports: [{ containerPort: 8080 }]
-          readinessProbe:
-            httpGet: { path: /, port: 8080 }
-            periodSeconds: 5
-            failureThreshold: 60
-          volumeMounts:
-            - { name: workspace, mountPath: /workspace }
-            - { name: scripts, mountPath: /rama }
-      volumes:
-        - name: workspace
-          emptyDir: {}
-        - name: pgdata
-          emptyDir: {}
-        - name: scripts
-          configMap:
-            name: ${name}-scripts
-            defaultMode: 0755
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: ${name}
-  namespace: ${NS}
-  labels:
-${labels}
-spec:
-  selector:
-    app: ${name}
-  ports:
-    - { port: 80, targetPort: 8080 }
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: ${name}
-  namespace: ${NS}
-  labels:
-${labels}
-spec:
-  rules:
-    - host: ${host}
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: ${name}
-                port: { number: 80 }
-`;
+/** Serializa los manifiestos de la receta a un stream aplicable por `kubectl -f -`. */
+function manifiestosParaKubectl(app: string, rama: string, repoUrl: string): string {
+  const items = manifiestosRama({ app, rama, repoUrl, imagen: RAMA.runnerImage });
+  return JSON.stringify({ apiVersion: "v1", kind: "List", items }, null, 2);
 }
 
 // ─── túnel / imagen del runner ───────────────────────────────────────────────
@@ -333,10 +111,10 @@ export async function ramaUp(app: string, rama: string, imagesDir: string, opts:
   const host = ramaHost(app, rama);
   const url = `https://${host}`;
   const repoUrl = await resolveRepoUrl(app, opts.repoUrl, opts.dryRun === true);
-  const yaml = manifiestosRama({ app, rama, name, host, repoUrl });
+  const manifiestos = manifiestosParaKubectl(app, rama, repoUrl);
 
   if (opts.dryRun) {
-    console.log(yaml);
+    console.log(manifiestos);
     return;
   }
 
@@ -351,7 +129,7 @@ export async function ramaUp(app: string, rama: string, imagesDir: string, opts:
 
   // 1) imagen del runner + apply (idempotente; re-sincroniza si ya existe)
   await ensureRunnerImage(imagesDir);
-  const apply = await run("kubectl", ["--context", CTX, "apply", "-f", "-"], yaml);
+  const apply = await run("kubectl", ["--context", CTX, "apply", "-f", "-"], manifiestos);
   if (apply.code !== 0) throw new Error(`apply falló: ${apply.stderr || apply.stdout}`);
   if (!opts.json) console.log(ok(apply.stdout.split("\n").join(" · ")));
 
