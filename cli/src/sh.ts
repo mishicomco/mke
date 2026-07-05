@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -29,6 +29,35 @@ export async function run(cmd: string, args: string[], input?: string): Promise<
       stderr: (e.stderr ?? e.message ?? "").trim(),
     };
   }
+}
+
+/**
+ * Corre un comando streameando su salida línea a línea (stdout+stderr) al
+ * callback. Nunca lanza: resuelve con el exit code. Para narrar procesos
+ * largos en vivo (p.ej. los logs del init de un pod de rama).
+ */
+export function spawnStream(
+  cmd: string,
+  args: string[],
+  onLinea: (linea: string) => void,
+): Promise<number> {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args);
+    let buf = "";
+    const comer = (d: Buffer) => {
+      buf += d.toString();
+      const lineas = buf.split("\n");
+      buf = lineas.pop() ?? "";
+      for (const l of lineas) if (l.trim()) onLinea(l);
+    };
+    child.stdout?.on("data", comer);
+    child.stderr?.on("data", comer);
+    child.on("error", () => resolve(1));
+    child.on("close", (code) => {
+      if (buf.trim()) onLinea(buf);
+      resolve(code ?? 1);
+    });
+  });
 }
 
 // pintar

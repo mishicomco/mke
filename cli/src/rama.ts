@@ -23,7 +23,7 @@
 
 import { RAMA, ramaHost, ramaName, slugFeature } from "./mkeConfig.js";
 import { deleteRecordsByName } from "./cf.js";
-import { run, ok, bad, warn, info, dim } from "./sh.js";
+import { run, spawnStream, ok, bad, warn, info, dim } from "./sh.js";
 
 const CTX = RAMA.context;
 const NS = RAMA.namespace;
@@ -355,9 +355,33 @@ export async function ramaUp(app: string, rama: string, imagesDir: string, opts:
   if (apply.code !== 0) throw new Error(`apply falló: ${apply.stderr || apply.stdout}`);
   if (!opts.json) console.log(ok(apply.stdout.split("\n").join(" · ")));
 
-  // 2) esperá el rollout (clone+install+build tardan; timeout generoso)
+  // 2) esperá el rollout (clone+install+build tardan) NARRANDO: mientras el pod
+  // converge, streamea los logs del initContainer `preparar` (el clone/install/
+  // build en vivo) para que encender no sea un silencio de minutos. El stream es
+  // best-effort: si el pod aún no existe se reintenta; termina con el rollout.
   if (!opts.json) console.log(info("esperando el pod (clone + npm install + build)…"));
-  const st = await run("kubectl", ["--context", CTX, "-n", NS, "rollout", "status", `deploy/${name}`, "--timeout=600s"]);
+  const rollout = run("kubectl", ["--context", CTX, "-n", NS, "rollout", "status", `deploy/${name}`, "--timeout=600s"]);
+  let stopLogs = false;
+  const narrar = (async () => {
+    if (opts.json) return;
+    while (!stopLogs) {
+      const logs = spawnStream(
+        "kubectl",
+        ["--context", CTX, "-n", NS, "logs", "-f", `deploy/${name}`, "-c", "preparar", "--pod-running-timeout=20s"],
+        (linea) => {
+          // ruido del arranque/WSL que no es narración: fuera
+          if (/waiting to start: PodInitializing|fsnotify watcher/.test(linea)) return;
+          console.log(dim(`  │ ${linea}`));
+        },
+      );
+      const code = await logs;
+      if (stopLogs || code === 0) break; // stream cerró naturalmente (init terminó)
+      await new Promise((r) => setTimeout(r, 2000)); // pod aún no existe: reintenta
+    }
+  })();
+  const st = await rollout;
+  stopLogs = true;
+  await narrar;
   const listo = st.code === 0;
   if (!opts.json) console.log(listo ? ok(st.stdout.split("\n").pop() ?? "pod listo") : warn(`el pod no convergió aún: ${st.stderr || st.stdout}`));
 
