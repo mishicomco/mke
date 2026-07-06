@@ -276,7 +276,7 @@ export async function devRama(app: string, rama: string, opts: DevMutOpts): Prom
   if (!opts.json) console.log(info(`dev ${dim(name)}: checkout ${dim(rama)} + reset DB (dentro del pod)`));
   const r = await run("kubectl", [
     "--context", CTX, "-n", NS, "exec", `deploy/${name}`, "-c", "dev", "--",
-    "sh", "/dev/rama.sh", rama,
+    "sh", "/mke/rama.sh", rama,
   ]);
   if (!opts.json) {
     for (const l of (r.stdout || r.stderr).split("\n")) if (l.trim()) console.log(dim(`  │ ${l}`));
@@ -299,7 +299,7 @@ export async function devPull(app: string, opts: DevMutOpts): Promise<void> {
   if (!opts.json) console.log(info(`dev ${dim(name)}: pull de la rama activa`));
   const r = await run("kubectl", [
     "--context", CTX, "-n", NS, "exec", `deploy/${name}`, "-c", "dev", "--",
-    "sh", "/dev/pull.sh",
+    "sh", "/mke/pull.sh",
   ]);
   if (!opts.json) {
     for (const l of (r.stdout || r.stderr).split("\n")) if (l.trim()) console.log(dim(`  │ ${l}`));

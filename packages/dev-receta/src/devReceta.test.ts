@@ -99,7 +99,7 @@ test("manifiestosDev: anatomía del pod de iteración (dev real + caddy + postgr
 
   // el contenedor dev arranca boot-dev.sh y trae PREVIEW=true + DATABASE_URL loopback
   const dev = podSpec.containers.find((c: any) => c.name === "dev");
-  assert.deepEqual(dev.command, ["sh", "/dev/boot-dev.sh"]);
+  assert.deepEqual(dev.command, ["sh", "/mke/boot-dev.sh"]);
   assert.ok(
     dev.env.some((e: any) => e.name === "PREVIEW" && e.value === "true"),
     "PREVIEW=true siempre",
@@ -110,6 +110,23 @@ test("manifiestosDev: anatomía del pod de iteración (dev real + caddy + postgr
     ),
     "DATABASE_URL al sidecar loopback",
   );
+});
+
+test("manifiestosDev: NINGÚN mountPath bajo /dev (pisa el fs de dispositivos: runc revienta con Init:RunContainerError)", () => {
+  const ms = manifiestosDev({ app: "mishi-bank", repoUrl: "https://x/y.git" });
+  const podSpec = (porKind(ms, "Deployment").spec as any).template.spec;
+  const contenedores = [...(podSpec.initContainers ?? []), ...(podSpec.containers ?? [])];
+  for (const c of contenedores) {
+    for (const vm of c.volumeMounts ?? []) {
+      assert.ok(
+        vm.mountPath !== "/dev" && !String(vm.mountPath).startsWith("/dev/"),
+        `${c.name} monta en ${vm.mountPath} (prohibido /dev)`,
+      );
+    }
+  }
+  // los scripts viven en /mke
+  const dev = contenedores.find((c: any) => c.name === "dev");
+  assert.ok(dev.volumeMounts.some((v: any) => v.mountPath === "/mke"), "scripts en /mke");
 });
 
 test("manifiestosDev: emptyDir para workspace y pgdata (efímero); imagen override", () => {

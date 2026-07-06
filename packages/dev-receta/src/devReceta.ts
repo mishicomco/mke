@@ -176,12 +176,12 @@ RAMA_ACTIVA=$(cat /workspace/.dev/rama 2>/dev/null || echo "$RAMA")
 echo "[dev] esperando postgres…"
 until pg_isready -h 127.0.0.1 -p 5432 -U dev >/dev/null 2>&1; do sleep 2; done
 
-sh /dev/reset-db.sh || echo "[dev] reset-db falló (sigo)"
+sh /mke/reset-db.sh || echo "[dev] reset-db falló (sigo)"
 
 # config de vite del modo dev (la posee la receta) → al frontend del app
 FRONT=apps/frontend
 [ -d "$FRONT" ] || FRONT=.
-cp /dev/vite.dev.mke.config.ts "$FRONT/vite.dev.mke.config.ts"
+cp /mke/vite.dev.mke.config.ts "$FRONT/vite.dev.mke.config.ts"
 
 # backend en modo watch (tsx). Corre por-workspace (no turbo) para no acoplar el
 # arranque a un script 'dev' opaco: el pod controla puertos y topología del proxy.
@@ -197,7 +197,7 @@ echo "[dev] vite dev en :$VITE_PORT"
 # poll opcional: cada POLL_SECONDS trae origin/<rama activa> (semántica de pull).
 if [ "\${POLL_SECONDS:-0}" -gt 0 ] 2>/dev/null; then
   echo "[dev] poll cada \${POLL_SECONDS}s sobre $RAMA_ACTIVA"
-  sh /dev/poll.sh &
+  sh /mke/poll.sh &
 fi
 
 wait
@@ -220,7 +220,7 @@ if [ "$LOCK_ANTES" != "$LOCK_DESPUES" ]; then
   echo "[dev] lockfile cambió → npm install"
   npm install --no-audit --no-fund
 fi
-sh /dev/reset-db.sh
+sh /mke/reset-db.sh
 echo "[dev] rama activa: $NUEVA @ $(git rev-parse --short HEAD)"
 `;
 
@@ -399,7 +399,7 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
               name: "preparar",
               image: imagen,
               imagePullPolicy: "IfNotPresent",
-              command: ["sh", "/dev/prepare.sh"],
+              command: ["sh", "/mke/prepare.sh"],
               env: [
                 { name: "APP", value: app },
                 { name: "RAMA", value: rama },
@@ -410,7 +410,7 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
               ],
               volumeMounts: [
                 { name: "workspace", mountPath: "/workspace" },
-                { name: "scripts", mountPath: "/dev" },
+                { name: "scripts", mountPath: "/mke" },
               ],
             },
           ],
@@ -436,24 +436,24 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
               name: "dev",
               image: imagen,
               imagePullPolicy: "IfNotPresent",
-              command: ["sh", "/dev/boot-dev.sh"],
+              command: ["sh", "/mke/boot-dev.sh"],
               env: devEnv,
               volumeMounts: [
                 { name: "workspace", mountPath: "/workspace" },
-                { name: "scripts", mountPath: "/dev" },
+                { name: "scripts", mountPath: "/mke" },
               ],
             },
             {
               name: "web",
               image: "caddy:2-alpine",
-              command: ["caddy", "run", "--config", "/dev/Caddyfile", "--adapter", "caddyfile"],
+              command: ["caddy", "run", "--config", "/mke/Caddyfile", "--adapter", "caddyfile"],
               ports: [{ containerPort: DEV_CADDY_PORT }],
               readinessProbe: {
                 httpGet: { path: "/", port: DEV_CADDY_PORT },
                 periodSeconds: 5,
                 failureThreshold: 120,
               },
-              volumeMounts: [{ name: "scripts", mountPath: "/dev" }],
+              volumeMounts: [{ name: "scripts", mountPath: "/mke" }],
             },
           ],
           volumes: [
