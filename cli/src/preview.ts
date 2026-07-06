@@ -22,23 +22,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appsRoot, PREVIEW, previewHost, previewName, slugFeature } from "./mkeConfig.js";
 import { previewApp, type PreviewApp, type SecretValue } from "./previewApps.js";
-import { deleteRecordsByName } from "./cf.js";
+import { deleteRecordsByName, tunnelTarget, upsertCname } from "./cf.js";
+import { previewTunnelUuid } from "./dns.js";
 import { run, ok, bad, warn, info, dim } from "./sh.js";
 
 const CTX = PREVIEW.context;
-
-/** UUID del túnel mke-preview (resuelto en runtime; bootstrap lo crea). */
-async function tunnelUuid(): Promise<string> {
-  const r = await run("cloudflared", ["tunnel", "list"]);
-  if (r.code !== 0) throw new Error(`cloudflared tunnel list falló: ${r.stderr}`);
-  for (const line of r.stdout.split("\n")) {
-    const cols = line.trim().split(/\s+/);
-    if (cols[1] === PREVIEW.tunnelName) return cols[0];
-  }
-  throw new Error(
-    `no existe el túnel '${PREVIEW.tunnelName}'. Corré primero: scripts/bootstrap-preview.sh`,
-  );
-}
 
 async function resolveSecret(v: SecretValue): Promise<string> {
   if (typeof v === "string") {
@@ -71,7 +59,7 @@ export async function previewUp(app: string, rama: string, opts: PreviewUpOpts):
   console.log(info(`preview ${dim(app)} · rama ${dim(rama)} · feature ${dim(feature)} → ${dim(host)}`));
 
   // 0) resolvé el túnel ANTES de trabajar (falla rápido si no hay bootstrap)
-  const uuid = await tunnelUuid();
+  const uuid = await previewTunnelUuid();
 
   // 1) worktree efímero de la rama (detached: no choca con ramas ya usadas)
   const wt = mkdtempSync(join(tmpdir(), `mke-pre-${feature}-`));
@@ -118,11 +106,14 @@ export async function previewUp(app: string, rama: string, opts: PreviewUpOpts):
     if (st.code !== 0) console.log(warn(`el backend no convergió aún: ${st.stderr || st.stdout}`));
     else console.log(ok(st.stdout.split("\n").pop() ?? "backend listo"));
 
-    // 7) DNS: CNAME <slugApp>-<feature>-pre -> túnel (UUID + overwrite, gana sobre el wildcard)
+    // 7) DNS: CNAME <slugApp>-<feature>-pre -> túnel (API; gana sobre el wildcard)
     console.log(info(`DNS: ${host} → túnel ${uuid}`));
-    const dns = await run("cloudflared", ["tunnel", "route", "dns", "--overwrite-dns", uuid, host]);
-    if (dns.code !== 0) console.log(warn(`cloudflared route dns: ${dns.stderr || dns.stdout}`));
-    else console.log(ok(`CNAME listo para ${host}`));
+    try {
+      const que = await upsertCname(host, tunnelTarget(uuid));
+      console.log(ok(que === "ok" ? `CNAME ya apuntaba bien (${host})` : `CNAME ${que} para ${host}`));
+    } catch (e) {
+      console.log(warn(`Cloudflare API: ${e instanceof Error ? e.message : String(e)}`));
+    }
 
     builtOk = true;
 

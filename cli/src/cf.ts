@@ -1,9 +1,9 @@
-// Helper mínimo de la API de Cloudflare para el ciclo de vida del DNS de previews.
+// Helper mínimo de la API de Cloudflare para el ciclo de vida del DNS de MKE.
 //
-// El CNAME lo CREA `cloudflared tunnel route dns` (usa el cert.pem, ver dns.ts),
-// pero cloudflared NO sabe BORRAR records. Por eso `mke preview down` limpia el
-// CNAME vía la API REST, autenticándose con el token `cloudflare-dns-api`
-// (mishi-secret, GPG) — nunca se imprime ni se pasa por argv.
+// TODO el DNS va por la API REST (token `cloudflare-dns-api` en mishi-secret,
+// GPG — nunca se imprime ni se pasa por argv). `cloudflared tunnel route dns`
+// quedó descartado: enruta al túnel equivocado, no sabe REPUNTAR un record
+// existente a otro túnel ni borrarlo. El upsert de acá sí hace las tres cosas.
 
 import { PREVIEW } from "./mkeConfig.js";
 import { run } from "./sh.js";
@@ -49,6 +49,35 @@ export async function findRecords(name: string): Promise<CfRecord[]> {
     `/zones/${PREVIEW.zoneId}/dns_records?name=${encodeURIComponent(name)}`,
   )) as CfRecord[];
   return result;
+}
+
+/** target CNAME de un túnel cloudflared. */
+export function tunnelTarget(uuid: string): string {
+  return `${uuid}.cfargotunnel.com`;
+}
+
+/**
+ * Crea o REPUNTA el CNAME `name` → `target` (proxied). Idempotente:
+ *  - ya apunta bien → no toca nada;
+ *  - existe apuntando a otro lado (p.ej. al túnel equivocado) → PATCH;
+ *  - no existe → POST.
+ * Si hay records duplicados con el mismo nombre, corrige el primero y borra el resto.
+ * Devuelve qué hizo, para narrar.
+ */
+export async function upsertCname(name: string, target: string): Promise<"ok" | "creado" | "repuntado"> {
+  const records = await findRecords(name);
+  const body = JSON.stringify({ type: "CNAME", name, content: target, proxied: true, ttl: 1 });
+  for (const extra of records.slice(1)) {
+    await cf(`/zones/${PREVIEW.zoneId}/dns_records/${extra.id}`, { method: "DELETE" });
+  }
+  const rec = records[0];
+  if (!rec) {
+    await cf(`/zones/${PREVIEW.zoneId}/dns_records`, { method: "POST", body });
+    return "creado";
+  }
+  if (rec.type === "CNAME" && rec.content === target) return "ok";
+  await cf(`/zones/${PREVIEW.zoneId}/dns_records/${rec.id}`, { method: "PATCH", body });
+  return "repuntado";
 }
 
 /**
