@@ -12,6 +12,7 @@
     "test": "node --import tsx --test \"src/**/*.test.ts\""
   },
   "dependencies": {
+    "@mishicomco/dev-receta": "file:../packages/dev-receta",
     "@mishicomco/rama-receta": "file:../packages/rama-receta"
   },
   "devDependencies": {

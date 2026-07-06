@@ -26,10 +26,19 @@ import {
   ramaName,
   ramaHost,
 } from "@mishicomco/rama-receta";
+import {
+  DEV_NAMESPACE,
+  DEV_HOST_SUFFIX,
+  DEV_RUNNER_IMAGE,
+  devName,
+  devHost,
+} from "@mishicomco/dev-receta";
 
 // slug/nombres/host de ramas viven en @mishicomco/rama-receta (dueño ÚNICO de la
 // receta, compartido con Mishi Studio). Se re-exportan para no romper importadores.
 export { slugFeature, ramaName, ramaHost };
+// nombres/host del pod de iteración viven en @mishicomco/dev-receta.
+export { devName, devHost };
 
 export interface EnvSpec {
   /** contexto kubectl */
@@ -116,6 +125,29 @@ export const RAMA = {
   hostSuffix: RAMA_HOST_SUFFIX,
   /** imagen genérica del runner (ver images/rama-runner). */
   runnerImage: RAMA_RUNNER_IMAGE,
+} as const;
+
+/**
+ * DEV del harness v2 (verbo `mke dev`) — el "pod de ITERACIÓN". Reusa el MISMO
+ * clúster/túnel de previews (mke-preview; jamás mke-prod), pero es un mecanismo
+ * distinto de `rama`:
+ *  - pod DURADERO por app (no una foto): corre la app en MODO DEV REAL (vite dev
+ *    con HMR + tsx watch) sobre un clone del repo; cambiar de rama / traer
+ *    cambios = git DENTRO del pod (checkout/reset) sin recrear el pod.
+ *  - ns PROPIO `dev` (separado de `ramas`) para que `dev ls`/`dev down` nunca
+ *    pisen recursos de rama, y viceversa.
+ *  - Host `<app>-dev-feat.mishi.com.co` (o `<app>-<nombre>-dev-feat…` con
+ *    --nombre para varios servidores de la misma app). El sufijo `-feat` cae bajo
+ *    el guardarraíl de DNS efímero del CLI (borrado seguro).
+ */
+export const DEV = {
+  context: PREVIEW.context,
+  cluster: PREVIEW.cluster,
+  tunnelName: PREVIEW.tunnelName,
+  zoneId: PREVIEW.zoneId,
+  namespace: DEV_NAMESPACE,
+  hostSuffix: DEV_HOST_SUFFIX,
+  runnerImage: DEV_RUNNER_IMAGE,
 } as const;
 
 /**

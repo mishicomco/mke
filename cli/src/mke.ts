@@ -13,6 +13,7 @@ import { appInit } from "./appInit.js";
 import { ls } from "./ls.js";
 import { previewUp, previewDown, previewLs } from "./preview.js";
 import { ramaUp, ramaDown, ramaLs } from "./rama.js";
+import { devUp, devRama, devPull, devEstado, devLs, devDown, parseEnvExtra } from "./dev.js";
 import { hostFor } from "./mkeConfig.js";
 import { fileURLToPath } from "node:url";
 
@@ -62,6 +63,13 @@ const HELP = `mke — CLI de plataforma MKE
   mke rama down <app> <rama>                      apaga la rama: borra deployment/service/ingress/configmap/secret + CNAME (idempotente)
         opciones: --json  --sin-dns
   mke rama ls [<app>]                             lista las ramas encendidas (edad/estado)  · opción: --json
+  mke dev up <app> [<rama>]                        enciende el SERVIDOR DE ITERACIÓN (pod DURADERO por app): clona el repo y corre la app en modo dev real (vite dev HMR + tsx watch); rama default main; CNAME <app>-dev-feat
+        opciones: --nombre <n> (varios por app)  --poll <s> (auto-refresca al detectar push)  --seed "<cmd>"  --env K1=V1,K2=V2 (env extra por app)  --json  --dry-run  --sin-dns  --repo-url <url>
+  mke dev rama <app> <rama>                         git checkout <rama> DENTRO del pod + reset de la DB efímera  · opciones: --nombre <n>  --json
+  mke dev pull <app>                                trae los cambios de la rama activa YA (git reset --hard; tsx/vite recogen solos)  · opciones: --nombre <n>  --json
+  mke dev estado <app>                              rama activa + sha vivo + edad + host  · opciones: --nombre <n>  --json
+  mke dev ls [<app>]                                lista los servidores de iteración (rama/edad/estado)  · opción: --json
+  mke dev down <app>                                apaga el servidor: borra deployment/service/ingress/configmap/secret + CNAME  · opciones: --nombre <n>  --json  --sin-dns
   mke dns <host|app> <env>                       crea/repara/REPUNTA el CNAME al tunnel del entorno vía API Cloudflare (env: local|stage|prod|preview; con preview pasá el host completo)
   mke doctor <host> [path]                       diagnostica la cadena pública y dice qué capa está rota
   mke ls [env]                                    inventario de ingresses (host → servicio) por entorno
@@ -171,6 +179,46 @@ async function main() {
         await ramaLs(rargs[0], { json: flags.json === true });
       } else {
         return fail("uso: mke rama up|down|ls");
+      }
+      break;
+    }
+    case "dev": {
+      const [action, ...dargs] = positional;
+      const imagesDir = fileURLToPath(new URL("../../images/dev-runner", import.meta.url));
+      const nombre = typeof flags.nombre === "string" ? flags.nombre : undefined;
+      if (action === "up") {
+        const [app, rama] = dargs;
+        if (!app) return fail("uso: mke dev up <app> [<rama>] [--nombre n] [--poll s] [--seed cmd] [--env K=V,...] [--json] [--dry-run] [--sin-dns] [--repo-url url]");
+        await devUp(app, rama ?? "main", imagesDir, {
+          json: flags.json === true,
+          dryRun: flags["dry-run"] === true,
+          sinDns: flags["sin-dns"] === true,
+          repoUrl: typeof flags["repo-url"] === "string" ? flags["repo-url"] : undefined,
+          nombre,
+          poll: typeof flags.poll === "string" ? Number(flags.poll) : undefined,
+          seed: typeof flags.seed === "string" ? flags.seed : undefined,
+          envExtra: parseEnvExtra(typeof flags.env === "string" ? flags.env : undefined),
+        });
+      } else if (action === "rama") {
+        const [app, rama] = dargs;
+        if (!app || !rama) return fail("uso: mke dev rama <app> <rama> [--nombre n] [--json]");
+        await devRama(app, rama, { json: flags.json === true, nombre });
+      } else if (action === "pull") {
+        const [app] = dargs;
+        if (!app) return fail("uso: mke dev pull <app> [--nombre n] [--json]");
+        await devPull(app, { json: flags.json === true, nombre });
+      } else if (action === "estado") {
+        const [app] = dargs;
+        if (!app) return fail("uso: mke dev estado <app> [--nombre n] [--json]");
+        await devEstado(app, { json: flags.json === true, nombre });
+      } else if (action === "ls" || action === undefined) {
+        await devLs(dargs[0], { json: flags.json === true });
+      } else if (action === "down") {
+        const [app] = dargs;
+        if (!app) return fail("uso: mke dev down <app> [--nombre n] [--json] [--sin-dns]");
+        await devDown(app, { json: flags.json === true, sinDns: flags["sin-dns"] === true, nombre });
+      } else {
+        return fail("uso: mke dev up|rama|pull|estado|ls|down");
       }
       break;
     }
