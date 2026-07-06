@@ -367,6 +367,15 @@ export interface DevRecetaInput {
    * annotation `mke.dev/live: "true"` para que Studio lo DERIVE. Declarativo: es
    * un flag de `up` — re-aplicar sin `--live` lo apaga (vuelve al modo normal). */
   live?: boolean;
+  /** token de LECTURA de GitHub Packages (opcional). Toda app estándar depende
+   * de paquetes privados @mishicomco (el template usa el SDK connect) y su
+   * .npmrc autentica con `${NODE_AUTH_TOKEN}` — sin él, el npm install del init
+   * muere con 401. Va en un Secret propio (`<name>-npm`, key NODE_AUTH_TOKEN) y
+   * se inyecta como env `NODE_AUTH_TOKEN` en el init `preparar` Y en el
+   * contenedor dev (rama.sh también corre npm install al cambiar de rama).
+   * NUNCA en claro en el Deployment. Si no llega, no se crea nada (apps sin
+   * paquetes privados no lo necesitan). */
+  npmToken?: string;
 }
 
 export type K8sManifest = Record<string, unknown>;
@@ -432,6 +441,27 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
   // OJO: el env explícito de la receta (PORT, PREVIEW, DATABASE_URL, …) GANA
   // sobre envFrom; no dupliques claves que la receta ya posee en envExtra.
   const envFrom = hayEnvExtra ? [{ secretRef: { name: `${name}-env` } }] : undefined;
+
+  // token de GitHub Packages → Secret propio (`<name>-npm`) + env NODE_AUTH_TOKEN
+  // por secretKeyRef en preparar Y dev (rama.sh corre npm install al cambiar de
+  // rama). Opcional: sin token no se crea nada.
+  const npmSecretObj: K8sManifest | null = inp.npmToken
+    ? {
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: { name: `${name}-npm`, namespace, labels },
+        type: "Opaque",
+        data: { NODE_AUTH_TOKEN: b64(inp.npmToken) },
+      }
+    : null;
+  const npmTokenEnv: { name: string; valueFrom: unknown }[] = inp.npmToken
+    ? [
+        {
+          name: "NODE_AUTH_TOKEN",
+          valueFrom: { secretKeyRef: { name: `${name}-npm`, key: "NODE_AUTH_TOKEN" } },
+        },
+      ]
+    : [];
 
   const configMapObj: K8sManifest = {
     apiVersion: "v1",
@@ -506,6 +536,7 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
                   name: "REPO_URL",
                   valueFrom: { secretKeyRef: { name: `${name}-git`, key: "REPO_URL" } },
                 },
+                ...npmTokenEnv,
               ],
               volumeMounts: [
                 { name: "workspace", mountPath: "/workspace" },
@@ -537,7 +568,9 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
               imagePullPolicy: "IfNotPresent",
               command: ["sh", "/mke/boot-dev.sh"],
               ...(envFrom ? { envFrom } : {}),
-              env: devEnv,
+              // NODE_AUTH_TOKEN también acá: rama.sh corre npm install si el
+              // lockfile cambió, y hereda el env de este contenedor.
+              env: [...devEnv, ...npmTokenEnv],
               volumeMounts: [
                 { name: "workspace", mountPath: "/workspace" },
                 { name: "scripts", mountPath: "/mke" },
@@ -602,6 +635,7 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
     namespaceObj,
     secretObj,
     ...(envSecretObj ? [envSecretObj] : []),
+    ...(npmSecretObj ? [npmSecretObj] : []),
     configMapObj,
     deploymentObj,
     serviceObj,

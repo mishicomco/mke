@@ -257,6 +257,57 @@ test("manifiestosDev: sin envExtra NO hay Secret <name>-env ni envFrom", () => {
   }
 });
 
+test("manifiestosDev: npmToken → Secret <name>-npm + env NODE_AUTH_TOKEN en preparar Y dev, nunca en claro", () => {
+  const ms = manifiestosDev({
+    app: "mishi-bank",
+    repoUrl: "https://x/y.git",
+    npmToken: "ghp_packages_secreto",
+  });
+  // Secret propio con el token base64
+  const npmSecret = ms.find(
+    (m) => m.kind === "Secret" && (m.metadata as any).name === "mishi-bank-dev-npm",
+  ) as any;
+  assert.ok(npmSecret, "Secret <name>-npm presente");
+  assert.equal(
+    Buffer.from(npmSecret.data.NODE_AUTH_TOKEN, "base64").toString("utf8"),
+    "ghp_packages_secreto",
+  );
+  assert.equal(npmSecret.metadata.labels["mke.dev/name"], "mishi-bank-dev", "label de borrado");
+
+  // env por secretKeyRef en el init preparar (npm install del clone) Y en dev
+  // (rama.sh corre npm install al cambiar de rama)
+  const podSpec = (porKind(ms, "Deployment").spec as any).template.spec;
+  const preparar = podSpec.initContainers.find((c: any) => c.name === "preparar");
+  const dev = podSpec.containers.find((c: any) => c.name === "dev");
+  for (const c of [preparar, dev]) {
+    const e = c.env.find((x: any) => x.name === "NODE_AUTH_TOKEN");
+    assert.ok(e, `${c.name} lleva NODE_AUTH_TOKEN`);
+    assert.deepEqual(
+      e.valueFrom,
+      { secretKeyRef: { name: "mishi-bank-dev-npm", key: "NODE_AUTH_TOKEN" } },
+      `${c.name} lo toma del Secret, no en claro`,
+    );
+  }
+
+  // el token jamás en claro en el Deployment
+  assert.ok(!JSON.stringify(porKind(ms, "Deployment")).includes("ghp_packages_secreto"));
+});
+
+test("manifiestosDev: sin npmToken NO hay Secret <name>-npm ni env NODE_AUTH_TOKEN", () => {
+  const ms = manifiestosDev({ app: "polla", repoUrl: "https://x/y.git" });
+  assert.ok(
+    !ms.some((m) => m.kind === "Secret" && String((m.metadata as any).name).endsWith("-npm")),
+    "sin Secret -npm",
+  );
+  const podSpec = (porKind(ms, "Deployment").spec as any).template.spec;
+  for (const c of [...podSpec.initContainers, ...podSpec.containers]) {
+    assert.ok(
+      !(c.env ?? []).some((e: any) => e.name === "NODE_AUTH_TOKEN"),
+      `${c.name} sin NODE_AUTH_TOKEN`,
+    );
+  }
+});
+
 test("manifiestosDev: --nombre da recursos y host distintos (varios por app)", () => {
   const ms = manifiestosDev({ app: "mishi-bank", nombre: "azul", repoUrl: "https://x/y.git" });
   assert.equal((porKind(ms, "Deployment").metadata as any).name, "mishi-bank-azul-dev");

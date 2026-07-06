@@ -67,7 +67,13 @@ export interface DevLsOpts {
 
 // ─── serialización de la receta ──────────────────────────────────────────────
 
-function manifiestosParaKubectl(opts: DevUpOpts, app: string, rama: string, repoUrl: string): string {
+function manifiestosParaKubectl(
+  opts: DevUpOpts,
+  app: string,
+  rama: string,
+  repoUrl: string,
+  npmToken?: string,
+): string {
   const items = manifiestosDev({
     app,
     rama,
@@ -78,6 +84,7 @@ function manifiestosParaKubectl(opts: DevUpOpts, app: string, rama: string, repo
     seedCmd: opts.seed,
     envExtra: opts.envExtra,
     live: opts.live,
+    npmToken,
   });
   return JSON.stringify({ apiVersion: "v1", kind: "List", items }, null, 2);
 }
@@ -107,6 +114,18 @@ async function resolveRepoUrl(app: string, override: string | undefined, dryRun:
     return `https://x-access-token:${t.stdout.trim()}@github.com/mishicomco/${app}.git`;
   }
   return base;
+}
+
+/** token de LECTURA de GitHub Packages (npm.pkg.github.com). Las apps estándar
+ * dependen de paquetes privados @mishicomco (SDK connect) y su .npmrc autentica
+ * con `${NODE_AUTH_TOKEN}` — sin él, el npm install del pod muere con 401.
+ * FAIL-SOFT: si el secreto no existe, undefined y seguimos (apps sin paquetes
+ * privados no lo necesitan). NUNCA se imprime; viaja base64 en un Secret k8s. */
+async function resolveNpmToken(dryRun: boolean): Promise<string | undefined> {
+  if (dryRun) return undefined; // en dry-run nunca metemos el token (se imprime el List)
+  const t = await run("mishi-secret", ["get", "mishi-gh-read-packages-pat"]);
+  const token = t.stdout.trim();
+  return t.code === 0 && token ? token : undefined;
 }
 
 // ─── fail-fast del rollout ───────────────────────────────────────────────────
@@ -173,7 +192,8 @@ export async function devUp(app: string, rama: string, imagesDir: string, opts: 
   const host = devHost(app, opts.nombre);
   const url = `https://${host}`;
   const repoUrl = await resolveRepoUrl(app, opts.repoUrl, opts.dryRun === true);
-  const manifiestos = manifiestosParaKubectl(opts, app, rama, repoUrl);
+  const npmToken = await resolveNpmToken(opts.dryRun === true);
+  const manifiestos = manifiestosParaKubectl(opts, app, rama, repoUrl, npmToken);
 
   if (opts.dryRun) {
     console.log(manifiestos);
