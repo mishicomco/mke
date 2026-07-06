@@ -6,6 +6,7 @@ import {
   devHost,
   devServicioInterno,
   selectorDeDev,
+  devLiveBase,
   viteDevConfig,
   manifiestosDev,
   DEV_VITE_PORT,
@@ -55,6 +56,48 @@ test("viteDevConfig: hereda vite.config + host 0.0.0.0 + allowedHosts + HMR wss:
   assert.match(cfg, /allowedHosts: true/);
   assert.match(cfg, /hmr: \{ protocol: "wss", clientPort: 443 \}/, "HMR por wss:443");
   assert.match(cfg, new RegExp(`port: ${DEV_VITE_PORT}`), "el puerto de vite");
+});
+
+test("devLiveBase: prefijo /live/<app>/ del modo EMBED", () => {
+  assert.equal(devLiveBase("mishi-bank"), "/live/mishi-bank/");
+  assert.equal(devLiveBase("polla"), "/live/polla/");
+});
+
+test("viteDevConfig: sin viteBase NO fija base (modo normal)", () => {
+  const cfg = viteDevConfig(DEV_VITE_PORT);
+  assert.ok(!/\bbase:/.test(cfg), "sin base en modo normal");
+});
+
+test("viteDevConfig: con viteBase fija base (modo EMBED) sin tocar hmr", () => {
+  const cfg = viteDevConfig(DEV_VITE_PORT, "/live/mishi-bank/");
+  assert.match(cfg, /base: "\/live\/mishi-bank\/"/, "base al prefijo live");
+  // hmr sigue siendo wss:443 (el path del ws sale del base solo — no lo pisamos)
+  assert.match(cfg, /hmr: \{ protocol: "wss", clientPort: 443 \}/);
+});
+
+test("manifiestosDev: modo EMBED (--live) → vite base, redirect de raíz y annotation", () => {
+  const ms = manifiestosDev({ app: "mishi-bank", repoUrl: "https://x/y.git", live: true });
+  const cm = porKind(ms, "ConfigMap") as any;
+  // vite sirve bajo /live/mishi-bank/
+  assert.match(cm.data["vite.dev.mke.config.ts"], /base: "\/live\/mishi-bank\/"/);
+  // caddy redirige SOLO la raíz exacta a la base; el resto sigue yendo a vite
+  assert.match(cm.data.Caddyfile, /handle \/ \{/, "redirect solo de la raíz exacta");
+  assert.match(cm.data.Caddyfile, /redir \/live\/mishi-bank\/ 302/, "redir a la base live");
+  assert.match(cm.data.Caddyfile, /reverse_proxy 127\.0\.0\.1:5173/, "el resto a vite");
+  // NO duplicamos el proxy de la app (^/live/[^/]+/api → backend): eso es del app
+  assert.ok(!/live.*api/.test(cm.data.Caddyfile), "caddy no maneja /live/<app>/api");
+  // annotation para que Studio lo derive
+  const ann = (porKind(ms, "Deployment").metadata as any).annotations;
+  assert.equal(ann["mke.dev/live"], "true");
+});
+
+test("manifiestosDev: sin --live NO hay base, ni redirect, ni annotation live", () => {
+  const ms = manifiestosDev({ app: "mishi-bank", repoUrl: "https://x/y.git" });
+  const cm = porKind(ms, "ConfigMap") as any;
+  assert.ok(!/\bbase:/.test(cm.data["vite.dev.mke.config.ts"]), "sin base");
+  assert.ok(!/redir /.test(cm.data.Caddyfile), "sin redirect");
+  const ann = (porKind(ms, "Deployment").metadata as any).annotations;
+  assert.ok(!("mke.dev/live" in ann), "sin annotation live");
 });
 
 test("manifiestosDev: recursos esperados, ns dev, nombre y host", () => {

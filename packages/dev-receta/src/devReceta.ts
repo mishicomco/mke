@@ -97,6 +97,15 @@ export function selectorDeDev(name: string): string {
   return `mke.dev/name=${name}`;
 }
 
+/**
+ * base pública del modo EMBED (`--live`): el prefijo bajo el que Mishi Studio
+ * embebe la app SAME-ORIGEN por su proxy `/live/<app>/`. En este modo vite sirve
+ * bajo esta base y caddy redirige solo la raíz exacta acá (para que el host -feat
+ * siga siendo usable a mano). Deriva del nombre corto de la app. */
+export function devLiveBase(app: string): string {
+  return `/live/${app}/`;
+}
+
 // ─── config de vite del modo dev (PURA; la posee la receta) ──────────────────
 
 /**
@@ -106,14 +115,19 @@ export function selectorDeDev(name: string): string {
  * (Cloudflare hace el TLS-offload; el navegador abre el websocket de HMR contra
  * el host público en :443). El pod copia este archivo al frontend y corre
  * `vite -c vite.dev.mke.config.ts`. GENERADO — no se edita a mano.
+ *
+ * En modo EMBED (`viteBase`, ej `/live/mishi-bank/`) se fija `base` para que la
+ * app se sirva bajo ese prefijo y Studio la embeba same-origen. El path del
+ * websocket de HMR sale del `base` automáticamente — por eso NO tocamos `hmr`.
  */
-export function viteDevConfig(vitePort: number = DEV_VITE_PORT): string {
+export function viteDevConfig(vitePort: number = DEV_VITE_PORT, viteBase?: string): string {
+  const baseLinea = viteBase ? `\n  base: ${JSON.stringify(viteBase)},` : "";
   return `// modo dev (mke dev): hereda el vite.config del app + dev server abierto para el
 // túnel de mke-preview (HMR por wss:443 detrás de Cloudflare). GENERADO por
 // @mishicomco/dev-receta — NO editar a mano.
 import { mergeConfig } from "vite";
 import base from "./vite.config";
-export default mergeConfig(base as never, {
+export default mergeConfig(base as never, {${baseLinea}
   server: {
     host: "0.0.0.0",
     port: ${vitePort},
@@ -287,7 +301,18 @@ done
  * /api,/health,/dev → backend. Un solo origen. /dev/* es el contrato de escena
  * del ecosistema (estado/entrar-como/salir, solo-preview) que Studio consume
  * vía el host del pod. */
-function caddyfile(backendPort: number, vitePort: number): string {
+function caddyfile(backendPort: number, vitePort: number, liveBase?: string): string {
+  // modo EMBED: vite sirve bajo `liveBase` (ej /live/mishi-bank/). Redirigimos
+  // SOLO la raíz exacta `/` a esa base para que el host -feat siga usable a mano;
+  // el resto (incluido /live/<app>/*) va a vite tal cual. OJO: NO duplicamos acá
+  // el proxy de la app (^/live/[^/]+/api → backend con rewrite): eso lo hace el
+  // propio vite.config del app (bank ya es BASE_URL-aware).
+  const redirRaiz = liveBase
+    ? `\thandle / {
+\t\tredir ${liveBase} 302
+\t}
+`
+    : "";
   return `:${DEV_CADDY_PORT} {
 	handle /api/* {
 		reverse_proxy 127.0.0.1:${backendPort}
@@ -298,7 +323,7 @@ function caddyfile(backendPort: number, vitePort: number): string {
 	handle /dev/* {
 		reverse_proxy 127.0.0.1:${backendPort}
 	}
-	handle {
+${redirRaiz}	handle {
 		reverse_proxy 127.0.0.1:${vitePort}
 	}
 }
@@ -336,6 +361,12 @@ export interface DevRecetaInput {
    * NO dupliques claves que la receta ya posee (PORT, PREVIEW, DATABASE_URL,
    * RAMA, NODE_ENV, …): el env explícito gana y kubectl apply puede chocar. */
   envExtra?: Record<string, string>;
+  /** modo EMBED (opt-in, `mke dev up --live`): vite sirve bajo `/live/<app>/` y
+   * caddy redirige la raíz exacta ahí, para que Mishi Studio embeba la app
+   * same-origen bajo su proxy `/live/<app>/`. Se marca en el Deployment con la
+   * annotation `mke.dev/live: "true"` para que Studio lo DERIVE. Declarativo: es
+   * un flag de `up` — re-aplicar sin `--live` lo apaga (vuelve al modo normal). */
+  live?: boolean;
 }
 
 export type K8sManifest = Record<string, unknown>;
@@ -355,6 +386,8 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
   const pollSeconds = inp.pollSeconds ?? 0;
   const name = devName(app, inp.nombre);
   const host = devHost(app, inp.nombre, { hostSuffix: inp.hostSuffix, domain: inp.domain });
+  // modo EMBED: base pública `/live/<app>/` bajo la que vite sirve la app.
+  const liveBase = inp.live ? devLiveBase(app) : undefined;
 
   const labels: Record<string, string> = {
     "mke.dev/managed": "true",
@@ -412,8 +445,8 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
       "rama.sh": RAMA_SH,
       "pull.sh": PULL_SH,
       "poll.sh": POLL_SH,
-      "vite.dev.mke.config.ts": viteDevConfig(DEV_VITE_PORT),
-      Caddyfile: caddyfile(DEV_BACKEND_PORT, DEV_VITE_PORT),
+      "vite.dev.mke.config.ts": viteDevConfig(DEV_VITE_PORT, liveBase),
+      Caddyfile: caddyfile(DEV_BACKEND_PORT, DEV_VITE_PORT, liveBase),
     },
   };
 
@@ -442,7 +475,13 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
       namespace,
       labels,
       // rama/sha vivos: los escribe el CLI (up/rama/pull); `dev estado` los lee.
-      annotations: { "mke.dev/rama": rama, "mke.dev/sha": "" },
+      // `mke.dev/live` marca el modo EMBED para que Studio DERIVE que este pod
+      // sirve bajo `/live/<app>/` (declarativo: presente solo si --live en el up).
+      annotations: {
+        "mke.dev/rama": rama,
+        "mke.dev/sha": "",
+        ...(liveBase ? { "mke.dev/live": "true" } : {}),
+      },
     },
     spec: {
       replicas: 1,

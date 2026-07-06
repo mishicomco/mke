@@ -64,7 +64,7 @@ const HELP = `mke — CLI de plataforma MKE
         opciones: --json  --sin-dns
   mke rama ls [<app>]                             lista las ramas encendidas (edad/estado)  · opción: --json
   mke dev up <app> [<rama>]                        enciende el SERVIDOR DE ITERACIÓN (pod DURADERO por app): clona el repo y corre la app en modo dev real (vite dev HMR + tsx watch); rama default main; CNAME <app>-dev-feat
-        opciones: --nombre <n> (varios por app)  --poll <s> (auto-refresca al detectar push)  --seed "<cmd>"  --env K1=V1,K2=V2 (env extra por app: va en un Secret k8s + envFrom al pod ENTERO, init incluido; NO dupliques claves de la receta: PORT, PREVIEW, DATABASE_URL, RAMA, NODE_ENV)  --json  --dry-run  --sin-dns  --repo-url <url>
+        opciones: --nombre <n> (varios por app)  --poll <s> (auto-refresca al detectar push)  --seed "<cmd>"  --env K1=V1,K2=V2 (env extra por app: va en un Secret k8s + envFrom al pod ENTERO, init incluido; NO dupliques claves de la receta: PORT, PREVIEW, DATABASE_URL, RAMA, NODE_ENV)  --live (modo EMBED: vite bajo /live/<app>/ + annotation mke.dev/live=true, para que Studio embeba la app same-origen)  --json  --dry-run  --sin-dns  --repo-url <url>
   mke dev rama <app> <rama>                         git checkout <rama> DENTRO del pod + reset de la DB efímera  · opciones: --nombre <n>  --json
   mke dev pull <app>                                trae los cambios de la rama activa YA (git reset --hard; tsx/vite recogen solos)  · opciones: --nombre <n>  --json
   mke dev estado <app>                              rama activa + sha vivo + edad + host  · opciones: --nombre <n>  --json
@@ -188,7 +188,7 @@ async function main() {
       const nombre = typeof flags.nombre === "string" ? flags.nombre : undefined;
       if (action === "up") {
         const [app, rama] = dargs;
-        if (!app) return fail("uso: mke dev up <app> [<rama>] [--nombre n] [--poll s] [--seed cmd] [--env K=V,...] [--json] [--dry-run] [--sin-dns] [--repo-url url]");
+        if (!app) return fail("uso: mke dev up <app> [<rama>] [--nombre n] [--poll s] [--seed cmd] [--env K=V,...] [--live] [--json] [--dry-run] [--sin-dns] [--repo-url url]");
         await devUp(app, rama ?? "main", imagesDir, {
           json: flags.json === true,
           dryRun: flags["dry-run"] === true,
@@ -198,6 +198,7 @@ async function main() {
           poll: typeof flags.poll === "string" ? Number(flags.poll) : undefined,
           seed: typeof flags.seed === "string" ? flags.seed : undefined,
           envExtra: parseEnvExtra(typeof flags.env === "string" ? flags.env : undefined),
+          live: flags.live === true,
         });
       } else if (action === "rama") {
         const [app, rama] = dargs;

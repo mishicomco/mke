@@ -43,6 +43,11 @@ export interface DevUpOpts {
    * NODE_AUTH_TOKEN de GitHub Packages); nunca en claro en el Deployment. NO
    * dupliques claves que la receta ya posee (PORT, PREVIEW, DATABASE_URL, …). */
   envExtra?: Record<string, string>;
+  /** modo EMBED (`--live`): vite sirve bajo `/live/<app>/` y caddy redirige la
+   * raíz ahí, para que Mishi Studio embeba la app same-origen. Marca el
+   * Deployment con la annotation `mke.dev/live: "true"`. Declarativo: el flag
+   * vive solo en `up`; re-aplicar sin él vuelve al modo normal (lo apaga). */
+  live?: boolean;
 }
 
 export interface DevMutOpts {
@@ -72,6 +77,7 @@ function manifiestosParaKubectl(opts: DevUpOpts, app: string, rama: string, repo
     pollSeconds: opts.poll,
     seedCmd: opts.seed,
     envExtra: opts.envExtra,
+    live: opts.live,
   });
   return JSON.stringify({ apiVersion: "v1", kind: "List", items }, null, 2);
 }
