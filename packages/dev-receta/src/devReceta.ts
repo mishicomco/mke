@@ -291,9 +291,13 @@ export interface DevRecetaInput {
   pollSeconds?: number;
   /** comando de siembra del app (como el `sembrarCmd` que consume Studio). */
   seedCmd?: string;
-  /** pares VAR=valor extra por app inyectados al contenedor dev (ej. bank:
-   * CONNECT_URL/CONNECT_JWKS_URL a un connect compartido del cluster de preview).
-   * El deploy de esa dependencia NO es cosa de la receta; esto es el mecanismo. */
+  /** pares VAR=valor extra por app (ej. bank: CONNECT_URL/CONNECT_JWKS_URL a un
+   * connect compartido de preview, NODE_AUTH_TOKEN para GitHub Packages). Van en
+   * un Secret propio (`<name>-env`) + envFrom — nunca en claro en el Deployment —
+   * inyectado al contenedor dev Y al init `preparar` (su npm install puede
+   * necesitarlo); los exec de rama.sh/pull.sh heredan el env del contenedor dev.
+   * NO dupliques claves que la receta ya posee (PORT, PREVIEW, DATABASE_URL,
+   * RAMA, NODE_ENV, …): el env explícito gana y kubectl apply puede chocar. */
   envExtra?: Record<string, string>;
 }
 
@@ -339,6 +343,26 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
     data: { REPO_URL: b64(inp.repoUrl) },
   };
 
+  // env extra por app → Secret propio (`<name>-env`) + envFrom, NUNCA valores en
+  // claro en el Deployment (ahí van tokens como NODE_AUTH_TOKEN). Se inyecta al
+  // contenedor dev Y al initContainer preparar: el `npm install` del init puede
+  // necesitarlo (bank instala de GitHub Packages con ${NODE_AUTH_TOKEN} en su
+  // .npmrc), y los exec de rama.sh/pull.sh heredan el env del contenedor dev.
+  const envExtra = inp.envExtra ?? {};
+  const hayEnvExtra = Object.keys(envExtra).length > 0;
+  const envSecretObj: K8sManifest | null = hayEnvExtra
+    ? {
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: { name: `${name}-env`, namespace, labels },
+        type: "Opaque",
+        data: Object.fromEntries(Object.entries(envExtra).map(([k, v]) => [k, b64(v)])),
+      }
+    : null;
+  // OJO: el env explícito de la receta (PORT, PREVIEW, DATABASE_URL, …) GANA
+  // sobre envFrom; no dupliques claves que la receta ya posee en envExtra.
+  const envFrom = hayEnvExtra ? [{ secretRef: { name: `${name}-env` } }] : undefined;
+
   const configMapObj: K8sManifest = {
     apiVersion: "v1",
     kind: "ConfigMap",
@@ -369,9 +393,6 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
     { name: "DATABASE_URL", value: "postgres://dev:dev@127.0.0.1:5432/dev" },
   ];
   if (inp.seedCmd) devEnv.push({ name: "SEED_CMD", value: inp.seedCmd });
-  for (const [k, v] of Object.entries(inp.envExtra ?? {})) {
-    devEnv.push({ name: k, value: v });
-  }
 
   const podLabels = { app: name, ...labels };
 
@@ -400,6 +421,7 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
               image: imagen,
               imagePullPolicy: "IfNotPresent",
               command: ["sh", "/mke/prepare.sh"],
+              ...(envFrom ? { envFrom } : {}),
               env: [
                 { name: "APP", value: app },
                 { name: "RAMA", value: rama },
@@ -437,6 +459,7 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
               image: imagen,
               imagePullPolicy: "IfNotPresent",
               command: ["sh", "/mke/boot-dev.sh"],
+              ...(envFrom ? { envFrom } : {}),
               env: devEnv,
               volumeMounts: [
                 { name: "workspace", mountPath: "/workspace" },
@@ -498,5 +521,13 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
     },
   };
 
-  return [namespaceObj, secretObj, configMapObj, deploymentObj, serviceObj, ingressObj];
+  return [
+    namespaceObj,
+    secretObj,
+    ...(envSecretObj ? [envSecretObj] : []),
+    configMapObj,
+    deploymentObj,
+    serviceObj,
+    ingressObj,
+  ];
 }

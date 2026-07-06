@@ -64,7 +64,7 @@ const HELP = `mke — CLI de plataforma MKE
         opciones: --json  --sin-dns
   mke rama ls [<app>]                             lista las ramas encendidas (edad/estado)  · opción: --json
   mke dev up <app> [<rama>]                        enciende el SERVIDOR DE ITERACIÓN (pod DURADERO por app): clona el repo y corre la app en modo dev real (vite dev HMR + tsx watch); rama default main; CNAME <app>-dev-feat
-        opciones: --nombre <n> (varios por app)  --poll <s> (auto-refresca al detectar push)  --seed "<cmd>"  --env K1=V1,K2=V2 (env extra por app)  --json  --dry-run  --sin-dns  --repo-url <url>
+        opciones: --nombre <n> (varios por app)  --poll <s> (auto-refresca al detectar push)  --seed "<cmd>"  --env K1=V1,K2=V2 (env extra por app: va en un Secret k8s + envFrom al pod ENTERO, init incluido; NO dupliques claves de la receta: PORT, PREVIEW, DATABASE_URL, RAMA, NODE_ENV)  --json  --dry-run  --sin-dns  --repo-url <url>
   mke dev rama <app> <rama>                         git checkout <rama> DENTRO del pod + reset de la DB efímera  · opciones: --nombre <n>  --json
   mke dev pull <app>                                trae los cambios de la rama activa YA (git reset --hard; tsx/vite recogen solos)  · opciones: --nombre <n>  --json
   mke dev estado <app>                              rama activa + sha vivo + edad + host  · opciones: --nombre <n>  --json

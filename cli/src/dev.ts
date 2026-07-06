@@ -38,7 +38,10 @@ export interface DevUpOpts {
   poll?: number;
   /** comando de siembra del app (como el sembrarCmd que consume Studio). */
   seed?: string;
-  /** pares VAR=valor extra inyectados al contenedor dev (env por app). */
+  /** pares VAR=valor extra por app. Van en un Secret k8s (`<name>-env`) + envFrom
+   * al contenedor dev Y al init (npm install puede necesitarlos, ej.
+   * NODE_AUTH_TOKEN de GitHub Packages); nunca en claro en el Deployment. NO
+   * dupliques claves que la receta ya posee (PORT, PREVIEW, DATABASE_URL, …). */
   envExtra?: Record<string, string>;
 }
 
