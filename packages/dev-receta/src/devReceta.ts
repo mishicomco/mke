@@ -127,7 +127,23 @@ export default mergeConfig(base as never, {
 
 // ─── scripts embebidos (van a un ConfigMap; el pod los ejecuta) ──────────────
 
-/** initContainer: clona el repo COMPLETO (para cambiar de rama), checkout, install. */
+/** construye los PACKAGES del monorepo (no el repo completo: eso incluiría el
+ * frontend y es lento). El backend importa packages que compilan a dist/
+ * (ej. @mishi-bank/contract) — npm install solo no basta. Reusado por
+ * prepare.sh, rama.sh y pull.sh. */
+const BUILD_PACKAGES_SH = `#!/bin/sh
+set -eu
+cd /workspace/repo
+for pkg in packages/*/package.json; do
+  [ -f "$pkg" ] || continue
+  dir=$(dirname "$pkg")
+  echo "[dev] build $dir"
+  npm run build -w "$dir" --if-present || echo "[dev] build de $dir falló (sigo)"
+done
+`;
+
+/** initContainer: clona el repo COMPLETO (para cambiar de rama), checkout,
+ * install + build de los packages del workspace (dist/ que importa el backend). */
 const PREPARE_SH = `#!/bin/sh
 set -eu
 echo "[dev] preparando $APP (rama inicial $RAMA)"
@@ -143,6 +159,7 @@ mkdir -p /workspace/.dev
 echo "$RAMA" > /workspace/.dev/rama
 echo "[dev] npm install"
 npm install --no-audit --no-fund
+sh /mke/build-packages.sh
 echo "[dev] preparado: $(git rev-parse --short HEAD)"
 `;
 
@@ -185,9 +202,21 @@ cp /mke/vite.dev.mke.config.ts "$FRONT/vite.dev.mke.config.ts"
 
 # backend en modo watch (tsx). Corre por-workspace (no turbo) para no acoplar el
 # arranque a un script 'dev' opaco: el pod controla puertos y topología del proxy.
+# Loop de reinicio con backoff: tsx watch NO revive un crash de boot si no
+# cambian archivos (ej. el backend murió porque faltaba el dist de un package);
+# sin esto el pod queda zombi hasta recrearlo.
 if [ -d apps/backend ]; then
   echo "[dev] backend tsx watch en :$BACKEND_PORT"
-  ( npm run dev -w apps/backend ) &
+  (
+    intento=0
+    while true; do
+      npm run dev -w apps/backend && break
+      intento=$((intento+1))
+      if [ "$intento" -lt 6 ]; then espera=$((intento*5)); else espera=30; fi
+      echo "[dev] backend murió (intento $intento) — reinicio en \${espera}s"
+      sleep "$espera"
+    done
+  ) &
 fi
 
 # frontend vite dev con la config generada (HMR wss:443)
@@ -220,17 +249,20 @@ if [ "$LOCK_ANTES" != "$LOCK_DESPUES" ]; then
   echo "[dev] lockfile cambió → npm install"
   npm install --no-audit --no-fund
 fi
+sh /mke/build-packages.sh
 sh /mke/reset-db.sh
 echo "[dev] rama activa: $NUEVA @ $(git rev-parse --short HEAD)"
 `;
 
-/** traer cambios de la rama activa YA (exec por el CLI y por el poll). */
+/** traer cambios de la rama activa YA (exec por el CLI y por el poll). También
+ * reconstruye los packages: un pull puede traer cambios del contract. */
 const PULL_SH = `#!/bin/sh
 set -eu
 cd /workspace/repo
 RAMA_ACTIVA=$(cat /workspace/.dev/rama 2>/dev/null || echo main)
 git fetch origin --prune
 git reset --hard "origin/$RAMA_ACTIVA"
+sh /mke/build-packages.sh
 echo "[dev] al día: $RAMA_ACTIVA @ $(git rev-parse --short HEAD)"
 `;
 
@@ -252,13 +284,18 @@ done
 `;
 
 /** caddy: proxy del host público → vite dev (WEBSOCKETS/HMR transparentes) y
- * /api,/health → backend. Un solo origen. */
+ * /api,/health,/dev → backend. Un solo origen. /dev/* es el contrato de escena
+ * del ecosistema (estado/entrar-como/salir, solo-preview) que Studio consume
+ * vía el host del pod. */
 function caddyfile(backendPort: number, vitePort: number): string {
   return `:${DEV_CADDY_PORT} {
 	handle /api/* {
 		reverse_proxy 127.0.0.1:${backendPort}
 	}
 	handle /health* {
+		reverse_proxy 127.0.0.1:${backendPort}
+	}
+	handle /dev/* {
 		reverse_proxy 127.0.0.1:${backendPort}
 	}
 	handle {
@@ -369,6 +406,7 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
     metadata: { name: `${name}-scripts`, namespace, labels },
     data: {
       "prepare.sh": PREPARE_SH,
+      "build-packages.sh": BUILD_PACKAGES_SH,
       "boot-dev.sh": BOOT_DEV_SH,
       "reset-db.sh": RESET_DB_SH,
       "rama.sh": RAMA_SH,

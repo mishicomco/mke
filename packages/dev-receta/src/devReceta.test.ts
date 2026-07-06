@@ -140,12 +140,30 @@ test("manifiestosDev: emptyDir para workspace y pgdata (efímero); imagen overri
 test("manifiestosDev: el ConfigMap trae los scripts, la vite config y el Caddyfile", () => {
   const ms = manifiestosDev({ app: "mishi-bank", repoUrl: "https://x/y.git" });
   const cm = porKind(ms, "ConfigMap") as any;
-  for (const f of ["prepare.sh", "boot-dev.sh", "reset-db.sh", "rama.sh", "pull.sh", "poll.sh", "vite.dev.mke.config.ts", "Caddyfile"]) {
+  for (const f of ["prepare.sh", "build-packages.sh", "boot-dev.sh", "reset-db.sh", "rama.sh", "pull.sh", "poll.sh", "vite.dev.mke.config.ts", "Caddyfile"]) {
     assert.ok(cm.data[f], `ConfigMap trae ${f}`);
   }
-  // caddy proxya /api al backend y todo lo demás a vite (websockets/HMR)
+  // caddy proxya /api, /health y /dev (contrato de escena) al backend y todo lo
+  // demás a vite (websockets/HMR)
   assert.match(cm.data.Caddyfile, /handle \/api\/\*/, "caddy: /api al backend");
+  assert.match(cm.data.Caddyfile, /handle \/dev\/\*/, "caddy: /dev (escena) al backend");
   assert.match(cm.data.Caddyfile, /reverse_proxy 127\.0\.0\.1:5173/, "caddy: resto a vite");
+});
+
+test("manifiestosDev: los packages del workspace se construyen tras install/checkout/pull", () => {
+  const ms = manifiestosDev({ app: "mishi-bank", repoUrl: "https://x/y.git" });
+  const cm = porKind(ms, "ConfigMap") as any;
+  // build de packages: loop sobre packages/*/package.json con --if-present (NO
+  // el build completo del repo, que incluiría el frontend y es lento)
+  assert.match(cm.data["build-packages.sh"], /packages\/\*\/package\.json/, "loop sobre packages/*");
+  assert.match(cm.data["build-packages.sh"], /--if-present/, "tolera packages sin build");
+  for (const script of ["prepare.sh", "rama.sh", "pull.sh"]) {
+    assert.match(cm.data[script], /sh \/mke\/build-packages\.sh/, `${script} construye los packages`);
+  }
+  // el backend se reinicia con backoff si muere en el boot (tsx watch no revive
+  // un crash si no cambian archivos)
+  assert.match(cm.data["boot-dev.sh"], /backend murió/, "loop de reinicio del backend");
+  assert.match(cm.data["boot-dev.sh"], /sleep "\$espera"/, "backoff entre reintentos");
 });
 
 test("manifiestosDev: envExtra va en un Secret <name>-env + envFrom en dev Y preparar, nunca en claro", () => {
