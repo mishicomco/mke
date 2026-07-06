@@ -62,7 +62,7 @@ const HELP = `mke — CLI de plataforma MKE
   mke rama down <app> <rama>                      apaga la rama: borra deployment/service/ingress/configmap/secret + CNAME (idempotente)
         opciones: --json  --sin-dns
   mke rama ls [<app>]                             lista las ramas encendidas (edad/estado)  · opción: --json
-  mke dns <host|app> <env>                       crea/repara el CNAME al tunnel correcto del entorno
+  mke dns <host|app> <env>                       crea/repara/REPUNTA el CNAME al tunnel del entorno vía API Cloudflare (env: local|stage|prod|preview; con preview pasá el host completo)
   mke doctor <host> [path]                       diagnostica la cadena pública y dice qué capa está rota
   mke ls [env]                                    inventario de ingresses (host → servicio) por entorno
 

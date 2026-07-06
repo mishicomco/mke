@@ -23,7 +23,8 @@
 
 import { RAMA, ramaHost, ramaName } from "./mkeConfig.js";
 import { manifiestosRama } from "@mishicomco/rama-receta";
-import { deleteRecordsByName } from "./cf.js";
+import { deleteRecordsByName, tunnelTarget, upsertCname } from "./cf.js";
+import { previewTunnelUuid } from "./dns.js";
 import { run, spawnStream, ok, bad, warn, info, dim } from "./sh.js";
 
 const CTX = RAMA.context;
@@ -56,17 +57,7 @@ function manifiestosParaKubectl(app: string, rama: string, repoUrl: string): str
   return JSON.stringify({ apiVersion: "v1", kind: "List", items }, null, 2);
 }
 
-// ─── túnel / imagen del runner ───────────────────────────────────────────────
-
-async function tunnelUuid(): Promise<string> {
-  const r = await run("cloudflared", ["tunnel", "list"]);
-  if (r.code !== 0) throw new Error(`cloudflared tunnel list falló: ${r.stderr}`);
-  for (const line of r.stdout.split("\n")) {
-    const cols = line.trim().split(/\s+/);
-    if (cols[1] === RAMA.tunnelName) return cols[0];
-  }
-  throw new Error(`no existe el túnel '${RAMA.tunnelName}'. Corré primero: scripts/bootstrap-preview.sh`);
-}
+// ─── imagen del runner ───────────────────────────────────────────────────────
 
 /** Asegura que la imagen genérica del runner esté importada en el clúster. */
 async function ensureRunnerImage(imagesDir: string): Promise<void> {
@@ -125,7 +116,7 @@ export async function ramaUp(app: string, rama: string, imagesDir: string, opts:
   if (!opts.json) console.log(info(`rama ${dim(app)} · ${dim(rama)} → ${dim(host)}`));
 
   // 0) túnel (si vamos a tocar DNS) — falla rápido antes de trabajar
-  const uuid = opts.sinDns ? null : await tunnelUuid();
+  const uuid = opts.sinDns ? null : await previewTunnelUuid();
 
   // 1) imagen del runner + apply (idempotente; re-sincroniza si ya existe)
   await ensureRunnerImage(imagesDir);
@@ -166,8 +157,12 @@ export async function ramaUp(app: string, rama: string, imagesDir: string, opts:
   // 3) DNS (salvo --sin-dns)
   if (!opts.sinDns && uuid) {
     if (!opts.json) console.log(info(`DNS: ${host} → túnel ${uuid}`));
-    const dns = await run("cloudflared", ["tunnel", "route", "dns", "--overwrite-dns", uuid, host]);
-    if (dns.code !== 0 && !opts.json) console.log(warn(`cloudflared route dns: ${dns.stderr || dns.stdout}`));
+    try {
+      const que = await upsertCname(host, tunnelTarget(uuid));
+      if (!opts.json) console.log(ok(que === "ok" ? "CNAME ya apuntaba bien" : `CNAME ${que}`));
+    } catch (e) {
+      if (!opts.json) console.log(warn(`Cloudflare API: ${e instanceof Error ? e.message : String(e)}`));
+    }
   }
 
   // 4) sha + alcance
