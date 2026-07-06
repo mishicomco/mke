@@ -55,8 +55,9 @@ const HELP = `mke — CLI de plataforma MKE
   mke expose <app> <env> --svc <name:port>      expone un servicio del CLUSTER ya existente
         opciones: --host <fqdn>  (override del subdominio)   --path </>
   mke preview up <app> <rama>                    preview EFÍMERO por feature: build rama → import a mke-preview → manifests (backend + postgres efímero + ingress) → CNAME <slugApp>-<feature>-pre → verifica
-        opciones: --feature <nombre>  --dir <repo>
+        opciones: --feature <nombre>  --dir <repo>  --dry-run
   mke preview down <nombre>                       borra el preview <slugApp>-<feature> (el que muestra ls): namespace + CNAME (vía API Cloudflare)
+        opciones: --dry-run
   mke preview ls                                  lista los previews vivos en mke-preview
   mke rama up <app> <rama>                        enciende un "pod de rama" (harness v2): imagen genérica que clona la rama al arrancar (git), instala, construye el front y corre backend+front mismo origen + postgres efímero; CNAME <app>-<slug>-feat
         opciones: --json  --dry-run (imprime manifiestos)  --sin-dns (no toca Cloudflare)  --repo-url <url>
@@ -144,11 +145,12 @@ async function main() {
         await previewUp(app, rama, {
           feature: typeof flags.feature === "string" ? flags.feature : undefined,
           dir: typeof flags.dir === "string" ? flags.dir : undefined,
+          dryRun: flags["dry-run"] === true,
         });
       } else if (action === "down") {
         const [nombre] = pargs;
         if (!nombre) return fail("uso: mke preview down <nombre>  (el <slugApp>-<feature> que muestra `mke preview ls`)");
-        await previewDown(nombre);
+        await previewDown(nombre, { dryRun: flags["dry-run"] === true });
       } else if (action === "ls" || action === undefined) {
         await previewLs();
       } else {
