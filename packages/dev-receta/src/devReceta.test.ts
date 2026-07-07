@@ -11,6 +11,7 @@ import {
   manifiestosDev,
   parseDotEnv,
   mergeDevEnv,
+  clavesViteTokenProhibidas,
   DEV_VITE_PORT,
   type K8sManifest,
 } from "./devReceta.js";
@@ -383,6 +384,29 @@ test("manifiestosDev: el REPO_URL va en el Secret (base64), nunca en claro", () 
     !JSON.stringify(ms).includes("https://github.com/mishicomco/mishi-bank.git"),
     "REPO_URL no debe ir en claro en ningún manifiesto",
   );
+});
+
+test("clavesViteTokenProhibidas: detecta VITE_*TOKEN* (caso del Bearer horneado en el bundle)", () => {
+  assert.deepEqual(clavesViteTokenProhibidas({ VITE_STUDIO_TOKEN: "x" }), ["VITE_STUDIO_TOKEN"]);
+  assert.deepEqual(clavesViteTokenProhibidas({ VITE_Some_Token: "x" }), ["VITE_Some_Token"]);
+  assert.deepEqual(
+    clavesViteTokenProhibidas({ VITE_CONNECT_URL: "x", VITE_GOOGLE_CLIENT_ID: "y" }),
+    [],
+    "config pública normal no dispara el candado",
+  );
+  assert.deepEqual(
+    clavesViteTokenProhibidas({}),
+    [],
+  );
+});
+
+test("manifiestosDev: cargar-dev-env.sh CANDADO — aborta ruidoso si dev.env trae VITE_*TOKEN*", () => {
+  const ms = manifiestosDev({ app: "mishi-bank", repoUrl: "https://x/y.git" });
+  const cm = porKind(ms, "ConfigMap") as any;
+  const script = cm.data["cargar-dev-env.sh"];
+  assert.match(script, /VITE_\*TOKEN\*/, "detecta el patrón VITE_*TOKEN*");
+  assert.match(script, /exit 1/, "aborta el boot, no carga en silencio");
+  assert.match(script, /CANDADO/, "mensaje explícito de por qué aborta");
 });
 
 test("manifiestosDev: annotations vivos rama/sha en el Deployment", () => {

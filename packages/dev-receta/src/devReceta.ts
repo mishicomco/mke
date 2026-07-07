@@ -187,6 +187,18 @@ export function mergeDevEnv(
   return { ...fileVars, ...overrideVars };
 }
 
+/**
+ * CANDADO: `k8s/dev.env` es config PÚBLICA — vite hornea todo lo que empieza
+ * por `VITE_` en el bundle del navegador. Un Bearer horneado ahí (ej.
+ * `VITE_STUDIO_TOKEN`) es indefendible: cualquiera con devtools lo lee. Detecta
+ * claves `VITE_*TOKEN*` (o el nombre exacto conocido) declaradas en dev.env, sin
+ * asumir un valor concreto — es un guardarraíl de NOMBRE, no de contenido.
+ * Espejo EXACTO del check en `cargar-dev-env.sh` (in-pod, en shell).
+ */
+export function clavesViteTokenProhibidas(vars: Record<string, string>): string[] {
+  return Object.keys(vars).filter((k) => /^VITE_.*TOKEN/i.test(k));
+}
+
 // ─── scripts embebidos (van a un ConfigMap; el pod los ejecuta) ──────────────
 
 /** carga la CONFIG PÚBLICA por-rama declarada por la app en `k8s/dev.env` (K=V).
@@ -196,7 +208,10 @@ export function mergeDevEnv(
  * ya en el entorno → `--env` del CLI (Secret+envFrom) y la config de la receta
  * (PORT, PREVIEW, DATABASE_URL, …) GANAN. PROHIBIDO secretos en dev.env. */
 const CARGAR_DEV_ENV_SH = `#!/bin/sh
-# NO 'set -e': se SOURCEA; un error acá no debe matar al que lo invoca.
+# NO 'set -e' general: se SOURCEA; un error normal acá no debe matar al que lo
+# invoca. EXCEPCIÓN a propósito: el candado de VITE_*TOKEN* SÍ mata al llamador
+# (boot-dev.sh/rama.sh corren con set -eu, un 'exit' acá los aborta) — aborto
+# ruidoso a propósito, ver comentario abajo.
 ARCHIVO=/workspace/repo/k8s/dev.env
 if [ -f "$ARCHIVO" ]; then
   while IFS= read -r linea || [ -n "$linea" ]; do
@@ -204,6 +219,16 @@ if [ -f "$ARCHIVO" ]; then
     case "$linea" in *=*) : ;; *) continue ;; esac
     clave=$(printf '%s' "\${linea%%=*}" | tr -d '[:space:]')
     [ -z "$clave" ] && continue
+    # CANDADO: dev.env es config PÚBLICA (vite hornea todo VITE_* en el bundle
+    # del navegador). Un VITE_*TOKEN* ahí es un Bearer indefendible en JS
+    # público — abortamos el boot ruidosamente, NUNCA lo cargamos en silencio.
+    case "$clave" in
+      VITE_*TOKEN*|VITE_*Token*|VITE_*token*)
+        echo "[dev] CANDADO: '$clave' en k8s/dev.env — PROHIBIDO hornear tokens VITE_* en el bundle del navegador." >&2
+        echo "[dev] quita '$clave' de k8s/dev.env. La cabina del pod entra por login (identity-preview), no por Bearer." >&2
+        exit 1
+        ;;
+    esac
     # valor recortado en los bordes (espejo de parseDotEnv); espacios internos ok
     valor=$(printf '%s' "\${linea#*=}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
     # ya presente en el entorno (p.ej. --env del CLI) → gana, no lo pisamos
