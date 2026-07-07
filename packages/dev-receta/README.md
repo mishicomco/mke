@@ -56,6 +56,16 @@ precedencia está modelada, y testeada, en las funciones puras `parseDotEnv` y
 > el repo y se sirve al cliente (los `VITE_*` se hornean en el bundle). Para
 > secretos rige el contrato **RAMA_ENCENDIDA** (efímeros autogenerados por la
 > plataforma, inyectados como Secret aparte).
+>
+> **CANDADO explícito: nunca declares `VITE_STUDIO_TOKEN` (ni ningún
+> `VITE_*TOKEN*`) en `k8s/dev.env` de ningún repo.** Un Bearer horneado en el
+> bundle del navegador es indefendible — cualquiera con devtools lo lee. La
+> cabina del pod de iteración entra por **LOGIN** (identity-preview, cookie
+> compartida `mishi_sesion`), no por Bearer; el Bearer server-to-server sigue
+> existiendo para agentes/CLI que hablan a la API directamente, pero jamás debe
+> viajar al cliente. `cargar-dev-env.sh` detecta `VITE_*TOKEN*` en dev.env y
+> **aborta el boot ruidosamente** (no lo carga en silencio, no autotruncar) —
+> mismo espíritu de "abortar ruidoso" que el guard `RAMA_ENCENDIDA` del backend.
 
 ### Cama tendida: leases de `vault-mishi` (futuro, NO construido)
 
