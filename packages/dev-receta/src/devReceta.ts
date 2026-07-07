@@ -4,14 +4,27 @@
 // efectos ni serialización. El consumidor decide serializar (kubectl apply -f =
 // List JSON; la API de k8s = objeto por objeto).
 //
-// HERMANO de @mishicomco/rama-receta pero con un propósito distinto:
-//   rama → pod EFÍMERO por rama: construye el front ESTÁTICO (npm run build) y
-//          corre el backend con `npm run dev`; caddy sirve dist. Es una FOTO.
-//   dev  → pod DURADERO por app, servidor de ITERACIÓN: corre la app en MODO DEV
-//          REAL (vite dev con HMR + tsx watch) sobre un clone del repo. Cambiar
-//          de rama / traer cambios = git DENTRO del pod (checkout/reset) sin
-//          recrear el pod → Santi ve las ediciones en segundos. "Nada de puertos
-//          artesanales, nada de fallback: siempre iteramos en mke-preview."
+// ÚNICO mecanismo de rama del ecosistema (unificación FIRMADA por Santi,
+// 2026-07-06): el pod DURADERO de iteración es la ÚNICA forma de encender una
+// rama. El viejo "pod de rama" EFÍMERO (front estático + caddy, una FOTO) MURIÓ
+// como concepto; `@mishicomco/rama-receta` queda DEPRECADA (Studio la vendoriza
+// hasta migrar) y `mke rama` es hoy una fachada de `mke dev`. La fidelidad de
+// build de una rama la cubre el examen de STAGE post-merge, no un segundo pod.
+//
+//   dev → pod DURADERO por app, servidor de ITERACIÓN: corre la app en MODO DEV
+//         REAL (vite dev con HMR + tsx watch) sobre un clone del repo. Cambiar de
+//         rama / traer cambios = git DENTRO del pod (checkout/reset) sin recrear
+//         el pod → Santi ve las ediciones en segundos. "Nada de puertos
+//         artesanales, nada de fallback: siempre iteramos en mke-preview."
+//
+// CONFIG PÚBLICA por-rama: la app declara sus envs NO secretos (ej.
+// VITE_CONNECT_URL, VITE_GOOGLE_CLIENT_ID) en `k8s/dev.env` (líneas K=V) DENTRO
+// de su repo. El pod la sourcea al boot y al cambiar de rama (cargar-dev-env.sh)
+// → cada rama trae SU config y re-aplicar `up` sin `--env` YA NO pierde nada
+// (la verdad vive en el repo, no en un flag efímero). PROHIBIDO poner secretos en
+// dev.env: para secretos rige el contrato RAMA_ENCENDIDA (efímeros autogenerados)
+// y, a futuro, leases de vault-mishi (ver README, cama tendida — NO construido).
+// Precedencia: `--env K=V` del CLI (Secret + envFrom) GANA sobre dev.env.
 //
 // Anatomía del pod (ns propio `dev`; JAMÁS mke-prod):
 //   · initContainer `preparar` (imagen runner): git clone COMPLETO (sin --depth,
@@ -139,7 +152,67 @@ export default mergeConfig(base as never, {${baseLinea}
 `;
 }
 
+// ─── config pública por-rama: k8s/dev.env (PURO; espejo del loader del pod) ───
+
+/**
+ * Parsea el formato `dev.env` (líneas `K=V`) que la app declara en su repo.
+ * Ignora líneas vacías y comentarios (`#…`). La clave se recorta; el valor se
+ * recorta en los bordes (tolerante con `K = V`). Sin `=` → línea inválida (fuera).
+ * Espejo EXACTO en semántica del loader de shell del pod (cargar-dev-env.sh).
+ */
+export function parseDotEnv(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const i = line.indexOf("=");
+    if (i <= 0) continue;
+    const k = line.slice(0, i).trim();
+    if (!k) continue;
+    out[k] = line.slice(i + 1).trim();
+  }
+  return out;
+}
+
+/**
+ * Fusiona la config del archivo `dev.env` con los overrides del CLI (`--env`),
+ * con la PRECEDENCIA firmada: el override GANA sobre el archivo. Modela lo que
+ * pasa en el pod, donde `--env` llega por el Secret (envFrom, ya en el entorno) y
+ * cargar-dev-env.sh solo rellena las claves que aún NO estén en el entorno.
+ */
+export function mergeDevEnv(
+  fileVars: Record<string, string>,
+  overrideVars: Record<string, string> = {},
+): Record<string, string> {
+  return { ...fileVars, ...overrideVars };
+}
+
 // ─── scripts embebidos (van a un ConfigMap; el pod los ejecuta) ──────────────
+
+/** carga la CONFIG PÚBLICA por-rama declarada por la app en `k8s/dev.env` (K=V).
+ * Se SOURCEA (no ejecuta) desde boot-dev.sh (antes de migrar/sembrar y en cada
+ * (re)arranque de backend/vite) y desde rama.sh (para que migraciones/siembra de
+ * la nueva rama vean su config). PRECEDENCIA: solo exporta una clave si NO está
+ * ya en el entorno → `--env` del CLI (Secret+envFrom) y la config de la receta
+ * (PORT, PREVIEW, DATABASE_URL, …) GANAN. PROHIBIDO secretos en dev.env. */
+const CARGAR_DEV_ENV_SH = `#!/bin/sh
+# NO 'set -e': se SOURCEA; un error acá no debe matar al que lo invoca.
+ARCHIVO=/workspace/repo/k8s/dev.env
+if [ -f "$ARCHIVO" ]; then
+  while IFS= read -r linea || [ -n "$linea" ]; do
+    case "$linea" in ''|\\#*) continue ;; esac
+    case "$linea" in *=*) : ;; *) continue ;; esac
+    clave=$(printf '%s' "\${linea%%=*}" | tr -d '[:space:]')
+    [ -z "$clave" ] && continue
+    # valor recortado en los bordes (espejo de parseDotEnv); espacios internos ok
+    valor=$(printf '%s' "\${linea#*=}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    # ya presente en el entorno (p.ej. --env del CLI) → gana, no lo pisamos
+    if printenv "$clave" >/dev/null 2>&1; then continue; fi
+    export "$clave=$valor"
+    echo "[dev] dev.env: $clave"
+  done < "$ARCHIVO"
+fi
+`;
 
 /** construye los PACKAGES del monorepo (no el repo completo: eso incluiría el
  * frontend y es lento). El backend importa packages que compilan a dist/
@@ -197,15 +270,27 @@ fi
 `;
 
 /** arranque del contenedor dev: reset+migra+siembra, config de vite, backend
- * tsx watch + vite dev + poll opcional. Se queda en foreground (wait). */
+ * tsx watch + vite dev + poll opcional. Se queda en foreground (wait).
+ *
+ * SOURCEA la config pública por-rama (k8s/dev.env) ANTES de migrar/sembrar y en
+ * CADA (re)arranque de backend/vite, para que la app siempre tenga su config del
+ * repo (esto vuelve IMPOSIBLE el incidente de "faltó VITE_CONNECT_URL" y de
+ * "re-aplicar up sin --env borró los envs"). Cada app corre en un supervisor que
+ * la relanza si muere (crash de boot) o si rama.sh pide un reinicio (sentinel
+ * /workspace/.dev/restart) para que un cambio de rama recoja la NUEVA config. */
 const BOOT_DEV_SH = `#!/bin/sh
 set -eu
 cd /workspace/repo
 mkdir -p /workspace/.dev
+rm -f /workspace/.dev/restart
 RAMA_ACTIVA=$(cat /workspace/.dev/rama 2>/dev/null || echo "$RAMA")
 
 echo "[dev] esperando postgres…"
 until pg_isready -h 127.0.0.1 -p 5432 -U dev >/dev/null 2>&1; do sleep 2; done
+
+# config PÚBLICA por-rama declarada por la app (k8s/dev.env) → al entorno ANTES de
+# migrar/sembrar (para que la vean) y de arrancar la app. Precedencia: --env gana.
+. /mke/cargar-dev-env.sh
 
 sh /mke/reset-db.sh || echo "[dev] reset-db falló (sigo)"
 
@@ -214,28 +299,54 @@ FRONT=apps/frontend
 [ -d "$FRONT" ] || FRONT=.
 cp /mke/vite.dev.mke.config.ts "$FRONT/vite.dev.mke.config.ts"
 
-# backend en modo watch (tsx). Corre por-workspace (no turbo) para no acoplar el
-# arranque a un script 'dev' opaco: el pod controla puertos y topología del proxy.
-# Loop de reinicio con backoff: tsx watch NO revive un crash de boot si no
-# cambian archivos (ej. el backend murió porque faltaba el dist de un package);
-# sin esto el pod queda zombi hasta recrearlo.
-if [ -d apps/backend ]; then
-  echo "[dev] backend tsx watch en :$BACKEND_PORT"
-  (
-    intento=0
-    while true; do
-      npm run dev -w apps/backend && break
+# mata un PID y toda su descendencia (sin procps: recorre /proc). Se usa para
+# reiniciar limpiamente backend (npm→tsx→node) sin dejar el puerto ocupado.
+matar_arbol() {
+  for hijo in $(cat /proc/"$1"/task/"$1"/children 2>/dev/null); do matar_arbol "$hijo"; done
+  kill -TERM "$1" 2>/dev/null || true
+}
+
+# supervisor de un proceso de la app: re-sourcea dev.env en CADA arranque, lo
+# lanza, y lo vigila. Si aparece el sentinel de reinicio (rama.sh) mata el árbol y
+# relanza con la NUEVA config; si murió solo (crash de boot) reintenta con backoff.
+# \$1 = etiqueta ; resto = comando.
+supervisar() {
+  etiqueta="$1"; shift
+  intento=0
+  while true; do
+    . /mke/cargar-dev-env.sh
+    "$@" &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+      if [ -f /workspace/.dev/restart ]; then
+        echo "[dev] reinicio de $etiqueta (cambió la rama/config)"
+        matar_arbol "$pid"
+        break
+      fi
+      sleep 2
+    done
+    wait "$pid" 2>/dev/null || true
+    if [ -f /workspace/.dev/restart ]; then
+      intento=0
+    else
       intento=$((intento+1))
       if [ "$intento" -lt 6 ]; then espera=$((intento*5)); else espera=30; fi
-      echo "[dev] backend murió (intento $intento) — reinicio en \${espera}s"
+      echo "[dev] $etiqueta murió (intento $intento) — reinicio en \${espera}s"
       sleep "$espera"
-    done
-  ) &
+    fi
+  done
+}
+
+# backend en modo watch (tsx). Corre por-workspace (no turbo) para no acoplar el
+# arranque a un script 'dev' opaco: el pod controla puertos y topología del proxy.
+if [ -d apps/backend ]; then
+  echo "[dev] backend tsx watch en :$BACKEND_PORT"
+  supervisar backend sh -c 'npm run dev -w apps/backend' &
 fi
 
 # frontend vite dev con la config generada (HMR wss:443)
 echo "[dev] vite dev en :$VITE_PORT"
-( cd "$FRONT" && npx vite -c vite.dev.mke.config.ts ) &
+supervisar vite sh -c "cd '$FRONT' && npx vite -c vite.dev.mke.config.ts" &
 
 # poll opcional: cada POLL_SECONDS trae origin/<rama activa> (semántica de pull).
 if [ "\${POLL_SECONDS:-0}" -gt 0 ] 2>/dev/null; then
@@ -247,7 +358,10 @@ wait
 `;
 
 /** cambio de rama (exec por el CLI): fetch + checkout + install si cambió el
- * lockfile + reset de la DB. tsx/vite recogen los archivos solos. */
+ * lockfile + reset de la DB + RECARGA de la config por-rama (dev.env). tsx/vite
+ * recogen los archivos solos; la NUEVA dev.env se aplica reiniciando backend/vite
+ * vía el sentinel /workspace/.dev/restart (los supervisores de boot-dev.sh la
+ * re-sourcean al relanzar). Así "cambiar de rama recoge los envs DE ESA rama". */
 const RAMA_SH = `#!/bin/sh
 set -eu
 NUEVA="\${1:?uso: rama.sh <rama>}"
@@ -264,7 +378,15 @@ if [ "$LOCK_ANTES" != "$LOCK_DESPUES" ]; then
   npm install --no-audit --no-fund
 fi
 sh /mke/build-packages.sh
+# config pública de la NUEVA rama → al entorno de este exec (para migrar/sembrar);
+# los supervisores de la app la re-sourcean al reiniciar (sentinel de abajo).
+. /mke/cargar-dev-env.sh
 sh /mke/reset-db.sh
+# pide a los supervisores de backend/vite un reinicio para adoptar la nueva
+# dev.env (ventana > el poll de 2s de supervisar; luego se limpia el sentinel).
+touch /workspace/.dev/restart
+sleep 4
+rm -f /workspace/.dev/restart
 echo "[dev] rama activa: $NUEVA @ $(git rev-parse --short HEAD)"
 `;
 
@@ -470,6 +592,7 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
     data: {
       "prepare.sh": PREPARE_SH,
       "build-packages.sh": BUILD_PACKAGES_SH,
+      "cargar-dev-env.sh": CARGAR_DEV_ENV_SH,
       "boot-dev.sh": BOOT_DEV_SH,
       "reset-db.sh": RESET_DB_SH,
       "rama.sh": RAMA_SH,

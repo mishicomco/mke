@@ -59,18 +59,9 @@ const HELP = `mke — CLI de plataforma MKE
   mke preview down <nombre>                       borra el preview <slugApp>-<feature> (el que muestra ls): namespace + CNAME (vía API Cloudflare)
         opciones: --dry-run
   mke preview ls                                  lista los previews vivos en mke-preview
-  mke rama up <app> <rama>                        enciende un "pod de rama" (harness v2): imagen genérica que clona la rama al arrancar (git), instala, construye el front y corre backend+front mismo origen + postgres efímero; CNAME <app>-<slug>-feat
-        opciones: --json  --dry-run (imprime manifiestos)  --sin-dns (no toca Cloudflare)  --repo-url <url>
-  mke rama down <app> <rama>                      apaga la rama: borra deployment/service/ingress/configmap/secret + CNAME (idempotente)
-        opciones: --json  --sin-dns
-  mke rama ls [<app>]                             lista las ramas encendidas (edad/estado)  · opción: --json
-  mke dev up <app> [<rama>]                        enciende el SERVIDOR DE ITERACIÓN (pod DURADERO por app): clona el repo y corre la app en modo dev real (vite dev HMR + tsx watch); rama default main; CNAME <app>-dev-feat
-        opciones: --nombre <n> (varios por app)  --poll <s> (auto-refresca al detectar push)  --seed "<cmd>"  --env K1=V1,K2=V2 (env extra por app: va en un Secret k8s + envFrom al pod ENTERO, init incluido; NO dupliques claves de la receta: PORT, PREVIEW, DATABASE_URL, RAMA, NODE_ENV)  --live (modo EMBED: vite bajo /live/<app>/ + annotation mke.dev/live=true, para que Studio embeba la app same-origen)  --json  --dry-run  --sin-dns  --repo-url <url>
-  mke dev rama <app> <rama>                         git checkout <rama> DENTRO del pod + reset de la DB efímera  · opciones: --nombre <n>  --json
-  mke dev pull <app>                                trae los cambios de la rama activa YA (git reset --hard; tsx/vite recogen solos)  · opciones: --nombre <n>  --json
-  mke dev estado <app>                              rama activa + sha vivo + edad + host  · opciones: --nombre <n>  --json
-  mke dev ls [<app>]                                lista los servidores de iteración (rama/edad/estado)  · opción: --json
-  mke dev down <app>                                apaga el servidor: borra deployment/service/ingress/configmap/secret + CNAME  · opciones: --nombre <n>  --json  --sin-dns
+  mke dev up <app> [<rama>]                        enciende el SERVIDOR DE ITERACIÓN (pod DURADERO por app, ÚNICO mecanismo de rama): clona el repo y corre la app en modo dev real (vite dev HMR + tsx watch); rama default main; CNAME <app>-dev-feat  ·  detalle: mke dev --help
+  mke dev rama|pull|estado|ls|down …               cambiar de rama / pull / estado / listar / apagar  ·  detalle: mke dev --help
+  mke rama up|down|ls …                            DEPRECADO — fachada de \`mke dev\` (up ⇒ dev up --live)  ·  detalle: mke rama --help
   mke dns <host|app> <env>                       crea/repara/REPUNTA el CNAME al tunnel del entorno vía API Cloudflare (env: local|stage|prod|preview; con preview pasá el host completo)
   mke doctor <host> [path]                       diagnostica la cadena pública y dice qué capa está rota
   mke ls [env]                                    inventario de ingresses (host → servicio) por entorno
@@ -81,6 +72,46 @@ const HELP = `mke — CLI de plataforma MKE
        mke doctor agents-stage.mishi.com.co
        mke ls stage
        mke app init barrio-mishi --env stage --dry-run`;
+
+const DEV_HELP = `mke dev — SERVIDOR DE ITERACIÓN (pod DURADERO por app; ÚNICO mecanismo de rama)
+
+  Clúster mke-preview, ns \`dev\` (JAMÁS mke-prod). El pod clona el repo y corre la
+  app en MODO DEV REAL (vite dev HMR + tsx watch) sobre postgres efímero. Cambiar
+  de rama / traer cambios = git DENTRO del pod, sin recrear el pod.
+
+  mke dev up <app> [<rama>]        enciende (rama default main). CNAME <app>-dev-feat.mishi.com.co
+        --nombre <n>               varios servidores de la misma app a la vez
+        --poll <s>                 auto-refresca al detectar push en la rama activa
+        --seed "<cmd>"             comando de siembra de la app
+        --env K1=V1,K2=V2          override PUNTUAL de config (Secret k8s + envFrom al pod ENTERO, init incluido).
+                                   GANA sobre k8s/dev.env. NO dupliques claves de la receta (PORT, PREVIEW, DATABASE_URL, RAMA, NODE_ENV).
+        --live                     modo EMBED: vite bajo /live/<app>/ + annotation mke.dev/live=true (Studio embebe same-origen)
+        --json  --dry-run  --sin-dns  --repo-url <url>
+  mke dev rama <app> <rama>        git checkout <rama> DENTRO del pod + reset DB + recarga k8s/dev.env de esa rama  · --nombre --json
+  mke dev pull <app>               trae la rama activa YA (git reset --hard; tsx/vite recogen solos)  · --nombre --json
+  mke dev estado <app>             rama activa + sha VIVO del workspace + edad + host  · --nombre --json
+  mke dev ls [<app>]               lista los servidores de iteración (rama/edad/estado)  · --json
+  mke dev down <app>               apaga: borra deployment/service/ingress/configmap/secret + CNAME  · --nombre --json --sin-dns
+
+  CONFIG PÚBLICA por-rama (k8s/dev.env): la app declara sus envs NO secretos
+  (ej. VITE_CONNECT_URL, VITE_GOOGLE_CLIENT_ID) en \`k8s/dev.env\` (líneas K=V) de
+  su repo. El pod la sourcea al boot y al cambiar de rama, así cada rama trae SU
+  config y re-aplicar \`up\` sin --env no pierde nada. PRECEDENCIA (mayor gana):
+    --env del CLI  >  k8s/dev.env  >  defaults de la receta
+  PROHIBIDO secretos en dev.env (para secretos: contrato RAMA_ENCENDIDA / a futuro leases de vault-mishi).
+
+  Estado para Studio: labels/annotations \`mke.dev/*\` (app, rama, sha VIVO, live).`;
+
+const RAMA_HELP = `mke rama — DEPRECADO: fachada de \`mke dev\`
+
+  Ya NO hay dos mecanismos de pods de rama. El ÚNICO es el pod de iteración
+  DURADERO de \`mke dev\`. \`mke rama\` se conserva como atajo y delega:
+
+  mke rama up   <app> <rama>   ⇒  mke dev up <app> <rama> --live
+  mke rama down <app> [<rama>] ⇒  mke dev down <app>
+  mke rama ls   [<app>]        ⇒  mke dev ls [<app>]
+
+  Migrá tu dedo/scripts a \`mke dev\`. Ver \`mke dev --help\`.`;
 
 async function main() {
   const [, , cmd, ...rest] = process.argv;
@@ -160,7 +191,9 @@ async function main() {
     }
     case "rama": {
       const [action, ...rargs] = positional;
-      const imagesDir = fileURLToPath(new URL("../../images/rama-runner", import.meta.url));
+      if (flags.help || action === "help") { console.log(RAMA_HELP); break; }
+      // FACHADA DEPRECADA de `mke dev`: usa la imagen del pod de iteración.
+      const imagesDir = fileURLToPath(new URL("../../images/dev-runner", import.meta.url));
       if (action === "up") {
         const [app, rama] = rargs;
         if (!app || !rama) return fail("uso: mke rama up <app> <rama> [--json] [--dry-run] [--sin-dns] [--repo-url url]");
@@ -186,6 +219,7 @@ async function main() {
     }
     case "dev": {
       const [action, ...dargs] = positional;
+      if (flags.help || action === "help") { console.log(DEV_HELP); break; }
       const imagesDir = fileURLToPath(new URL("../../images/dev-runner", import.meta.url));
       const nombre = typeof flags.nombre === "string" ? flags.nombre : undefined;
       if (action === "up") {

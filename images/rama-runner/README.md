@@ -1,4 +1,11 @@
-# mke-rama-runner
+# mke-rama-runner — DEPRECADO
+
+> **DEPRECADO (unificación 2026-07-06).** El "pod de rama" EFÍMERO (front
+> estático, una FOTO) murió como concepto. El ÚNICO mecanismo de rama es el pod
+> de ITERACIÓN de [`dev-runner`](../dev-runner) (`mke dev`); `mke rama` es hoy una
+> fachada de `mke dev`. Detalle y plan de migración de Studio:
+> `packages/rama-receta/DEPRECATED.md`. Esta imagen se conserva solo mientras
+> Studio vendoriza la receta vieja.
 
 Imagen genérica del **pod de rama** de Mishi Studio v2 (verbo `mke rama`). Una sola
 imagen para TODAS las apps: NO se construye una imagen por rama. El pod clona la

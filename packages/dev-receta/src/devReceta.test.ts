@@ -9,6 +9,8 @@ import {
   devLiveBase,
   viteDevConfig,
   manifiestosDev,
+  parseDotEnv,
+  mergeDevEnv,
   DEV_VITE_PORT,
   type K8sManifest,
 } from "./devReceta.js";
@@ -100,6 +102,54 @@ test("manifiestosDev: sin --live NO hay base, ni redirect, ni annotation live", 
   assert.ok(!("mke.dev/live" in ann), "sin annotation live");
 });
 
+test("parseDotEnv: K=V, ignora vacías/comentarios, recorta clave y valor", () => {
+  const txt = [
+    "# config pública de la rama",
+    "VITE_CONNECT_URL=https://connect.dev.svc",
+    "  VITE_GOOGLE_CLIENT_ID = abc.apps.googleusercontent.com  ",
+    "",
+    "# comentario",
+    "SIN_IGUAL",
+    "=sin-clave",
+    "TOKEN=a=b=c",
+  ].join("\n");
+  assert.deepEqual(parseDotEnv(txt), {
+    VITE_CONNECT_URL: "https://connect.dev.svc",
+    VITE_GOOGLE_CLIENT_ID: "abc.apps.googleusercontent.com",
+    TOKEN: "a=b=c",
+  });
+  assert.deepEqual(parseDotEnv(""), {});
+});
+
+test("mergeDevEnv: PRECEDENCIA — el --env del CLI GANA sobre el archivo dev.env", () => {
+  const archivo = { VITE_CONNECT_URL: "https://del-archivo", VITE_X: "1" };
+  const cli = { VITE_CONNECT_URL: "https://del-cli" };
+  assert.deepEqual(mergeDevEnv(archivo, cli), {
+    VITE_CONNECT_URL: "https://del-cli", // override gana
+    VITE_X: "1", // el archivo rellena lo que el CLI no trae
+  });
+  // sin overrides, el archivo manda tal cual
+  assert.deepEqual(mergeDevEnv(archivo), archivo);
+  assert.deepEqual(mergeDevEnv({}, cli), cli);
+});
+
+test("manifiestosDev: ConfigMap trae cargar-dev-env.sh; boot y rama lo sourcean", () => {
+  const ms = manifiestosDev({ app: "mishi-bank", repoUrl: "https://x/y.git" });
+  const cm = porKind(ms, "ConfigMap") as any;
+  assert.ok(cm.data["cargar-dev-env.sh"], "ConfigMap trae el loader de dev.env");
+  // el loader lee k8s/dev.env y solo exporta si la clave NO está ya en el entorno
+  // (así --env del CLI, ya en el entorno por el Secret, GANA sobre el archivo)
+  assert.match(cm.data["cargar-dev-env.sh"], /k8s\/dev\.env/, "lee k8s/dev.env de la app");
+  assert.match(cm.data["cargar-dev-env.sh"], /printenv "\$clave"/, "no pisa lo ya presente (--env gana)");
+  // boot-dev.sh y rama.sh sourcean el loader
+  for (const s of ["boot-dev.sh", "rama.sh"]) {
+    assert.match(cm.data[s], /\. \/mke\/cargar-dev-env\.sh/, `${s} sourcea la config de la app`);
+  }
+  // cambiar de rama pide reinicio de la app para adoptar la nueva dev.env
+  assert.match(cm.data["rama.sh"], /\/workspace\/\.dev\/restart/, "rama.sh dispara el reinicio");
+  assert.match(cm.data["boot-dev.sh"], /\/workspace\/\.dev\/restart/, "boot supervisa el sentinel");
+});
+
 test("manifiestosDev: recursos esperados, ns dev, nombre y host", () => {
   const name = devName("mishi-bank");
   const host = devHost("mishi-bank");
@@ -183,7 +233,7 @@ test("manifiestosDev: emptyDir para workspace y pgdata (efímero); imagen overri
 test("manifiestosDev: el ConfigMap trae los scripts, la vite config y el Caddyfile", () => {
   const ms = manifiestosDev({ app: "mishi-bank", repoUrl: "https://x/y.git" });
   const cm = porKind(ms, "ConfigMap") as any;
-  for (const f of ["prepare.sh", "build-packages.sh", "boot-dev.sh", "reset-db.sh", "rama.sh", "pull.sh", "poll.sh", "vite.dev.mke.config.ts", "Caddyfile"]) {
+  for (const f of ["prepare.sh", "build-packages.sh", "cargar-dev-env.sh", "boot-dev.sh", "reset-db.sh", "rama.sh", "pull.sh", "poll.sh", "vite.dev.mke.config.ts", "Caddyfile"]) {
     assert.ok(cm.data[f], `ConfigMap trae ${f}`);
   }
   // caddy proxya /api, /health y /dev (contrato de escena) al backend y todo lo
@@ -203,10 +253,11 @@ test("manifiestosDev: los packages del workspace se construyen tras install/chec
   for (const script of ["prepare.sh", "rama.sh", "pull.sh"]) {
     assert.match(cm.data[script], /sh \/mke\/build-packages\.sh/, `${script} construye los packages`);
   }
-  // el backend se reinicia con backoff si muere en el boot (tsx watch no revive
-  // un crash si no cambian archivos)
-  assert.match(cm.data["boot-dev.sh"], /backend murió/, "loop de reinicio del backend");
+  // backend y vite corren en un supervisor que reinicia con backoff si mueren en
+  // el boot (tsx watch no revive un crash si no cambian archivos)
+  assert.match(cm.data["boot-dev.sh"], /murió \(intento/, "loop de reinicio con backoff");
   assert.match(cm.data["boot-dev.sh"], /sleep "\$espera"/, "backoff entre reintentos");
+  assert.match(cm.data["boot-dev.sh"], /supervisar backend /, "supervisor del backend");
 });
 
 test("manifiestosDev: envExtra va en un Secret <name>-env + envFrom en dev Y preparar, nunca en claro", () => {
