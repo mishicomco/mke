@@ -1,5 +1,6 @@
 import { envOrThrow } from "./mkeConfig.js";
-import { run, ok, bad, info } from "./sh.js";
+import { run, bad } from "./sh.js";
+import { paso, pasoStreamCmd } from "./progresoVivo.js";
 
 /**
  * `rollout restart` + `status` para un Deployment ya desplegado. Útil cuando la
@@ -9,24 +10,23 @@ import { run, ok, bad, info } from "./sh.js";
 export async function rollout(app: string, env: string, deployName?: string): Promise<void> {
   const spec = envOrThrow(env);
   const name = deployName ?? app;
-  console.log(info(`rollout restart deploy/${name} (${spec.context}/${spec.namespace})`));
 
-  const r = await run("kubectl", [
+  const r = await paso(`rollout restart deploy/${name} (${spec.context}/${spec.namespace})`, () => run("kubectl", [
     "--context", spec.context, "-n", spec.namespace,
     "rollout", "restart", `deploy/${name}`,
-  ]);
+  ]));
   if (r.code !== 0) {
     console.log(bad(`rollout restart falló: ${r.stderr || r.stdout}`));
     return;
   }
 
-  const status = await run("kubectl", [
-    "--context", spec.context, "-n", spec.namespace,
-    "rollout", "status", `deploy/${name}`, "--timeout=120s",
-  ]);
-  if (status.code !== 0) {
-    console.log(bad(`rollout no convergió: ${status.stderr || status.stdout}`));
+  const statusCode = await pasoStreamCmd(
+    `rollout status deploy/${name}`,
+    "kubectl",
+    ["--context", spec.context, "-n", spec.namespace, "rollout", "status", `deploy/${name}`, "--timeout=120s"],
+  );
+  if (statusCode !== 0) {
+    console.log(bad("rollout no convergió"));
     return;
   }
-  console.log(ok(status.stdout.split("\n").pop() ?? "rollout listo"));
 }
