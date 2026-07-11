@@ -18,27 +18,6 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import {
-  RAMA_NAMESPACE,
-  RAMA_HOST_SUFFIX,
-  RAMA_RUNNER_IMAGE,
-  slugFeature,
-  ramaName,
-  ramaHost,
-} from "@mishicomco/rama-receta";
-import {
-  DEV_NAMESPACE,
-  DEV_HOST_SUFFIX,
-  DEV_RUNNER_IMAGE,
-  devName,
-  devHost,
-} from "@mishicomco/dev-receta";
-
-// slug/nombres/host de ramas viven en @mishicomco/rama-receta (dueño ÚNICO de la
-// receta, compartido con Mishi Studio). Se re-exportan para no romper importadores.
-export { slugFeature, ramaName, ramaHost };
-// nombres/host del pod de iteración viven en @mishicomco/dev-receta.
-export { devName, devHost };
 
 export interface EnvSpec {
   /** contexto kubectl */
@@ -85,12 +64,9 @@ export const ENVS: Record<string, EnvSpec> = {
 export const DOMAIN = "mishi.com.co";
 
 /**
- * Clúster de PREVIEWS/RAMAS (Studio v2 + `mke preview`/`mke dev`). Cluster k3d
- * SEPARADO del de prod (nunca se toca mke-prod). Infra compartida (contexto,
- * cluster, túnel, zone id) por los mecanismos de rama; cada uno vive en su
- * propio namespace (`dev`, `preview`, …) y define su propio host/nombre — ver
- * `@mishicomco/dev-receta` (`previewPodName`/`previewPodHost` para `mke preview`,
- * `devName`/`devHost` para `mke dev`).
+ * Clúster de PREVIEWS (Studio v2 + `mke preview`). Cluster k3d SEPARADO del de
+ * prod (nunca se toca mke-prod). Namespace `preview`; nombre/host de cada pod
+ * los deriva `@mishicomco/dev-receta` (`previewPodName`/`previewPodHost`).
  *
  * El túnel `mke-preview` se crea en bootstrap-preview.sh; su UUID se resuelve en
  * runtime (`cloudflared tunnel list`) para no hardcodearlo. Zone id de la zona
@@ -104,52 +80,6 @@ export const PREVIEW = {
   hostSuffix: "-pre",
   /** zona Cloudflare de mishi.com.co (constante; la descubrió el token dns-api). */
   zoneId: "00efc72c39940d1e3c22f2916641efc0",
-} as const;
-
-/**
- * RAMAS del harness v2 (verbo `mke rama`). Reusa el MISMO clúster/túnel de
- * previews (mke-preview; jamás mke-prod), pero es un mecanismo distinto:
- *  - SIN imagen por rama: una imagen genérica de runner clona la rama en el
- *    arranque, instala, construye el front y corre el backend (mismo origen).
- *  - Todas las ramas viven en UN namespace compartido `ramas`; cada rama es un
- *    Deployment+Service+Ingress(+ConfigMap) con nombre `<app>-<slug(rama)>`.
- *  - Host público `<app>-<slug(rama)>-feat.mishi.com.co` (patrón con GUIÓN de un
- *    nivel, como previews; el Universal SSL de Cloudflare cubre un solo nivel).
- */
-export const RAMA = {
-  context: PREVIEW.context,
-  cluster: PREVIEW.cluster,
-  tunnelName: PREVIEW.tunnelName,
-  zoneId: PREVIEW.zoneId,
-  // ns / sufijo / imagen los DUEÑA la receta compartida (@mishicomco/rama-receta).
-  namespace: RAMA_NAMESPACE,
-  /** sufijo público: `<app>-<slug(rama)>-feat.mishi.com.co`. */
-  hostSuffix: RAMA_HOST_SUFFIX,
-  /** imagen genérica del runner (ver images/rama-runner). */
-  runnerImage: RAMA_RUNNER_IMAGE,
-} as const;
-
-/**
- * DEV del harness v2 (verbo `mke dev`) — el "pod de ITERACIÓN". Reusa el MISMO
- * clúster/túnel de previews (mke-preview; jamás mke-prod), pero es un mecanismo
- * distinto de `rama`:
- *  - pod DURADERO por app (no una foto): corre la app en MODO DEV REAL (vite dev
- *    con HMR + tsx watch) sobre un clone del repo; cambiar de rama / traer
- *    cambios = git DENTRO del pod (checkout/reset) sin recrear el pod.
- *  - ns PROPIO `dev` (separado de `ramas`) para que `dev ls`/`dev down` nunca
- *    pisen recursos de rama, y viceversa.
- *  - Host `<app>-dev-feat.mishi.com.co` (o `<app>-<nombre>-dev-feat…` con
- *    --nombre para varios servidores de la misma app). El sufijo `-feat` cae bajo
- *    el guardarraíl de DNS efímero del CLI (borrado seguro).
- */
-export const DEV = {
-  context: PREVIEW.context,
-  cluster: PREVIEW.cluster,
-  tunnelName: PREVIEW.tunnelName,
-  zoneId: PREVIEW.zoneId,
-  namespace: DEV_NAMESPACE,
-  hostSuffix: DEV_HOST_SUFFIX,
-  runnerImage: DEV_RUNNER_IMAGE,
 } as const;
 
 /**
