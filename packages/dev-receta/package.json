@@ -1,7 +1,7 @@
 {
   "name": "@mishicomco/dev-receta",
   "version": "0.1.0",
-  "description": "Receta compartida del 'pod de iteración' (`mke dev`) del harness v2 de Mishi Studio: generación PURA de manifiestos de k8s (Namespace/Secret/ConfigMap/Deployment/Service/Ingress) + nombres/host + config de vite del modo dev (HMR wss:443). Pod DURADERO por app que corre la app en modo dev real (vite dev + tsx watch) y cuyo contenido cambia con git. Consumida por el CLI `mke` y por Mishi Studio.",
+  "description": "Receta compartida del preview-pod (`mke preview`) del harness v2 de Mishi Studio: generación PURA de manifiestos de k8s (Namespace/Secret/ConfigMap/Deployment/Service/Ingress) + nombres/host + config de vite del modo dev (HMR wss:443). Pod EFÍMERO atado a la vida de la rama que corre la app en modo dev real (vite dev + tsx watch) sobre un clone del repo. Consumida por el CLI `mke` y por Mishi Studio.",
   "license": "UNLICENSED",
   "type": "module",
   "main": "./src/devReceta.ts",
