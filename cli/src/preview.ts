@@ -198,6 +198,18 @@ async function adquirirLease(app: string, rama: string, manifiesto: PreviewManif
       ttlSegundos: opts.ttlSegundos,
     });
     if (!opts.json) console.log(ok(`lease ${dim(lease.leaseId)} · expira ${dim(lease.expiraEn)}`));
+    // re-up: revoca el lease ANTERIOR del bundle (si había) — sin esto cada
+    // re-up fuga un lease activo hasta su TTL. Revocar DESPUÉS de emitir el
+    // nuevo: si la emisión falla, el pod viejo conserva su lease.
+    const anterior = await leaseIdDe(app, rama);
+    if (anterior && anterior !== lease.leaseId) {
+      try {
+        await revocarLease(vaultCliente(emisor), anterior);
+        if (!opts.json) console.log(dim(`  lease anterior ${anterior} revocado`));
+      } catch (e) {
+        if (!opts.json) console.log(warn(`no pude revocar el lease anterior ${anterior} (el TTL lo limpia): ${e instanceof Error ? e.message : String(e)}`));
+      }
+    }
     return { leaseId: lease.leaseId, leaseToken: lease.token };
   } catch (e) {
     if (!opts.json) console.log(warn(`vault sin escenario 4 — pod sin lease, secretos de app no disponibles (${e instanceof Error ? e.message : String(e)})`));

@@ -84,6 +84,8 @@ export async function revocarLease(opts: VaultClienteOpts, leaseId: string): Pro
   const r = await f(`${opts.vaultUrl}/v1/lease/${encodeURIComponent(leaseId)}/revoke`, {
     method: "POST",
     headers: headers(opts.emisorToken),
+    // body vacío explícito: content-type json SIN body hace reventar a Fastify (500)
+    body: "{}",
   });
   return leerJson(r, "revocar lease");
 }

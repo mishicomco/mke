@@ -52,12 +52,12 @@ test("crearLease: HTTP no-2xx revienta con el status y el cuerpo", async () => {
   );
 });
 
-test("revocarLease: POST /v1/lease/:id/revoke (path-encoded) con Bearer, sin body", async () => {
+test("revocarLease: POST /v1/lease/:id/revoke (path-encoded) con Bearer y body {} (json vacío revienta Fastify)", async () => {
   const { calls, fetchImpl } = mockFetch({ status: 200, body: { leaseId: "l1", estado: "revocado" } });
   const r = await revocarLease({ vaultUrl: "https://v", emisorToken: "e", fetchImpl }, "lease/con espacio");
   assert.equal(calls[0].url, "https://v/v1/lease/lease%2Fcon%20espacio/revoke");
   assert.equal(calls[0].init?.method, "POST");
-  assert.equal(calls[0].init?.body, undefined);
+  assert.equal(calls[0].init?.body, "{}");
   assert.deepEqual(r, { leaseId: "l1", estado: "revocado" });
 });
 
