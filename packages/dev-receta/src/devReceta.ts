@@ -791,20 +791,28 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
   ];
 }
 
-// ─── preview-pod (`mke preview`, 2026-07-11) — feature-pod EFÍMERO atado a la
-// vida de la RAMA. Reusa la MISMA anatomía de `manifiestosDev` (init clona+
-// instala, vite HMR + tsx watch, caddy un-solo-origen) con dos diferencias:
-//  - namespace/host PROPIOS, con la rama SIEMPRE en el nombre (como el
-//    feature-pod que se discutió el 2026-07-09): `<app>-<slug(rama)>`, host
-//    BARE (sin sufijo) `<app>-<slug(rama)>.mishi.com.co`.
-//  - SIN sidecar de postgres: la DB es la efímera de postgres-mishi
-//    (`databases-dev`, una por app×rama) — `databaseUrl` es OBLIGATORIO y
-//    viaja en claro al env (misma convención que `DATABASE_URL` en stage/prod;
-//    no es un secreto de la app, es la ubicación de su propia DB efímera).
-//    Migrar/sembrar los orquesta el CLI por `kubectl exec` tras el rollout
-//    (igual patrón que `mishi-studio/scripts/iterar-rama.sh`), no el boot.
+// ─── preview-pod (`mke preview`, verbo DEFINITIVO — fusión 2026-07-11) — pod
+// EFÍMERO atado a la vida de la RAMA. Reusa la MISMA anatomía de `manifiestosDev`
+// (init clona+instala, vite HMR + tsx watch, caddy un-solo-origen, POSTGRES
+// EFÍMERO como sidecar) con las diferencias de fondo del verbo:
+//  - namespace/host PROPIOS, con la rama SIEMPRE en el nombre: `<app>-<slug(rama)>`,
+//    host BARE (sin sufijo) `<app>-<slug(rama)>.mishi.com.co` (un solo label DNS).
+//  - DB = SIDECAR postgres efímero (emptyDir): muere con el pod, sin DROP central.
+//    `DATABASE_URL` apunta al loopback (`127.0.0.1:5432/dev`). Migrar/sembrar y
+//    `--espejo` los orquesta el CLI por `kubectl exec` tras el rollout (igual
+//    patrón que `mishi-studio/scripts/iterar-rama.sh`); el boot además corre un
+//    `db:migrate` idempotente para auto-sanar el schema si el pod reinicia.
+//  - Secretos/config resueltos por un LEASE del vault (Contrato 1): el token del
+//    lease viaja en un Secret propio `<name>-lease` + env `LEASE_TOKEN`, y TODO
+//    el bundle lleva los labels `mke.preview/app|rama|lease`. La `config` NO
+//    sensible del manifiesto `mke.preview.yaml` (Contrato 2) va directo al env
+//    en claro. CERO `--env` humano. DEGRADACIÓN interina: si el vault aún no
+//    tiene el escenario 4, el CLI arranca SIN lease (`leaseId="sin-lease"`, sin
+//    Secret de lease) — el pod corre igual para probar pod+DB+HMR.
 
 export const PREVIEW_NAMESPACE = "preview";
+/** valor del label `mke.preview/lease` cuando se arranca sin lease (vault sin escenario 4). */
+export const PREVIEW_SIN_LEASE = "sin-lease";
 /** host BARE (sin sufijo): `<app>-<slug(rama)>.mishi.com.co`, un solo label DNS. */
 export const PREVIEW_HOST_SUFFIX = "";
 export const PREVIEW_RUNNER_IMAGE = DEV_RUNNER_IMAGE;
@@ -839,9 +847,10 @@ export function selectorDePreview(app: string, rama: string): string {
   return `mke.preview/app=${app},mke.preview/rama=${slugDev(rama)}`;
 }
 
-/** boot del preview-pod: SIN wait/reset de un postgres LOCAL (la DB es externa
- * y persiste entre reinicios del pod — resetearla en cada boot borraría el
- * trabajo de la rama). Migrar/sembrar los corre el CLI por kubectl exec. */
+/** boot del preview-pod: espera al SIDECAR postgres y corre un \`db:migrate\`
+ * idempotente (auto-sana el schema si el pod reinició con la DB efímera vacía).
+ * NO resetea ni siembra: la siembra inicial y el \`--espejo\` los orquesta el CLI
+ * por kubectl exec tras el rollout (para que \`up\` controle sembrar vs espejo). */
 const BOOT_PREVIEW_SH = `#!/bin/sh
 set -eu
 cd /workspace/repo
@@ -849,9 +858,17 @@ mkdir -p /workspace/.dev
 rm -f /workspace/.dev/restart
 RAMA_ACTIVA=$(cat /workspace/.dev/rama 2>/dev/null || echo "$RAMA")
 
+echo "[preview] esperando postgres…"
+until pg_isready -h 127.0.0.1 -p 5432 -U dev >/dev/null 2>&1; do sleep 2; done
+
 # config PÚBLICA por-rama declarada por la app (k8s/dev.env) → al entorno ANTES
-# de arrancar la app. Precedencia: --env gana (mismo loader que \`mke dev\`).
+# de migrar/arrancar la app. La config del Contrato 2 (mke.preview.yaml) ya vino
+# por env del Deployment; \`cargar-dev-env.sh\` es un complemento opcional del repo.
 . /mke/cargar-dev-env.sh
+
+# migración idempotente de auto-sanado (si el pod reinició con la DB vacía). La
+# siembra/espejo inicial la corre el CLI tras el rollout — acá NO se siembra.
+npm run db:migrate -w apps/backend || echo "[preview] db:migrate en boot falló (sigo; el CLI lo reintenta)"
 
 FRONT=apps/frontend
 [ -d "$FRONT" ] || FRONT=.
@@ -912,10 +929,16 @@ export interface PreviewRecetaInput {
   rama: string;
   /** URL de clone (puede llevar el token embebido). */
   repoUrl: string;
-  /** DATABASE_URL de la DB efímera de esta app×rama en postgres-mishi
-   * (`databases-dev`). Va DIRECTO al env, en claro (misma convención que en
-   * stage/prod: la ubicación de la DB no es un secreto de la app). */
-  databaseUrl: string;
+  /** identidad del lease del vault (Contrato 1) — va en el label `mke.preview/lease`.
+   * En modo degradado (vault sin escenario 4) es `PREVIEW_SIN_LEASE`. */
+  leaseId: string;
+  /** token del lease (Contrato 1): el pod lo usa para leer sus secretos del vault.
+   * Viaja en un Secret propio (`<name>-lease`), NUNCA en claro en el Deployment.
+   * Ausente ⇒ modo degradado (sin Secret de lease ni env `LEASE_TOKEN`). */
+  leaseToken?: string;
+  /** mapa `config` del manifiesto `mke.preview.yaml` (Contrato 2): NO-secretos,
+   * van directo al env del pod en claro (URLs internas, flags). */
+  config?: Record<string, string>;
   /** imagen genérica del runner (default = la de `mke dev`). */
   imagen?: string;
   namespace?: string;
@@ -923,19 +946,18 @@ export interface PreviewRecetaInput {
   domain?: string;
   pollSeconds?: number;
   live?: boolean;
-  /** pares VAR=valor extra por app (`--env`), Secret propio `<name>-env` +
-   * envFrom (init Y contenedor dev) — igual convención que `mke dev`. */
-  envExtra?: Record<string, string>;
   /** token de LECTURA de GitHub Packages (opcional, igual que en `mke dev`). */
   npmToken?: string;
 }
 
 /**
  * Namespace + Secret(s) + ConfigMap + Deployment + Service + Ingress del
- * preview-pod, como OBJETOS. Deriva de `manifiestosDev`: mismo init (clona +
- * instala), mismo caddy un-solo-origen, pero SIN sidecar de postgres (DB
- * externa por `databaseUrl`) y namespace/nombre/host propios con la rama
- * siempre en el nombre.
+ * preview-pod, como OBJETOS. Misma anatomía que `manifiestosDev` (init clona +
+ * instala, vite HMR + tsx watch, caddy un-solo-origen, POSTGRES efímero sidecar)
+ * pero: namespace/host/nombre propios con la RAMA en el nombre; CERO `--env`
+ * humano (la `config` del Contrato 2 va al env en claro y el `leaseToken` del
+ * Contrato 1 va en un Secret propio + env `LEASE_TOKEN`); TODO objeto del bundle
+ * lleva los labels `mke.preview/app|rama|lease`.
  */
 export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
   const app = inp.app;
@@ -951,6 +973,7 @@ export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
   const labels: Record<string, string> = {
     "mke.preview/app": app,
     "mke.preview/rama": ramaSlug,
+    "mke.preview/lease": inp.leaseId,
   };
 
   const namespaceObj: K8sManifest = {
@@ -967,18 +990,21 @@ export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
     data: { REPO_URL: b64(inp.repoUrl) },
   };
 
-  const envExtra = inp.envExtra ?? {};
-  const hayEnvExtra = Object.keys(envExtra).length > 0;
-  const envSecretObj: K8sManifest | null = hayEnvExtra
+  // token del lease (Contrato 1) → Secret propio + env LEASE_TOKEN. NUNCA los
+  // valores de `secretos` en claro: eso lo materializa el vault con este token.
+  // Sin leaseToken ⇒ modo degradado (vault sin escenario 4): no hay Secret.
+  const leaseSecretObj: K8sManifest | null = inp.leaseToken
     ? {
         apiVersion: "v1",
         kind: "Secret",
-        metadata: { name: `${name}-env`, namespace, labels },
+        metadata: { name: `${name}-lease`, namespace, labels },
         type: "Opaque",
-        data: Object.fromEntries(Object.entries(envExtra).map(([k, v]) => [k, b64(v)])),
+        data: { LEASE_TOKEN: b64(inp.leaseToken) },
       }
     : null;
-  const envFrom = hayEnvExtra ? [{ secretRef: { name: `${name}-env` } }] : undefined;
+  const leaseTokenEnv = inp.leaseToken
+    ? [{ name: "LEASE_TOKEN", valueFrom: { secretKeyRef: { name: `${name}-lease`, key: "LEASE_TOKEN" } } }]
+    : [];
 
   const npmSecretObj: K8sManifest | null = inp.npmToken
     ? {
@@ -1010,8 +1036,10 @@ export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
     },
   };
 
-  // PREVIEW=true (convención existente, consumida por apps ya en producción) +
-  // PREVIEW_MODE=true (pedido explícito del contrato de siembra de este verbo).
+  // config (Contrato 2) va DIRECTO al env, en claro (no son secretos). PREVIEW=true
+  // (convención existente) + PREVIEW_MODE=true (contrato de siembra de este verbo).
+  // DATABASE_URL apunta al SIDECAR loopback (la DB efímera muere con el pod).
+  const configEnv = Object.entries(inp.config ?? {}).map(([k, value]) => ({ name: k, value }));
   const devEnv: { name: string; value: string }[] = [
     { name: "APP", value: app },
     { name: "RAMA", value: rama },
@@ -1022,7 +1050,8 @@ export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
     { name: "BACKEND_PORT", value: String(DEV_BACKEND_PORT) },
     { name: "VITE_PORT", value: String(DEV_VITE_PORT) },
     { name: "POLL_SECONDS", value: String(pollSeconds) },
-    { name: "DATABASE_URL", value: inp.databaseUrl },
+    { name: "DATABASE_URL", value: "postgres://dev:dev@127.0.0.1:5432/dev" },
+    ...configEnv,
   ];
 
   const podLabels = { app: name, ...labels };
@@ -1054,7 +1083,6 @@ export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
               image: imagen,
               imagePullPolicy: "IfNotPresent",
               command: ["sh", "/mke/prepare.sh"],
-              ...(envFrom ? { envFrom } : {}),
               env: [
                 { name: "APP", value: app },
                 { name: "RAMA", value: rama },
@@ -1069,12 +1097,28 @@ export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
           ],
           containers: [
             {
+              name: "postgres",
+              image: "postgres:16-alpine",
+              env: [
+                { name: "POSTGRES_USER", value: "dev" },
+                { name: "POSTGRES_PASSWORD", value: "dev" },
+                { name: "POSTGRES_DB", value: "dev" },
+                { name: "PGDATA", value: "/var/lib/postgresql/data/pgdata" },
+              ],
+              ports: [{ containerPort: 5432 }],
+              readinessProbe: {
+                exec: { command: ["pg_isready", "-U", "dev", "-d", "dev"] },
+                periodSeconds: 3,
+                failureThreshold: 40,
+              },
+              volumeMounts: [{ name: "pgdata", mountPath: "/var/lib/postgresql/data" }],
+            },
+            {
               name: "dev",
               image: imagen,
               imagePullPolicy: "IfNotPresent",
               command: ["sh", "/mke/boot-preview.sh"],
-              ...(envFrom ? { envFrom } : {}),
-              env: [...devEnv, ...npmTokenEnv],
+              env: [...devEnv, ...leaseTokenEnv, ...npmTokenEnv],
               volumeMounts: [
                 { name: "workspace", mountPath: "/workspace" },
                 { name: "scripts", mountPath: "/mke" },
@@ -1095,6 +1139,7 @@ export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
           ],
           volumes: [
             { name: "workspace", emptyDir: {} },
+            { name: "pgdata", emptyDir: {} },
             { name: "scripts", configMap: { name: `${name}-scripts`, defaultMode: 0o755 } },
           ],
         },
@@ -1126,7 +1171,7 @@ export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
   return [
     namespaceObj,
     secretObj,
-    ...(envSecretObj ? [envSecretObj] : []),
+    ...(leaseSecretObj ? [leaseSecretObj] : []),
     ...(npmSecretObj ? [npmSecretObj] : []),
     configMapObj,
     deploymentObj,

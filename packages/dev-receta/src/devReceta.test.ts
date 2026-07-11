@@ -17,6 +17,7 @@ import {
   previewPodHost,
   selectorDePreview,
   manifiestosPreview,
+  PREVIEW_SIN_LEASE,
   type K8sManifest,
 } from "./devReceta.js";
 
@@ -439,63 +440,72 @@ test("selectorDePreview: label por app×rama (rama slugueada)", () => {
   assert.equal(selectorDePreview("mishi-bank", "feat/Cobros"), "mke.preview/app=mishi-bank,mke.preview/rama=feat-cobros");
 });
 
-test("manifiestosPreview: recursos esperados, ns preview, SIN sidecar postgres", () => {
+test("manifiestosPreview: recursos esperados, ns preview, SIDECAR postgres + DATABASE_URL loopback", () => {
   const ms = manifiestosPreview({
     app: "mishi-bank",
     rama: "feat/cobros",
     repoUrl: "https://github.com/mishicomco/mishi-bank.git",
-    databaseUrl: "postgres://mishi_bank:pw@postgres.databases-dev.svc.cluster.local:5432/mishi_bank_feat_cobros",
+    leaseId: "lease-1",
+    leaseToken: "lease-tok",
   });
   assert.deepEqual(
     ms.map((m) => m.kind),
-    ["Namespace", "Secret", "ConfigMap", "Deployment", "Service", "Ingress"],
+    ["Namespace", "Secret", "Secret", "ConfigMap", "Deployment", "Service", "Ingress"],
+    "git + lease Secrets",
   );
   assert.equal((porKind(ms, "Namespace").metadata as any).name, "preview");
   const name = previewPodName("mishi-bank", "feat/cobros");
   assert.equal((porKind(ms, "Deployment").metadata as any).name, name);
   assert.equal((porKind(ms, "Deployment").metadata as any).labels["mke.preview/app"], "mishi-bank");
   assert.equal((porKind(ms, "Deployment").metadata as any).labels["mke.preview/rama"], "feat-cobros");
+  assert.equal((porKind(ms, "Deployment").metadata as any).labels["mke.preview/lease"], "lease-1");
   assert.equal(((porKind(ms, "Ingress").spec as any).rules[0].host), previewPodHost("mishi-bank", "feat/cobros"));
 
   const podSpec = (porKind(ms, "Deployment").spec as any).template.spec;
   const nombres = podSpec.containers.map((c: any) => c.name).sort();
-  assert.deepEqual(nombres, ["dev", "web"], "sin sidecar postgres: la DB es externa");
+  assert.deepEqual(nombres, ["dev", "postgres", "web"], "SIDECAR postgres: la DB muere con el pod");
+  assert.ok(podSpec.volumes.some((v: any) => v.name === "pgdata" && v.emptyDir), "pgdata emptyDir efímero");
 
   const dev = podSpec.containers.find((c: any) => c.name === "dev");
   assert.deepEqual(dev.command, ["sh", "/mke/boot-preview.sh"]);
   const val = (n: string) => dev.env.find((e: any) => e.name === n)?.value;
   assert.equal(val("PREVIEW"), "true");
   assert.equal(val("PREVIEW_MODE"), "true");
-  assert.equal(
-    val("DATABASE_URL"),
-    "postgres://mishi_bank:pw@postgres.databases-dev.svc.cluster.local:5432/mishi_bank_feat_cobros",
-  );
+  assert.equal(val("DATABASE_URL"), "postgres://dev:dev@127.0.0.1:5432/dev", "DATABASE_URL al sidecar loopback");
 });
 
-test("manifiestosPreview: envExtra/npmToken siguen la misma convención que mke dev (Secret + envFrom, nunca en claro)", () => {
+test("manifiestosPreview: leaseToken → Secret <name>-lease + env LEASE_TOKEN, nunca en claro; config al env", () => {
   const ms = manifiestosPreview({
     app: "mishi-bank",
     rama: "main",
     repoUrl: "https://x/y.git",
-    databaseUrl: "postgres://x/y",
-    envExtra: { CONNECT_URL: "http://connect.dev.svc" },
+    leaseId: "lease-9",
+    leaseToken: "tok_secreto",
+    config: { IDENTITY_URL: "http://identity-preview.dev.svc:3000" },
     npmToken: "ghp_secreto",
   });
-  const envSecret = ms.find(
-    (m) => m.kind === "Secret" && (m.metadata as any).name === "mishi-bank-main-env",
-  ) as any;
-  assert.ok(envSecret, "Secret <name>-env presente");
-  assert.equal(Buffer.from(envSecret.data.CONNECT_URL, "base64").toString("utf8"), "http://connect.dev.svc");
-  const npmSecret = ms.find(
-    (m) => m.kind === "Secret" && (m.metadata as any).name === "mishi-bank-main-npm",
-  ) as any;
-  assert.ok(npmSecret, "Secret <name>-npm presente");
-  assert.ok(!JSON.stringify(ms).includes("ghp_secreto"), "token nunca en claro");
+  const leaseSecret = ms.find((m) => m.kind === "Secret" && (m.metadata as any).name === "mishi-bank-main-lease") as any;
+  assert.ok(leaseSecret, "Secret <name>-lease presente");
+  assert.equal(Buffer.from(leaseSecret.data.LEASE_TOKEN, "base64").toString("utf8"), "tok_secreto");
+  assert.ok(!JSON.stringify(ms).includes("tok_secreto"), "leaseToken nunca en claro");
+  assert.ok(!JSON.stringify(ms).includes("ghp_secreto"), "npmToken nunca en claro");
+
+  const dev = (porKind(ms, "Deployment").spec as any).template.spec.containers.find((c: any) => c.name === "dev");
+  assert.ok(dev.env.some((e: any) => e.name === "LEASE_TOKEN" && e.valueFrom?.secretKeyRef?.name === "mishi-bank-main-lease"), "LEASE_TOKEN por secretKeyRef");
+  assert.ok(dev.env.some((e: any) => e.name === "IDENTITY_URL" && e.value === "http://identity-preview.dev.svc:3000"), "config al env en claro");
 });
 
-test("manifiestosPreview: sin --live NO hay redirect ni annotation live; con --live sí", () => {
-  const sinLive = manifiestosPreview({ app: "mishi-bank", rama: "main", repoUrl: "https://x/y.git", databaseUrl: "postgres://x/y" });
+test("manifiestosPreview: DEGRADACIÓN sin leaseToken → sin Secret de lease, label lease=sin-lease, sin env LEASE_TOKEN", () => {
+  const ms = manifiestosPreview({ app: "mishi-bank", rama: "main", repoUrl: "https://x/y.git", leaseId: PREVIEW_SIN_LEASE });
+  assert.ok(!ms.some((m) => m.kind === "Secret" && (m.metadata as any).name === "mishi-bank-main-lease"), "sin Secret de lease");
+  assert.equal((porKind(ms, "Deployment").metadata as any).labels["mke.preview/lease"], "sin-lease");
+  const dev = (porKind(ms, "Deployment").spec as any).template.spec.containers.find((c: any) => c.name === "dev");
+  assert.ok(!dev.env.some((e: any) => e.name === "LEASE_TOKEN"), "sin env LEASE_TOKEN en modo degradado");
+});
+
+test("manifiestosPreview: sin --live NO hay annotation live; con --live sí", () => {
+  const sinLive = manifiestosPreview({ app: "mishi-bank", rama: "main", repoUrl: "https://x/y.git", leaseId: "l1", leaseToken: "t" });
   assert.ok(!("mke.dev/live" in ((porKind(sinLive, "Deployment").metadata as any).annotations)));
-  const conLive = manifiestosPreview({ app: "mishi-bank", rama: "main", repoUrl: "https://x/y.git", databaseUrl: "postgres://x/y", live: true });
+  const conLive = manifiestosPreview({ app: "mishi-bank", rama: "main", repoUrl: "https://x/y.git", leaseId: "l1", leaseToken: "t", live: true });
   assert.equal(((porKind(conLive, "Deployment").metadata as any).annotations)["mke.dev/live"], "true");
 });
