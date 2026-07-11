@@ -119,6 +119,52 @@ export function devLiveBase(app: string): string {
   return `/live/${app}/`;
 }
 
+// ─── feature-pod (`mke feature`, 2026-07-10) — nombres/host (PUROS) ──────────
+//
+// `mke feature` es el sucesor de `mke dev` con secretos/config resueltos por
+// LEASE del vault (Contrato 1/2 de vault-mishi/create-mishi-app), no por
+// `--env` humano. Reusa la MISMA anatomía de pod (init clona+instala, vite HMR
+// + tsx watch, caddy un-solo-origen, postgres efímero) — ver `manifiestosFeature`
+// abajo, que deriva de `manifiestosDev`. Vive en su PROPIO namespace `feature`
+// (separado de `dev`/`ramas`) para que `feature ls`/`down` nunca pisen recursos
+// de los otros mecanismos. Host CON la rama: `<app>-<rama>-feat.mishi.com.co`
+// (a diferencia de `dev`, que usa `--nombre` opcional; acá la rama SIEMPRE va
+// en el nombre porque puede haber varias ramas de la misma app en paralelo).
+
+export const FEATURE_NAMESPACE = "feature";
+export const FEATURE_HOST_SUFFIX = "-feat";
+export const FEATURE_RUNNER_IMAGE = DEV_RUNNER_IMAGE;
+
+/** nombre del feature-pod: `<app>-<slug(rama)>`, saneado para k8s/DNS. */
+export function featureName(app: string, rama: string): string {
+  const slugRama = slugDev(rama);
+  const s = `${app}-${slugRama}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 50)
+    .replace(/^-+|-+$/g, "");
+  if (!s) throw new Error(`no pude derivar un nombre de feature válido de '${app}'/'${rama}'`);
+  return s;
+}
+
+/** host público del feature-pod: `<app>-<slug(rama)>-feat.mishi.com.co`. */
+export function featureHost(
+  app: string,
+  rama: string,
+  opts: { hostSuffix?: string; domain?: string } = {},
+): string {
+  const suffix = opts.hostSuffix ?? FEATURE_HOST_SUFFIX;
+  const domain = opts.domain ?? DEV_DOMAIN;
+  return `${featureName(app, rama)}${suffix}.${domain}`;
+}
+
+/** labelSelector canónico del bundle de un feature-pod (Contrato 1, sección
+ * "Convención de labels" — NO negociable): `app`, `rama` (sanitizada) y `lease`. */
+export function selectorDeFeature(app: string, rama: string): string {
+  return `mke.feature/app=${app},mke.feature/rama=${slugDev(rama)}`;
+}
+
 // ─── config de vite del modo dev (PURA; la posee la receta) ──────────────────
 
 /**
@@ -783,6 +829,273 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
     namespaceObj,
     secretObj,
     ...(envSecretObj ? [envSecretObj] : []),
+    ...(npmSecretObj ? [npmSecretObj] : []),
+    configMapObj,
+    deploymentObj,
+    serviceObj,
+    ingressObj,
+  ];
+}
+
+// ─── feature-pod: manifiestos (PUROS) — deriva de manifiestosDev ─────────────
+
+export interface FeatureRecetaInput {
+  /** nombre público/corto de la app (= ns en el vault y en k8s; ej `mishi-bank`). */
+  app: string;
+  /** rama git a encender. */
+  rama: string;
+  /** URL de clone (puede llevar el token embebido). */
+  repoUrl: string;
+  /** identidad del lease del vault (Contrato 1) — va en el label `mke.feature/lease`. */
+  leaseId: string;
+  /** token del lease (Contrato 1): el pod lo usa para leer sus secretos del vault.
+   * Viaja en un Secret propio (`<name>-lease`), NUNCA en claro en el Deployment. */
+  leaseToken: string;
+  /** mapa `config` del manifiesto `mke.feature.yaml` (Contrato 2): NO-secretos,
+   * van directo al env del pod en claro (URLs internas, flags). */
+  config?: Record<string, string>;
+  /** imagen genérica del runner (default = la de `mke dev`). */
+  imagen?: string;
+  namespace?: string;
+  hostSuffix?: string;
+  domain?: string;
+  pollSeconds?: number;
+  seedCmd?: string;
+  live?: boolean;
+  /** token de LECTURA de GitHub Packages (opcional, igual que en `mke dev`). */
+  npmToken?: string;
+}
+
+/**
+ * Namespace + Secret(s) + ConfigMap + Deployment + Service + Ingress del
+ * feature-pod, como OBJETOS. Misma anatomía que `manifiestosDev` (init clona +
+ * instala, vite HMR + tsx watch, caddy un-solo-origen, postgres efímero) pero:
+ *  - namespace/host/nombre propios (`featureName`/`featureHost`, con la RAMA en
+ *    el nombre, no `--nombre` opcional),
+ *  - CERO `envExtra`/`--env` humano: `config` (Contrato 2) va directo al env en
+ *    claro, y el `leaseToken` (Contrato 1) va en un Secret propio + env
+ *    `LEASE_TOKEN` — es lo único sensible que mke maneja, y ni siquiera es un
+ *    secreto de la app (es la credencial efímera para que el pod pida los
+ *    suyos al vault; el CONTRATO no exige que mke los vea en claro),
+ *  - TODO objeto del bundle lleva los labels `mke.feature/app|rama|lease`
+ *    (Contrato 1, convención NO negociable — el reconciliador del vault
+ *    selecciona por `mke.feature/lease`).
+ */
+export function manifiestosFeature(inp: FeatureRecetaInput): K8sManifest[] {
+  const app = inp.app;
+  const rama = inp.rama;
+  const namespace = inp.namespace ?? FEATURE_NAMESPACE;
+  const imagen = inp.imagen ?? FEATURE_RUNNER_IMAGE;
+  const pollSeconds = inp.pollSeconds ?? 0;
+  const name = featureName(app, rama);
+  const host = featureHost(app, rama, { hostSuffix: inp.hostSuffix, domain: inp.domain });
+  const liveBase = inp.live ? devLiveBase(app) : undefined;
+  const ramaSlug = slugDev(rama);
+
+  const labels: Record<string, string> = {
+    "mke.feature/app": app,
+    "mke.feature/rama": ramaSlug,
+    "mke.feature/lease": inp.leaseId,
+  };
+
+  const namespaceObj: K8sManifest = {
+    apiVersion: "v1",
+    kind: "Namespace",
+    metadata: { name: namespace, labels: { "app.kubernetes.io/part-of": "mke-feature" } },
+  };
+
+  const secretObj: K8sManifest = {
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: { name: `${name}-git`, namespace, labels },
+    type: "Opaque",
+    data: { REPO_URL: b64(inp.repoUrl) },
+  };
+
+  // el token del lease (Contrato 1) → Secret propio + env LEASE_TOKEN. NUNCA
+  // valores de `secretos` del manifiesto en claro: eso lo materializa el vault.
+  const leaseSecretObj: K8sManifest = {
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: { name: `${name}-lease`, namespace, labels },
+    type: "Opaque",
+    data: { LEASE_TOKEN: b64(inp.leaseToken) },
+  };
+  const leaseTokenEnv = [
+    { name: "LEASE_TOKEN", valueFrom: { secretKeyRef: { name: `${name}-lease`, key: "LEASE_TOKEN" } } },
+  ];
+
+  const npmSecretObj: K8sManifest | null = inp.npmToken
+    ? {
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: { name: `${name}-npm`, namespace, labels },
+        type: "Opaque",
+        data: { NODE_AUTH_TOKEN: b64(inp.npmToken) },
+      }
+    : null;
+  const npmTokenEnv: { name: string; valueFrom: unknown }[] = inp.npmToken
+    ? [{ name: "NODE_AUTH_TOKEN", valueFrom: { secretKeyRef: { name: `${name}-npm`, key: "NODE_AUTH_TOKEN" } } }]
+    : [];
+
+  const configMapObj: K8sManifest = {
+    apiVersion: "v1",
+    kind: "ConfigMap",
+    metadata: { name: `${name}-scripts`, namespace, labels },
+    data: {
+      "prepare.sh": PREPARE_SH,
+      "build-packages.sh": BUILD_PACKAGES_SH,
+      "cargar-dev-env.sh": CARGAR_DEV_ENV_SH,
+      "boot-dev.sh": BOOT_DEV_SH,
+      "reset-db.sh": RESET_DB_SH,
+      "rama.sh": RAMA_SH,
+      "pull.sh": PULL_SH,
+      "poll.sh": POLL_SH,
+      "vite.dev.mke.config.ts": viteDevConfig(DEV_VITE_PORT, liveBase),
+      Caddyfile: caddyfile(DEV_BACKEND_PORT, DEV_VITE_PORT, liveBase),
+    },
+  };
+
+  // config (Contrato 2) va DIRECTO al env, en claro (no son secretos). PREVIEW=true
+  // SIEMPRE, igual que en `mke dev`.
+  const configEnv = Object.entries(inp.config ?? {}).map(([name_, value]) => ({ name: name_, value }));
+  const devEnv: { name: string; value: string }[] = [
+    { name: "APP", value: app },
+    { name: "RAMA", value: rama },
+    { name: "PREVIEW", value: "true" },
+    { name: "NODE_ENV", value: "development" },
+    { name: "PORT", value: String(DEV_BACKEND_PORT) },
+    { name: "BACKEND_PORT", value: String(DEV_BACKEND_PORT) },
+    { name: "VITE_PORT", value: String(DEV_VITE_PORT) },
+    { name: "POLL_SECONDS", value: String(pollSeconds) },
+    { name: "DATABASE_URL", value: "postgres://dev:dev@127.0.0.1:5432/dev" },
+    ...configEnv,
+  ];
+  if (inp.seedCmd) devEnv.push({ name: "SEED_CMD", value: inp.seedCmd });
+
+  const podLabels = { app: name, ...labels };
+
+  const deploymentObj: K8sManifest = {
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    metadata: {
+      name,
+      namespace,
+      labels,
+      annotations: {
+        "mke.feature/rama": rama,
+        "mke.feature/sha": "",
+        ...(liveBase ? { "mke.dev/live": "true" } : {}),
+      },
+    },
+    spec: {
+      replicas: 1,
+      strategy: { type: "Recreate" },
+      selector: { matchLabels: { app: name } },
+      template: {
+        metadata: { labels: podLabels },
+        spec: {
+          securityContext: { fsGroup: 1000 },
+          initContainers: [
+            {
+              name: "preparar",
+              image: imagen,
+              imagePullPolicy: "IfNotPresent",
+              command: ["sh", "/mke/prepare.sh"],
+              env: [
+                { name: "APP", value: app },
+                { name: "RAMA", value: rama },
+                { name: "REPO_URL", valueFrom: { secretKeyRef: { name: `${name}-git`, key: "REPO_URL" } } },
+                ...npmTokenEnv,
+              ],
+              volumeMounts: [
+                { name: "workspace", mountPath: "/workspace" },
+                { name: "scripts", mountPath: "/mke" },
+              ],
+            },
+          ],
+          containers: [
+            {
+              name: "postgres",
+              image: "postgres:16-alpine",
+              env: [
+                { name: "POSTGRES_USER", value: "dev" },
+                { name: "POSTGRES_PASSWORD", value: "dev" },
+                { name: "POSTGRES_DB", value: "dev" },
+                { name: "PGDATA", value: "/var/lib/postgresql/data/pgdata" },
+              ],
+              ports: [{ containerPort: 5432 }],
+              readinessProbe: {
+                exec: { command: ["pg_isready", "-U", "dev", "-d", "dev"] },
+                periodSeconds: 3,
+                failureThreshold: 40,
+              },
+              volumeMounts: [{ name: "pgdata", mountPath: "/var/lib/postgresql/data" }],
+            },
+            {
+              name: "dev",
+              image: imagen,
+              imagePullPolicy: "IfNotPresent",
+              command: ["sh", "/mke/boot-dev.sh"],
+              env: [...devEnv, ...leaseTokenEnv, ...npmTokenEnv],
+              volumeMounts: [
+                { name: "workspace", mountPath: "/workspace" },
+                { name: "scripts", mountPath: "/mke" },
+              ],
+            },
+            {
+              name: "web",
+              image: "caddy:2-alpine",
+              command: ["caddy", "run", "--config", "/mke/Caddyfile", "--adapter", "caddyfile"],
+              ports: [{ containerPort: DEV_CADDY_PORT }],
+              readinessProbe: {
+                httpGet: { path: "/", port: DEV_CADDY_PORT },
+                periodSeconds: 5,
+                failureThreshold: 120,
+              },
+              volumeMounts: [{ name: "scripts", mountPath: "/mke" }],
+            },
+          ],
+          volumes: [
+            { name: "workspace", emptyDir: {} },
+            { name: "pgdata", emptyDir: {} },
+            { name: "scripts", configMap: { name: `${name}-scripts`, defaultMode: 0o755 } },
+          ],
+        },
+      },
+    },
+  };
+
+  const serviceObj: K8sManifest = {
+    apiVersion: "v1",
+    kind: "Service",
+    metadata: { name, namespace, labels },
+    spec: {
+      selector: { app: name },
+      ports: [{ port: 80, targetPort: DEV_CADDY_PORT }],
+    },
+  };
+
+  const ingressObj: K8sManifest = {
+    apiVersion: "networking.k8s.io/v1",
+    kind: "Ingress",
+    metadata: { name, namespace, labels },
+    spec: {
+      rules: [
+        {
+          host,
+          http: {
+            paths: [{ path: "/", pathType: "Prefix", backend: { service: { name, port: { number: 80 } } } }],
+          },
+        },
+      ],
+    },
+  };
+
+  return [
+    namespaceObj,
+    secretObj,
+    leaseSecretObj,
     ...(npmSecretObj ? [npmSecretObj] : []),
     configMapObj,
     deploymentObj,

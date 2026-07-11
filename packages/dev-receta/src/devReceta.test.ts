@@ -13,6 +13,11 @@ import {
   mergeDevEnv,
   clavesViteTokenProhibidas,
   DEV_VITE_PORT,
+  featureName,
+  featureHost,
+  selectorDeFeature,
+  manifiestosFeature,
+  FEATURE_NAMESPACE,
   type K8sManifest,
 } from "./devReceta.js";
 
@@ -414,4 +419,128 @@ test("manifiestosDev: annotations vivos rama/sha en el Deployment", () => {
   const ann = (porKind(ms, "Deployment").metadata as any).annotations;
   assert.equal(ann["mke.dev/rama"], "feat/x");
   assert.ok("mke.dev/sha" in ann, "annotation de sha presente (la llena el CLI)");
+});
+
+// ─── feature-pod (`mke feature`) ─────────────────────────────────────────────
+
+test("featureName/featureHost: nombre y host llevan la RAMA (no --nombre opcional)", () => {
+  assert.equal(featureName("mishi-bank", "feat/cobros"), "mishi-bank-feat-cobros");
+  assert.equal(featureHost("mishi-bank", "feat/cobros"), "mishi-bank-feat-cobros-feat.mishi.com.co");
+  assert.ok(featureHost("polla", "main").endsWith("-feat.mishi.com.co"));
+});
+
+test("selectorDeFeature: label selector app+rama sanitizada", () => {
+  assert.equal(selectorDeFeature("mishi-bank", "Feat/Cobros"), "mke.feature/app=mishi-bank,mke.feature/rama=feat-cobros");
+});
+
+test("manifiestosFeature: recursos esperados, ns feature propio, nombre y host con rama", () => {
+  const ms = manifiestosFeature({
+    app: "mishi-bank",
+    rama: "feat/cobros",
+    repoUrl: "https://github.com/mishicomco/mishi-bank.git",
+    leaseId: "lease-1",
+    leaseToken: "token-secreto",
+  });
+  assert.deepEqual(
+    ms.map((m) => m.kind),
+    ["Namespace", "Secret", "Secret", "ConfigMap", "Deployment", "Service", "Ingress"],
+  );
+  assert.equal((ms.find((m) => m.kind === "Namespace")!.metadata as any).name, FEATURE_NAMESPACE);
+  const dep = ms.find((m) => m.kind === "Deployment")!;
+  assert.equal((dep.metadata as any).name, featureName("mishi-bank", "feat/cobros"));
+  const ing = ms.find((m) => m.kind === "Ingress")!;
+  assert.equal((ing.spec as any).rules[0].host, featureHost("mishi-bank", "feat/cobros"));
+});
+
+test("manifiestosFeature: TODO objeto del bundle lleva mke.feature/app|rama|lease (Contrato 1)", () => {
+  const ms = manifiestosFeature({
+    app: "mishi-bank",
+    rama: "feat/cobros",
+    repoUrl: "https://x/y.git",
+    leaseId: "lease-abc123",
+    leaseToken: "token-secreto",
+  });
+  // el Namespace es COMPARTIDO por todos los feature-pods (no es del bundle de
+  // uno solo); el resto del bundle SÍ lleva los 3 labels (Contrato 1).
+  for (const m of ms.filter((x) => x.kind !== "Namespace")) {
+    const labels = (m.metadata as any).labels ?? {};
+    assert.equal(labels["mke.feature/app"], "mishi-bank", `${m.kind} label app`);
+    assert.equal(labels["mke.feature/rama"], "feat-cobros", `${m.kind} label rama (sanitizada)`);
+    assert.equal(labels["mke.feature/lease"], "lease-abc123", `${m.kind} label lease`);
+  }
+});
+
+test("manifiestosFeature: el leaseToken va en un Secret propio + env LEASE_TOKEN, nunca en claro", () => {
+  const ms = manifiestosFeature({
+    app: "mishi-bank",
+    rama: "main",
+    repoUrl: "https://x/y.git",
+    leaseId: "lease-1",
+    leaseToken: "super-secreto-del-vault",
+  });
+  const leaseSecret = ms.find(
+    (m) => m.kind === "Secret" && (m.metadata as any).name === `${featureName("mishi-bank", "main")}-lease`,
+  ) as any;
+  assert.ok(leaseSecret, "Secret <name>-lease presente");
+  assert.equal(Buffer.from(leaseSecret.data.LEASE_TOKEN, "base64").toString("utf8"), "super-secreto-del-vault");
+
+  const podSpec = (ms.find((m) => m.kind === "Deployment")!.spec as any).template.spec;
+  const dev = podSpec.containers.find((c: any) => c.name === "dev");
+  const e = dev.env.find((x: any) => x.name === "LEASE_TOKEN");
+  assert.ok(e, "el contenedor dev lleva LEASE_TOKEN");
+  assert.deepEqual(e.valueFrom, {
+    secretKeyRef: { name: `${featureName("mishi-bank", "main")}-lease`, key: "LEASE_TOKEN" },
+  });
+  assert.ok(!JSON.stringify(ms.find((m) => m.kind === "Deployment")).includes("super-secreto-del-vault"));
+});
+
+test("manifiestosFeature: `config` (Contrato 2) va DIRECTO al env del pod, en claro; CERO envExtra/--env", () => {
+  const ms = manifiestosFeature({
+    app: "mishi-bank",
+    rama: "main",
+    repoUrl: "https://x/y.git",
+    leaseId: "lease-1",
+    leaseToken: "t",
+    config: {
+      IDENTITY_URL: "http://identity-preview.dev.svc:3000",
+      IDENTITY_JWKS_URL: "http://identity-preview.dev.svc:3000/v1/llaves",
+    },
+  });
+  const podSpec = (ms.find((m) => m.kind === "Deployment")!.spec as any).template.spec;
+  const dev = podSpec.containers.find((c: any) => c.name === "dev");
+  const val = (n: string) => dev.env.find((e: any) => e.name === n)?.value;
+  assert.equal(val("IDENTITY_URL"), "http://identity-preview.dev.svc:3000");
+  assert.equal(val("IDENTITY_JWKS_URL"), "http://identity-preview.dev.svc:3000/v1/llaves");
+  // no hay envFrom (el mecanismo --env/Secret-env de `mke dev` está MUERTO acá)
+  for (const c of [...podSpec.initContainers, ...podSpec.containers]) {
+    assert.equal(c.envFrom, undefined, `${c.name} sin envFrom (CERO --env humano)`);
+  }
+});
+
+test("manifiestosFeature: sin `config` no revienta (solo los env base de la receta)", () => {
+  const ms = manifiestosFeature({
+    app: "polla",
+    rama: "main",
+    repoUrl: "https://x/y.git",
+    leaseId: "lease-1",
+    leaseToken: "t",
+  });
+  const podSpec = (ms.find((m) => m.kind === "Deployment")!.spec as any).template.spec;
+  const dev = podSpec.containers.find((c: any) => c.name === "dev");
+  assert.ok(dev.env.some((e: any) => e.name === "PREVIEW" && e.value === "true"));
+});
+
+test("manifiestosFeature: npmToken opcional igual que en manifiestosDev", () => {
+  const ms = manifiestosFeature({
+    app: "mishi-bank",
+    rama: "main",
+    repoUrl: "https://x/y.git",
+    leaseId: "lease-1",
+    leaseToken: "t",
+    npmToken: "ghp_x",
+  });
+  const npmSecret = ms.find(
+    (m) => m.kind === "Secret" && (m.metadata as any).name === `${featureName("mishi-bank", "main")}-npm`,
+  );
+  assert.ok(npmSecret, "Secret <name>-npm presente");
 });

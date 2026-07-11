@@ -14,8 +14,10 @@ import { ls } from "./ls.js";
 import { previewUp, previewDown, previewLs } from "./preview.js";
 import { ramaUp, ramaDown, ramaLs } from "./rama.js";
 import { devUp, devRama, devPull, devEstado, devLs, devDown, parseEnvExtra } from "./dev.js";
+import { featureUp, featurePull, featureDown, featureEstado, featureLs } from "./feature.js";
 import { hostFor } from "./mkeConfig.js";
 import { fileURLToPath } from "node:url";
+import { warn } from "./sh.js";
 
 function parseFlags(args: string[]): { positional: string[]; flags: Record<string, string | boolean> } {
   const positional: string[] = [];
@@ -59,9 +61,11 @@ const HELP = `mke — CLI de plataforma MKE
   mke preview down <nombre>                       borra el preview <slugApp>-<feature> (el que muestra ls): namespace + CNAME (vía API Cloudflare)
         opciones: --dry-run
   mke preview ls                                  lista los previews vivos en mke-preview
-  mke dev up <app> [<rama>]                        enciende el SERVIDOR DE ITERACIÓN (pod DURADERO por app, ÚNICO mecanismo de rama): clona el repo y corre la app en modo dev real (vite dev HMR + tsx watch); rama default main; CNAME <app>-dev-feat  ·  detalle: mke dev --help
+  mke dev up <app> [<rama>]                        DEPRECADO — usá \`mke feature\`. enciende el SERVIDOR DE ITERACIÓN (pod DURADERO por app); rama default main; CNAME <app>-dev-feat  ·  detalle: mke dev --help
   mke dev rama|pull|estado|ls|down …               cambiar de rama / pull / estado / listar / apagar  ·  detalle: mke dev --help
   mke rama up|down|ls …                            DEPRECADO — fachada de \`mke dev\` (up ⇒ dev up --live)  ·  detalle: mke rama --help
+  mke feature up <app> <rama>                      feature-pod EFÍMERO (SUCESOR de \`mke dev\`): lee mke.feature.yaml de la app, pide un LEASE de secretos al vault y enciende el pod (vite HMR + tsx watch); CERO --env. CNAME <app>-<rama>-feat  ·  detalle: mke feature --help
+  mke feature pull|estado|ls|down …                traer cambios + renovar lease / estado / listar / bajar (revoca el lease)  ·  detalle: mke feature --help
   mke dns <host|app> <env>                       crea/repara/REPUNTA el CNAME al tunnel del entorno vía API Cloudflare (env: local|stage|prod|preview; con preview pasá el host completo)
   mke doctor <host> [path]                       diagnostica la cadena pública y dice qué capa está rota
   mke ls [env]                                    inventario de ingresses (host → servicio) por entorno
@@ -101,6 +105,26 @@ const DEV_HELP = `mke dev — SERVIDOR DE ITERACIÓN (pod DURADERO por app; ÚNI
   PROHIBIDO secretos en dev.env (para secretos: contrato RAMA_ENCENDIDA / a futuro leases de vault-mishi).
 
   Estado para Studio: labels/annotations \`mke.dev/*\` (app, rama, sha VIVO, live).`;
+
+const FEATURE_HELP = `mke feature — FEATURE-POD efímero (2026-07-10, SUCESOR de \`mke dev\`)
+
+  Clúster mke-preview, ns \`feature\` (JAMÁS mke-prod). Misma anatomía de pod que
+  \`mke dev\` (init clona+instala, vite HMR + tsx watch, caddy un-solo-origen,
+  postgres efímero), pero secretos/config se resuelven por un LEASE del vault
+  (Contrato 1) leyendo \`mke.feature.yaml\` de la app (Contrato 2). CERO --env
+  humano: si necesitás un override puntual, se discute aparte.
+
+  mke feature up <app> <rama>       lee mke.feature.yaml del checkout local de la app → POST /v1/lease
+                                     al vault → enciende el pod con el token del lease + config como env.
+                                     CNAME <app>-<rama>-feat.mishi.com.co
+        --poll <s>  --seed "<cmd>"  --live  --ttl-segundos <n>  --json  --dry-run  --sin-dns  --repo-url <url>
+  mke feature pull <app> <rama>     git pull DENTRO del pod + renovar el lease (mantiene vivo el pod)
+  mke feature estado <app> <rama>   lease + estado del pod + host
+  mke feature ls [<app>]            lista los feature-pods vivos
+  mke feature down <app> <rama>     busca el lease de esa app×rama → revoke (idempotente) + borra el bundle k8s + CNAME
+        --json  --sin-dns
+
+  El token de la identidad EMISORA del vault: \`mishi-secret get vault-mishi-emisor-token\`.`;
 
 const RAMA_HELP = `mke rama — DEPRECADO: fachada de \`mke dev\`
 
@@ -220,6 +244,9 @@ async function main() {
     case "dev": {
       const [action, ...dargs] = positional;
       if (flags.help || action === "help") { console.log(DEV_HELP); break; }
+      if (flags.json !== true) {
+        console.error(warn(`\`mke dev\` está DEPRECADO — usá \`mke feature\` (secretos/config por lease del vault, CERO --env). Ver \`mke feature --help\`.`));
+      }
       const imagesDir = fileURLToPath(new URL("../../images/dev-runner", import.meta.url));
       const nombre = typeof flags.nombre === "string" ? flags.nombre : undefined;
       if (action === "up") {
@@ -256,6 +283,42 @@ async function main() {
         await devDown(app, { json: flags.json === true, sinDns: flags["sin-dns"] === true, nombre });
       } else {
         return fail("uso: mke dev up|rama|pull|estado|ls|down");
+      }
+      break;
+    }
+    case "feature": {
+      const [action, ...fargs] = positional;
+      if (flags.help || action === "help") { console.log(FEATURE_HELP); break; }
+      const imagesDir = fileURLToPath(new URL("../../images/dev-runner", import.meta.url));
+      if (action === "up") {
+        const [app, rama] = fargs;
+        if (!app || !rama) return fail("uso: mke feature up <app> <rama> [--poll s] [--seed cmd] [--live] [--ttl-segundos n] [--json] [--dry-run] [--sin-dns] [--repo-url url]");
+        await featureUp(app, rama, imagesDir, {
+          json: flags.json === true,
+          dryRun: flags["dry-run"] === true,
+          sinDns: flags["sin-dns"] === true,
+          repoUrl: typeof flags["repo-url"] === "string" ? flags["repo-url"] : undefined,
+          poll: typeof flags.poll === "string" ? Number(flags.poll) : undefined,
+          seed: typeof flags.seed === "string" ? flags.seed : undefined,
+          live: flags.live === true,
+          ttlSegundos: typeof flags["ttl-segundos"] === "string" ? Number(flags["ttl-segundos"]) : undefined,
+        });
+      } else if (action === "pull") {
+        const [app, rama] = fargs;
+        if (!app || !rama) return fail("uso: mke feature pull <app> <rama> [--json]");
+        await featurePull(app, rama, { json: flags.json === true });
+      } else if (action === "estado") {
+        const [app, rama] = fargs;
+        if (!app || !rama) return fail("uso: mke feature estado <app> <rama> [--json]");
+        await featureEstado(app, rama, { json: flags.json === true });
+      } else if (action === "ls" || action === undefined) {
+        await featureLs(fargs[0], { json: flags.json === true });
+      } else if (action === "down") {
+        const [app, rama] = fargs;
+        if (!app || !rama) return fail("uso: mke feature down <app> <rama> [--json] [--sin-dns]");
+        await featureDown(app, rama, { json: flags.json === true, sinDns: flags["sin-dns"] === true });
+      } else {
+        return fail("uso: mke feature up|pull|estado|ls|down");
       }
       break;
     }

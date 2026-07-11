@@ -32,6 +32,12 @@ import {
   DEV_RUNNER_IMAGE,
   devName,
   devHost,
+  FEATURE_NAMESPACE,
+  FEATURE_HOST_SUFFIX,
+  FEATURE_RUNNER_IMAGE,
+  featureName,
+  featureHost,
+  selectorDeFeature,
 } from "@mishicomco/dev-receta";
 
 // slug/nombres/host de ramas viven en @mishicomco/rama-receta (dueño ÚNICO de la
@@ -39,6 +45,8 @@ import {
 export { slugFeature, ramaName, ramaHost };
 // nombres/host del pod de iteración viven en @mishicomco/dev-receta.
 export { devName, devHost };
+// nombres/host/selector del feature-pod (`mke feature`, sucesor de `mke dev`).
+export { featureName, featureHost, selectorDeFeature };
 
 export interface EnvSpec {
   /** contexto kubectl */
@@ -148,6 +156,35 @@ export const DEV = {
   namespace: DEV_NAMESPACE,
   hostSuffix: DEV_HOST_SUFFIX,
   runnerImage: DEV_RUNNER_IMAGE,
+} as const;
+
+/**
+ * FEATURE del harness v2 (verbo `mke feature`, 2026-07-10) — SUCESOR de
+ * `mke dev`: mismo clúster/túnel de previews (mke-preview; jamás mke-prod),
+ * misma anatomía de pod, pero secretos/config resueltos por LEASE del vault
+ * (Contrato 1/2) en vez de `--env` humano. ns PROPIO `feature` (separado de
+ * `dev`/`ramas`). Host `<app>-<rama>-feat.mishi.com.co` (la rama SIEMPRE va en
+ * el nombre: puede haber varias ramas de la misma app en paralelo).
+ */
+export const FEATURE = {
+  context: PREVIEW.context,
+  cluster: PREVIEW.cluster,
+  tunnelName: PREVIEW.tunnelName,
+  zoneId: PREVIEW.zoneId,
+  namespace: FEATURE_NAMESPACE,
+  hostSuffix: FEATURE_HOST_SUFFIX,
+  runnerImage: FEATURE_RUNNER_IMAGE,
+} as const;
+
+/**
+ * vault-mishi: emisor de LEASES efímeros app×rama (Contrato 1). URL horneada
+ * como los demás EnvSpec; override con `VAULT_URL` (útil para pruebas/otros
+ * entornos). El token de la identidad EMISORA (root en MVP) se lee de
+ * `mishi-secret get vault-mishi-emisor-token` en tiempo de uso — nunca acá.
+ */
+export const VAULT = {
+  url: process.env.VAULT_URL ?? "http://vault-mishi.vault-mishi.svc.cluster.local:8080",
+  emisorTokenSecret: "vault-mishi-emisor-token",
 } as const;
 
 /**
