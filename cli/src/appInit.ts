@@ -21,6 +21,7 @@ import { appsRoot, envOrThrow, hostFor } from "./mkeConfig.js";
 import { EXEC_CONTEXT, POD, nsForEnv, toSnake } from "./dbProvision.js";
 import { ensureDns } from "./dns.js";
 import { run, ok, bad, info, warn, dim } from "./sh.js";
+import { ensureStaticHostPaso, planStaticHosts } from "./staticHost.js";
 
 export interface AppInitOpts {
   /** dominio público si difiere del id interno del app (default: mismo nombre). */
@@ -60,6 +61,8 @@ export async function appInit(app: string, env: string, opts: AppInitOpts): Prom
     console.log(`  3. namespace \`${spec.namespace}\` (${spec.context}) — crear si no existe`);
     console.log(`     Secret k8s \`${k8sSecretName}\` con DATABASE_URL + SESSION_SECRET (aleatorio)`);
     console.log(`  4. DNS: ${host} → tunnel ${spec.tunnelUuid} (mismo mecanismo que \`mke expose\`/\`mke dns\`)`);
+    const planHosts = planStaticHosts(subdominio);
+    console.log(`  5. host del front en static-mishi (ingress stage+prod, SIEMPRE ambos): ${planHosts.stageHost} + ${planHosts.prodHost}`);
     console.log(`\n  ${dim(`sufijo público del entorno: "${dnsSuffix || "(prod, sin sufijo)"}"`)}`);
     console.log(info("nada ejecutado (--dry-run)"));
     return;
@@ -163,7 +166,12 @@ ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT ALL PRIVILEGES
     console.log(warn("DNS no quedó verificado — revisá arriba; los demás pasos sí se completaron"));
   }
 
-  // 5) resumen.
+  // 5) host del front en static-mishi — SIEMPRE ambos entornos (stage+prod): el
+  // ingress no depende de en qué env se provisionó la BD hoy.
+  const staticResult = await ensureStaticHostPaso(app, subdominio);
+  steps.push({ name: `host static-mishi`, already: staticResult?.already ?? false });
+
+  // 6) resumen.
   console.log(`\n  ${info("resumen")}`);
   for (const s of steps) {
     console.log(`    ${s.already ? warn(`${s.name}: ya existía`) : ok(`${s.name}: creado`)}`);
