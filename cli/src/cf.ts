@@ -6,6 +6,7 @@
 // existente a otro túnel ni borrarlo. El upsert de acá sí hace las tres cosas.
 
 import { PREVIEW } from "./mkeConfig.js";
+import { previewPodHost } from "@mishicomco/dev-receta";
 import { run } from "./sh.js";
 
 let cachedToken: string | null = null;
@@ -83,14 +84,26 @@ export async function upsertCname(name: string, target: string): Promise<"ok" | 
 /**
  * Borra TODOS los records cuyo nombre sea exactamente `name`. Idempotente:
  * si no hay ninguno, no hace nada. Guardarraíl: solo borra hosts efímeros que
- * terminen en `-pre.mishi.com.co` (previews) o `-feat.mishi.com.co` (ramas) —
- * jamás toca prod ni otros hosts.
+ * terminen en `-pre.mishi.com.co` (previews viejos) o `-feat.mishi.com.co`
+ * (dev/rama) — jamás toca prod ni otros hosts.
+ *
+ * `mke preview` (2026-07-11) usa un host BARE `<app>-<slug(rama)>.mishi.com.co`
+ * sin sufijo fijo (un solo label DNS), así que no puede validarse por sufijo:
+ * el guardarraíl acá es EXACTO — solo se permite si `name` es literalmente el
+ * host que `previewPodHost(previewApp, previewRama)` calcularía (que SIEMPRE
+ * lleva la rama en el nombre — no puede colisionar con un host bare de prod).
  */
 const SUFIJOS_EFIMEROS = [`${PREVIEW.hostSuffix}.mishi.com.co`, "-feat.mishi.com.co"];
 
-export async function deleteRecordsByName(name: string): Promise<number> {
-  if (!SUFIJOS_EFIMEROS.some((s) => name.endsWith(s))) {
-    throw new Error(`rechazo borrar DNS de '${name}': solo hosts efímeros ${SUFIJOS_EFIMEROS.join(" / ")}`);
+export async function deleteRecordsByName(
+  name: string,
+  opts: { previewApp?: string; previewRama?: string } = {},
+): Promise<number> {
+  const esPreviewExacto = Boolean(
+    opts.previewApp && opts.previewRama && name === previewPodHost(opts.previewApp, opts.previewRama),
+  );
+  if (!SUFIJOS_EFIMEROS.some((s) => name.endsWith(s)) && !esPreviewExacto) {
+    throw new Error(`rechazo borrar DNS de '${name}': solo hosts efímeros ${SUFIJOS_EFIMEROS.join(" / ")} o el host EXACTO de un preview-pod (app+rama)`);
   }
   const records = await findRecords(name);
   for (const rec of records) {
