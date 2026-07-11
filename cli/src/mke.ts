@@ -10,6 +10,7 @@ import { publish } from "./publish.js";
 import { rollout } from "./rollout.js";
 import { dbProvision } from "./dbProvision.js";
 import { appInit } from "./appInit.js";
+import { ensureStaticHostPaso } from "./staticHost.js";
 import { ls } from "./ls.js";
 import { previewUp, previewPull, previewEstado, previewLs, previewMerge, previewDown, previewLimpiar } from "./preview.js";
 import { ramaUp, ramaDown, ramaLs } from "./rama.js";
@@ -50,8 +51,11 @@ const HELP = `mke — CLI de plataforma MKE
   mke db provision <app> <env>                   crea BD+rol de la app en postgres-mishi (idempotente; imprime DATABASE_URL)
         opciones: --password <pw>   (prod → ns databases · stage/local → databases-dev)
   mke app init <app>                             nacimiento de plataforma para una app nueva, EN UN COMANDO (idempotente):
-                                                  BD+rol → mishi-secret → namespace+Secret k8s (DATABASE_URL+SESSION_SECRET) → DNS
+                                                  BD+rol → mishi-secret → namespace+Secret k8s (DATABASE_URL+SESSION_SECRET) → DNS → host static-mishi
         opciones: --env stage|prod (default stage)  --subdominio <name>  --dry-run
+  mke static agregar <sub>                      agrega el host de <sub> al ingress de static-mishi (stage+prod), idempotente
+                                                  (paso suelto de \`mke app init\`; útil si el nacimiento ya pasó sin este paso)
+        opciones: --dry-run
   mke expose <app> <env> --host-port <N>        expone un servicio del HOST (systemd) en <app><suffix>.mishi.com.co
   mke expose <app> <env> --svc <name:port>      expone un servicio del CLUSTER ya existente
         opciones: --host <fqdn>  (override del subdominio)   --path </>
@@ -199,6 +203,12 @@ async function main() {
         subdominio: typeof flags.subdominio === "string" ? flags.subdominio : undefined,
         dryRun: flags["dry-run"] === true,
       });
+      break;
+    }
+    case "static": {
+      const [action, sub] = positional;
+      if (action !== "agregar" || !sub) return fail("uso: mke static agregar <sub> [--dry-run]");
+      await ensureStaticHostPaso(sub, sub, { dryRun: flags["dry-run"] === true });
       break;
     }
     case "ls": {
