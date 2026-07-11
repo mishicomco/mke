@@ -42,8 +42,9 @@ test("parsePreviewManifest: nunca confunde un VALOR de config con un comentario 
   assert.equal(m.config.URL, "http://a.b/c");
 });
 
-test("parsePreviewManifest: falta 'app' → revienta con mensaje claro", () => {
-  assert.throws(() => parsePreviewManifest("secretos:\n  - X\n"), /falta 'app'/);
+test("parsePreviewManifest: 'app' opcional (la pone el caller) y sanity check si difiere", () => {
+  assert.deepEqual(parsePreviewManifest("secretos:\n  - X\n", "mi-app"), { app: "mi-app", secretos: ["X"], config: {} });
+  assert.throws(() => parsePreviewManifest("app: otra\n", "mi-app"), /no coincide/);
 });
 
 test("parsePreviewManifest: clave de nivel raíz desconocida → revienta", () => {

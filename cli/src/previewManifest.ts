@@ -36,7 +36,7 @@ function despojarComentario(linea: string): string {
  * vacías/comentarios; revienta con mensaje claro ante estructura inesperada
  * (mejor fallar ruidoso en `up` que arrancar un pod mal configurado).
  */
-export function parsePreviewManifest(text: string): PreviewManifest {
+export function parsePreviewManifest(text: string, appEsperada?: string): PreviewManifest {
   const lineasCrudas = text.split(/\r?\n/);
   let app: string | undefined;
   const secretos: string[] = [];
@@ -85,6 +85,12 @@ export function parsePreviewManifest(text: string): PreviewManifest {
     }
   }
 
-  if (!app) throw new Error("mke.preview.yaml: falta 'app'");
-  return { app, secretos, config };
+  // `app:` es OPCIONAL (el CLI ya la sabe por el argumento; el template no lo
+  // emite). Si está, actúa de sanity check contra la app esperada.
+  if (app && appEsperada && app !== appEsperada) {
+    throw new Error(`mke.preview.yaml: 'app: ${app}' no coincide con la app esperada '${appEsperada}'`);
+  }
+  const appFinal = app ?? appEsperada;
+  if (!appFinal) throw new Error("mke.preview.yaml: falta 'app' (y no se pasó app esperada)");
+  return { app: appFinal, secretos, config };
 }

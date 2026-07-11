@@ -165,7 +165,7 @@ export async function leerManifiestoPreview(app: string, dir?: string): Promise<
   const repoDir = dir ?? join(appsRoot(), app);
   try {
     const text = await readFile(join(repoDir, "mke.preview.yaml"), "utf8");
-    return parsePreviewManifest(text);
+    return parsePreviewManifest(text, app);
   } catch (e: unknown) {
     const err = e as NodeJS.ErrnoException;
     if (err.code === "ENOENT") return manifiestoVacio(app);
