@@ -11,10 +11,11 @@ import { rollout } from "./rollout.js";
 import { dbProvision } from "./dbProvision.js";
 import { appInit } from "./appInit.js";
 import { ls } from "./ls.js";
-import { previewUp, previewDown, previewLs } from "./preview.js";
+import { previewUp, previewPull, previewEstado, previewLs, previewMerge, previewDown, previewLimpiar } from "./preview.js";
 import { ramaUp, ramaDown, ramaLs } from "./rama.js";
 import { devUp, devRama, devPull, devEstado, devLs, devDown, parseEnvExtra } from "./dev.js";
 import { hostFor } from "./mkeConfig.js";
+import { warn } from "./sh.js";
 import { fileURLToPath } from "node:url";
 
 function parseFlags(args: string[]): { positional: string[]; flags: Record<string, string | boolean> } {
@@ -54,12 +55,9 @@ const HELP = `mke — CLI de plataforma MKE
   mke expose <app> <env> --host-port <N>        expone un servicio del HOST (systemd) en <app><suffix>.mishi.com.co
   mke expose <app> <env> --svc <name:port>      expone un servicio del CLUSTER ya existente
         opciones: --host <fqdn>  (override del subdominio)   --path </>
-  mke preview up <app> <rama>                    preview EFÍMERO por feature: build rama → import a mke-preview → manifests (backend + postgres efímero + ingress) → CNAME <slugApp>-<feature>-pre → verifica
-        opciones: --feature <nombre>  --dir <repo>  --dry-run
-  mke preview down <nombre>                       borra el preview <slugApp>-<feature> (el que muestra ls): namespace + CNAME (vía API Cloudflare)
-        opciones: --dry-run
-  mke preview ls                                  lista los previews vivos en mke-preview
-  mke dev up <app> [<rama>]                        enciende el SERVIDOR DE ITERACIÓN (pod DURADERO por app, ÚNICO mecanismo de rama): clona el repo y corre la app en modo dev real (vite dev HMR + tsx watch); rama default main; CNAME <app>-dev-feat  ·  detalle: mke dev --help
+  mke preview up <app> <rama>                    VERBO DEFINITIVO de iteración: rama efímera (worktree local + push, pod HMR con SIDECAR postgres, lease de secretos del vault); CNAME <app>-<rama-slug>  ·  detalle: mke preview --help
+  mke preview pull|estado|ls|merge|down|limpiar … traer cambios / estado / listar / MERGE (final feliz) / down (ABORTO) / red de seguridad  ·  detalle: mke preview --help
+  mke dev up <app> [<rama>]                        DEPRECADO — usá \`mke preview\`. pod DURADERO por app en modo dev real (vite HMR + tsx watch); rama default main; CNAME <app>-dev-feat  ·  detalle: mke dev --help
   mke dev rama|pull|estado|ls|down …               cambiar de rama / pull / estado / listar / apagar  ·  detalle: mke dev --help
   mke rama up|down|ls …                            DEPRECADO — fachada de \`mke dev\` (up ⇒ dev up --live)  ·  detalle: mke rama --help
   mke dns <host|app> <env>                       crea/repara/REPUNTA el CNAME al tunnel del entorno vía API Cloudflare (env: local|stage|prod|preview; con preview pasá el host completo)
@@ -73,7 +71,10 @@ const HELP = `mke — CLI de plataforma MKE
        mke ls stage
        mke app init barrio-mishi --env stage --dry-run`;
 
-const DEV_HELP = `mke dev — SERVIDOR DE ITERACIÓN (pod DURADERO por app; ÚNICO mecanismo de rama)
+const DEV_HELP = `mke dev — DEPRECADO (usá \`mke preview\`) — SERVIDOR DE ITERACIÓN (pod DURADERO por app)
+
+  DEPRECADO: el verbo definitivo es \`mke preview\` (rama efímera con worktree,
+  lease del vault y CERO --env). \`mke dev\` sigue funcionando para músculo-memoria.
 
   Clúster mke-preview, ns \`dev\` (JAMÁS mke-prod). El pod clona el repo y corre la
   app en MODO DEV REAL (vite dev HMR + tsx watch) sobre postgres efímero. Cambiar
@@ -112,6 +113,43 @@ const RAMA_HELP = `mke rama — DEPRECADO: fachada de \`mke dev\`
   mke rama ls   [<app>]        ⇒  mke dev ls [<app>]
 
   Migrá tu dedo/scripts a \`mke dev\`. Ver \`mke dev --help\`.`;
+
+const PREVIEW_HELP = `mke preview — VERBO DEFINITIVO de iteración: rama efímera con pod HMR (2026-07-11)
+
+  Clúster mke-preview, ns \`preview\` (JAMÁS mke-prod). Misma anatomía de pod que
+  \`mke dev\` (init clona+instala, vite HMR + tsx watch, caddy un-solo-origen,
+  SIDECAR postgres efímero) con: host BARE \`<app>-<rama-slug>.mishi.com.co\` (un
+  solo label DNS); DB que MUERE con el pod (sin DROP central); secretos/config
+  por LEASE del vault leyendo \`mke.preview.yaml\` de la rama — CERO --env humano.
+  DEGRADACIÓN interina: si el vault aún no tiene el escenario 4, arranca SIN lease
+  (warning) para probar pod+DB+HMR en vivo.
+
+  mke preview up <app> <rama>      crea la rama local si falta (desde main) + git worktree en
+                                    \`<app>.wt-<rama-slug>\` + push; pide el lease del vault acotado a
+                                    los secretos de mke.preview.yaml; aplica el pod; migra (db:migrate)
+                                    y siembra (db:sembrar) o restaura el espejo. IDEMPOTENTE.
+        --espejo                   en vez de sembrar, restaura datos de STAGE en el SIDECAR (TRUNCATE +
+                                    pg_dump --data-only --disable-triggers excluyendo cada tabla de
+                                    apps/backend/db/tablas-sensibles.txt del repo — si falta, ABORTA)
+        --live                      modo EMBED (igual que \`mke dev --live\`)
+        --ttl-segundos <n>          TTL del lease (backstop de vida); default del vault
+        --json  --dry-run  --repo-url <url>
+  mke preview pull <app> <rama>    git pull DENTRO del pod (HMR recoge solo) + renueva el lease
+  mke preview estado <app> <rama> rama + estado del pod + lease + host
+  mke preview ls [<app>]           lista los previews vivos
+  mke preview merge <app> <rama>   FINAL FELIZ (único): verifica worktree limpio → mergea la rama a
+                                    main + push → borra worktree + rama local + rama REMOTA (esto
+                                    dispara el workflow \`on: delete\` → limpieza del cluster).  --json
+  mke preview down <app> <rama>    ABORTO TOTAL (a mano): revoca lease + borra bundle k8s por labels +
+                                    CNAME + worktree + rama local + rama REMOTA. GUARDARRAÍL: se niega
+                                    si la rama tiene commits no mergeados a main (salvo --forzar).
+        --forzar                    baja aunque haya trabajo sin mergear (lo descarta)
+        --sin-worktree              MODO RUNNER: solo limpieza de cluster, NO toca ramas (lo usa el
+                                    workflow \`on: delete\` — la rama ya no existe cuando corre)
+        --json
+  mke preview limpiar               red de seguridad (NO el mecanismo primario — ese es el workflow
+                                    \`on: delete\` de cada app): barre previews cuya rama ya no existe
+                                    en origin y les aplica la limpieza de cluster (modo runner).`;
 
 async function main() {
   const [, , cmd, ...rest] = process.argv;
@@ -170,22 +208,44 @@ async function main() {
     }
     case "preview": {
       const [action, ...pargs] = positional;
+      if (flags.help || action === "help") { console.log(PREVIEW_HELP); break; }
       if (action === "up") {
         const [app, rama] = pargs;
-        if (!app || !rama) return fail("uso: mke preview up <app> <rama> [--feature nombre] [--dir repo]");
+        if (!app || !rama) return fail("uso: mke preview up <app> <rama> [--espejo] [--live] [--ttl-segundos n] [--json] [--dry-run] [--repo-url url]");
         await previewUp(app, rama, {
-          feature: typeof flags.feature === "string" ? flags.feature : undefined,
-          dir: typeof flags.dir === "string" ? flags.dir : undefined,
+          espejo: flags.espejo === true,
+          live: flags.live === true,
+          json: flags.json === true,
           dryRun: flags["dry-run"] === true,
+          repoUrl: typeof flags["repo-url"] === "string" ? flags["repo-url"] : undefined,
+          ttlSegundos: typeof flags["ttl-segundos"] === "string" ? Number(flags["ttl-segundos"]) : undefined,
         });
-      } else if (action === "down") {
-        const [nombre] = pargs;
-        if (!nombre) return fail("uso: mke preview down <nombre>  (el <slugApp>-<feature> que muestra `mke preview ls`)");
-        await previewDown(nombre, { dryRun: flags["dry-run"] === true });
+      } else if (action === "pull") {
+        const [app, rama] = pargs;
+        if (!app || !rama) return fail("uso: mke preview pull <app> <rama> [--json]");
+        await previewPull(app, rama, { json: flags.json === true });
+      } else if (action === "estado") {
+        const [app, rama] = pargs;
+        if (!app || !rama) return fail("uso: mke preview estado <app> <rama> [--json]");
+        await previewEstado(app, rama, { json: flags.json === true });
       } else if (action === "ls" || action === undefined) {
-        await previewLs();
+        await previewLs(pargs[0], { json: flags.json === true });
+      } else if (action === "merge") {
+        const [app, rama] = pargs;
+        if (!app || !rama) return fail("uso: mke preview merge <app> <rama> [--json]");
+        await previewMerge(app, rama, { json: flags.json === true });
+      } else if (action === "down") {
+        const [app, rama] = pargs;
+        if (!app || !rama) return fail("uso: mke preview down <app> <rama> [--forzar] [--sin-worktree] [--json]");
+        await previewDown(app, rama, {
+          json: flags.json === true,
+          sinWorktree: flags["sin-worktree"] === true,
+          forzar: flags.forzar === true,
+        });
+      } else if (action === "limpiar") {
+        await previewLimpiar({ json: flags.json === true });
       } else {
-        return fail("uso: mke preview up|down|ls");
+        return fail("uso: mke preview up|pull|estado|ls|merge|down|limpiar");
       }
       break;
     }
@@ -220,6 +280,9 @@ async function main() {
     case "dev": {
       const [action, ...dargs] = positional;
       if (flags.help || action === "help") { console.log(DEV_HELP); break; }
+      if (flags.json !== true) {
+        console.error(warn("`mke dev` está DEPRECADO — usá `mke preview` (rama efímera: worktree + pod HMR + DB sidecar + lease del vault, CERO --env). Ver `mke preview --help`."));
+      }
       const imagesDir = fileURLToPath(new URL("../../images/dev-runner", import.meta.url));
       const nombre = typeof flags.nombre === "string" ? flags.nombre : undefined;
       if (action === "up") {

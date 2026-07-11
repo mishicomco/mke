@@ -790,3 +790,392 @@ export function manifiestosDev(inp: DevRecetaInput): K8sManifest[] {
     ingressObj,
   ];
 }
+
+// ─── preview-pod (`mke preview`, verbo DEFINITIVO — fusión 2026-07-11) — pod
+// EFÍMERO atado a la vida de la RAMA. Reusa la MISMA anatomía de `manifiestosDev`
+// (init clona+instala, vite HMR + tsx watch, caddy un-solo-origen, POSTGRES
+// EFÍMERO como sidecar) con las diferencias de fondo del verbo:
+//  - namespace/host PROPIOS, con la rama SIEMPRE en el nombre: `<app>-<slug(rama)>`,
+//    host BARE (sin sufijo) `<app>-<slug(rama)>.mishi.com.co` (un solo label DNS).
+//  - DB = SIDECAR postgres efímero (emptyDir): muere con el pod, sin DROP central.
+//    `DATABASE_URL` apunta al loopback (`127.0.0.1:5432/dev`). Migrar/sembrar y
+//    `--espejo` los orquesta el CLI por `kubectl exec` tras el rollout (igual
+//    patrón que `mishi-studio/scripts/iterar-rama.sh`); el boot además corre un
+//    `db:migrate` idempotente para auto-sanar el schema si el pod reinicia.
+//  - Secretos/config resueltos por un LEASE del vault (Contrato 1): el token del
+//    lease viaja en un Secret propio `<name>-lease` + env `LEASE_TOKEN`, y TODO
+//    el bundle lleva los labels `mke.preview/app|rama|lease`. La `config` NO
+//    sensible del manifiesto `mke.preview.yaml` (Contrato 2) va directo al env
+//    en claro. CERO `--env` humano. DEGRADACIÓN interina: si el vault aún no
+//    tiene el escenario 4, el CLI arranca SIN lease (`leaseId="sin-lease"`, sin
+//    Secret de lease) — el pod corre igual para probar pod+DB+HMR.
+
+export const PREVIEW_NAMESPACE = "preview";
+/** valor del label `mke.preview/lease` cuando se arranca sin lease (vault sin escenario 4). */
+export const PREVIEW_SIN_LEASE = "sin-lease";
+/** host BARE (sin sufijo): `<app>-<slug(rama)>.mishi.com.co`, un solo label DNS. */
+export const PREVIEW_HOST_SUFFIX = "";
+export const PREVIEW_RUNNER_IMAGE = DEV_RUNNER_IMAGE;
+
+/** nombre del preview-pod: `<app>-<slug(rama)>`, saneado y recortado (≤50) para
+ * que el host BARE quede bien dentro del límite de 63 de un label DNS. */
+export function previewPodName(app: string, rama: string): string {
+  const slugRama = slugDev(rama);
+  const s = `${app}-${slugRama}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 50)
+    .replace(/^-+|-+$/g, "");
+  if (!s) throw new Error(`no pude derivar un nombre de preview válido de '${app}'/'${rama}'`);
+  return s;
+}
+
+/** host público del preview-pod: `<app>-<slug(rama)>.mishi.com.co` (BARE). */
+export function previewPodHost(
+  app: string,
+  rama: string,
+  opts: { hostSuffix?: string; domain?: string } = {},
+): string {
+  const suffix = opts.hostSuffix ?? PREVIEW_HOST_SUFFIX;
+  const domain = opts.domain ?? DEV_DOMAIN;
+  return `${previewPodName(app, rama)}${suffix}.${domain}`;
+}
+
+/** labelSelector canónico del bundle de un preview-pod, por app×rama. */
+export function selectorDePreview(app: string, rama: string): string {
+  return `mke.preview/app=${app},mke.preview/rama=${slugDev(rama)}`;
+}
+
+/** boot del preview-pod: espera al SIDECAR postgres y corre un \`db:migrate\`
+ * idempotente (auto-sana el schema si el pod reinició con la DB efímera vacía).
+ * NO resetea ni siembra: la siembra inicial y el \`--espejo\` los orquesta el CLI
+ * por kubectl exec tras el rollout (para que \`up\` controle sembrar vs espejo). */
+const BOOT_PREVIEW_SH = `#!/bin/sh
+set -eu
+cd /workspace/repo
+mkdir -p /workspace/.dev
+rm -f /workspace/.dev/restart
+RAMA_ACTIVA=$(cat /workspace/.dev/rama 2>/dev/null || echo "$RAMA")
+
+echo "[preview] esperando postgres…"
+until pg_isready -h 127.0.0.1 -p 5432 -U dev >/dev/null 2>&1; do sleep 2; done
+
+# config PÚBLICA por-rama declarada por la app (k8s/dev.env) → al entorno ANTES
+# de migrar/arrancar la app. La config del Contrato 2 (mke.preview.yaml) ya vino
+# por env del Deployment; \`cargar-dev-env.sh\` es un complemento opcional del repo.
+. /mke/cargar-dev-env.sh
+
+# migración idempotente de auto-sanado (si el pod reinició con la DB vacía). La
+# siembra/espejo inicial la corre el CLI tras el rollout — acá NO se siembra.
+npm run db:migrate -w apps/backend || echo "[preview] db:migrate en boot falló (sigo; el CLI lo reintenta)"
+
+FRONT=apps/frontend
+[ -d "$FRONT" ] || FRONT=.
+cp /mke/vite.dev.mke.config.ts "$FRONT/vite.dev.mke.config.ts"
+
+matar_arbol() {
+  for hijo in $(cat /proc/"$1"/task/"$1"/children 2>/dev/null); do matar_arbol "$hijo"; done
+  kill -TERM "$1" 2>/dev/null || true
+}
+
+supervisar() {
+  etiqueta="$1"; shift
+  intento=0
+  while true; do
+    . /mke/cargar-dev-env.sh
+    "$@" &
+    pid=$!
+    while kill -0 "$pid" 2>/dev/null; do
+      if [ -f /workspace/.dev/restart ]; then
+        echo "[preview] reinicio de $etiqueta (cambió la rama/config)"
+        matar_arbol "$pid"
+        break
+      fi
+      sleep 2
+    done
+    wait "$pid" 2>/dev/null || true
+    if [ -f /workspace/.dev/restart ]; then
+      intento=0
+    else
+      intento=$((intento+1))
+      if [ "$intento" -lt 6 ]; then espera=$((intento*5)); else espera=30; fi
+      echo "[preview] $etiqueta murió (intento $intento) — reinicio en \${espera}s"
+      sleep "$espera"
+    fi
+  done
+}
+
+if [ -d apps/backend ]; then
+  echo "[preview] backend tsx watch en :$BACKEND_PORT"
+  supervisar backend sh -c 'npm run dev -w apps/backend' &
+fi
+
+echo "[preview] vite dev en :$VITE_PORT"
+supervisar vite sh -c "cd '$FRONT' && npx vite -c vite.dev.mke.config.ts" &
+
+if [ "\${POLL_SECONDS:-0}" -gt 0 ] 2>/dev/null; then
+  echo "[preview] poll cada \${POLL_SECONDS}s sobre $RAMA_ACTIVA"
+  sh /mke/poll.sh &
+fi
+
+wait
+`;
+
+export interface PreviewRecetaInput {
+  /** nombre público/corto de la app (prefijo de nombre y host; ej `mishi-bank`). */
+  app: string;
+  /** rama git a encender (SIEMPRE en el nombre; a diferencia de `mke dev`). */
+  rama: string;
+  /** URL de clone (puede llevar el token embebido). */
+  repoUrl: string;
+  /** identidad del lease del vault (Contrato 1) — va en el label `mke.preview/lease`.
+   * En modo degradado (vault sin escenario 4) es `PREVIEW_SIN_LEASE`. */
+  leaseId: string;
+  /** token del lease (Contrato 1): el pod lo usa para leer sus secretos del vault.
+   * Viaja en un Secret propio (`<name>-lease`), NUNCA en claro en el Deployment.
+   * Ausente ⇒ modo degradado (sin Secret de lease ni env `LEASE_TOKEN`). */
+  leaseToken?: string;
+  /** mapa `config` del manifiesto `mke.preview.yaml` (Contrato 2): NO-secretos,
+   * van directo al env del pod en claro (URLs internas, flags). */
+  config?: Record<string, string>;
+  /** imagen genérica del runner (default = la de `mke dev`). */
+  imagen?: string;
+  namespace?: string;
+  hostSuffix?: string;
+  domain?: string;
+  pollSeconds?: number;
+  live?: boolean;
+  /** token de LECTURA de GitHub Packages (opcional, igual que en `mke dev`). */
+  npmToken?: string;
+}
+
+/**
+ * Namespace + Secret(s) + ConfigMap + Deployment + Service + Ingress del
+ * preview-pod, como OBJETOS. Misma anatomía que `manifiestosDev` (init clona +
+ * instala, vite HMR + tsx watch, caddy un-solo-origen, POSTGRES efímero sidecar)
+ * pero: namespace/host/nombre propios con la RAMA en el nombre; CERO `--env`
+ * humano (la `config` del Contrato 2 va al env en claro y el `leaseToken` del
+ * Contrato 1 va en un Secret propio + env `LEASE_TOKEN`); TODO objeto del bundle
+ * lleva los labels `mke.preview/app|rama|lease`.
+ */
+export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
+  const app = inp.app;
+  const rama = inp.rama;
+  const namespace = inp.namespace ?? PREVIEW_NAMESPACE;
+  const imagen = inp.imagen ?? PREVIEW_RUNNER_IMAGE;
+  const pollSeconds = inp.pollSeconds ?? 0;
+  const name = previewPodName(app, rama);
+  const host = previewPodHost(app, rama, { hostSuffix: inp.hostSuffix, domain: inp.domain });
+  const liveBase = inp.live ? devLiveBase(app) : undefined;
+  const ramaSlug = slugDev(rama);
+
+  const labels: Record<string, string> = {
+    "mke.preview/app": app,
+    "mke.preview/rama": ramaSlug,
+    "mke.preview/lease": inp.leaseId,
+  };
+
+  const namespaceObj: K8sManifest = {
+    apiVersion: "v1",
+    kind: "Namespace",
+    metadata: { name: namespace, labels: { "app.kubernetes.io/part-of": "mke-preview" } },
+  };
+
+  const secretObj: K8sManifest = {
+    apiVersion: "v1",
+    kind: "Secret",
+    metadata: { name: `${name}-git`, namespace, labels },
+    type: "Opaque",
+    data: { REPO_URL: b64(inp.repoUrl) },
+  };
+
+  // token del lease (Contrato 1) → Secret propio + env LEASE_TOKEN. NUNCA los
+  // valores de `secretos` en claro: eso lo materializa el vault con este token.
+  // Sin leaseToken ⇒ modo degradado (vault sin escenario 4): no hay Secret.
+  const leaseSecretObj: K8sManifest | null = inp.leaseToken
+    ? {
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: { name: `${name}-lease`, namespace, labels },
+        type: "Opaque",
+        data: { LEASE_TOKEN: b64(inp.leaseToken) },
+      }
+    : null;
+  const leaseTokenEnv = inp.leaseToken
+    ? [{ name: "LEASE_TOKEN", valueFrom: { secretKeyRef: { name: `${name}-lease`, key: "LEASE_TOKEN" } } }]
+    : [];
+
+  const npmSecretObj: K8sManifest | null = inp.npmToken
+    ? {
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: { name: `${name}-npm`, namespace, labels },
+        type: "Opaque",
+        data: { NODE_AUTH_TOKEN: b64(inp.npmToken) },
+      }
+    : null;
+  const npmTokenEnv: { name: string; valueFrom: unknown }[] = inp.npmToken
+    ? [{ name: "NODE_AUTH_TOKEN", valueFrom: { secretKeyRef: { name: `${name}-npm`, key: "NODE_AUTH_TOKEN" } } }]
+    : [];
+
+  const configMapObj: K8sManifest = {
+    apiVersion: "v1",
+    kind: "ConfigMap",
+    metadata: { name: `${name}-scripts`, namespace, labels },
+    data: {
+      "prepare.sh": PREPARE_SH,
+      "build-packages.sh": BUILD_PACKAGES_SH,
+      "cargar-dev-env.sh": CARGAR_DEV_ENV_SH,
+      "boot-preview.sh": BOOT_PREVIEW_SH,
+      "rama.sh": RAMA_SH,
+      "pull.sh": PULL_SH,
+      "poll.sh": POLL_SH,
+      "vite.dev.mke.config.ts": viteDevConfig(DEV_VITE_PORT, liveBase),
+      Caddyfile: caddyfile(DEV_BACKEND_PORT, DEV_VITE_PORT, liveBase),
+    },
+  };
+
+  // config (Contrato 2) va DIRECTO al env, en claro (no son secretos). PREVIEW=true
+  // (convención existente) + PREVIEW_MODE=true (contrato de siembra de este verbo).
+  // DATABASE_URL apunta al SIDECAR loopback (la DB efímera muere con el pod).
+  const configEnv = Object.entries(inp.config ?? {}).map(([k, value]) => ({ name: k, value }));
+  const devEnv: { name: string; value: string }[] = [
+    { name: "APP", value: app },
+    { name: "RAMA", value: rama },
+    { name: "PREVIEW", value: "true" },
+    { name: "PREVIEW_MODE", value: "true" },
+    { name: "NODE_ENV", value: "development" },
+    { name: "PORT", value: String(DEV_BACKEND_PORT) },
+    { name: "BACKEND_PORT", value: String(DEV_BACKEND_PORT) },
+    { name: "VITE_PORT", value: String(DEV_VITE_PORT) },
+    { name: "POLL_SECONDS", value: String(pollSeconds) },
+    { name: "DATABASE_URL", value: "postgres://dev:dev@127.0.0.1:5432/dev" },
+    ...configEnv,
+  ];
+
+  const podLabels = { app: name, ...labels };
+
+  const deploymentObj: K8sManifest = {
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    metadata: {
+      name,
+      namespace,
+      labels,
+      annotations: {
+        "mke.preview/rama": rama,
+        "mke.preview/sha": "",
+        ...(liveBase ? { "mke.dev/live": "true" } : {}),
+      },
+    },
+    spec: {
+      replicas: 1,
+      strategy: { type: "Recreate" },
+      selector: { matchLabels: { app: name } },
+      template: {
+        metadata: { labels: podLabels },
+        spec: {
+          securityContext: { fsGroup: 1000 },
+          initContainers: [
+            {
+              name: "preparar",
+              image: imagen,
+              imagePullPolicy: "IfNotPresent",
+              command: ["sh", "/mke/prepare.sh"],
+              env: [
+                { name: "APP", value: app },
+                { name: "RAMA", value: rama },
+                { name: "REPO_URL", valueFrom: { secretKeyRef: { name: `${name}-git`, key: "REPO_URL" } } },
+                ...npmTokenEnv,
+              ],
+              volumeMounts: [
+                { name: "workspace", mountPath: "/workspace" },
+                { name: "scripts", mountPath: "/mke" },
+              ],
+            },
+          ],
+          containers: [
+            {
+              name: "postgres",
+              image: "postgres:16-alpine",
+              env: [
+                { name: "POSTGRES_USER", value: "dev" },
+                { name: "POSTGRES_PASSWORD", value: "dev" },
+                { name: "POSTGRES_DB", value: "dev" },
+                { name: "PGDATA", value: "/var/lib/postgresql/data/pgdata" },
+              ],
+              ports: [{ containerPort: 5432 }],
+              readinessProbe: {
+                exec: { command: ["pg_isready", "-U", "dev", "-d", "dev"] },
+                periodSeconds: 3,
+                failureThreshold: 40,
+              },
+              volumeMounts: [{ name: "pgdata", mountPath: "/var/lib/postgresql/data" }],
+            },
+            {
+              name: "dev",
+              image: imagen,
+              imagePullPolicy: "IfNotPresent",
+              command: ["sh", "/mke/boot-preview.sh"],
+              env: [...devEnv, ...leaseTokenEnv, ...npmTokenEnv],
+              volumeMounts: [
+                { name: "workspace", mountPath: "/workspace" },
+                { name: "scripts", mountPath: "/mke" },
+              ],
+            },
+            {
+              name: "web",
+              image: "caddy:2-alpine",
+              command: ["caddy", "run", "--config", "/mke/Caddyfile", "--adapter", "caddyfile"],
+              ports: [{ containerPort: DEV_CADDY_PORT }],
+              readinessProbe: {
+                httpGet: { path: "/", port: DEV_CADDY_PORT },
+                periodSeconds: 5,
+                failureThreshold: 120,
+              },
+              volumeMounts: [{ name: "scripts", mountPath: "/mke" }],
+            },
+          ],
+          volumes: [
+            { name: "workspace", emptyDir: {} },
+            { name: "pgdata", emptyDir: {} },
+            { name: "scripts", configMap: { name: `${name}-scripts`, defaultMode: 0o755 } },
+          ],
+        },
+      },
+    },
+  };
+
+  const serviceObj: K8sManifest = {
+    apiVersion: "v1",
+    kind: "Service",
+    metadata: { name, namespace, labels },
+    spec: {
+      selector: { app: name },
+      ports: [{ port: 80, targetPort: DEV_CADDY_PORT }],
+    },
+  };
+
+  const ingressObj: K8sManifest = {
+    apiVersion: "networking.k8s.io/v1",
+    kind: "Ingress",
+    metadata: { name, namespace, labels },
+    spec: {
+      rules: [
+        { host, http: { paths: [{ path: "/", pathType: "Prefix", backend: { service: { name, port: { number: 80 } } } }] } },
+      ],
+    },
+  };
+
+  return [
+    namespaceObj,
+    secretObj,
+    ...(leaseSecretObj ? [leaseSecretObj] : []),
+    ...(npmSecretObj ? [npmSecretObj] : []),
+    configMapObj,
+    deploymentObj,
+    serviceObj,
+    ingressObj,
+  ];
+}

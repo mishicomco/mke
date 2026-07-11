@@ -1,300 +1,669 @@
-// `mke preview up/down/ls` — previews EFÍMEROS POR FEATURE en el clúster
-// mke-preview (k3d SEPARADO de prod; jamás se toca mke-prod).
+// `mke preview up|pull|estado|ls|down|merge|limpiar` — el verbo DEFINITIVO de
+// iteración: preview-pods EFÍMEROS atados a la vida de la RAMA (fusión 2026-07-11
+// de `feat/mke-preview` + el WIP `feature-pods-cli`). Reusa AL MÁXIMO la
+// maquinaria de `mke dev` (mismo pod: init clona+instala, vite HMR + tsx watch,
+// caddy un-solo-origen, SIDECAR postgres efímero — ver `manifiestosPreview` en
+// @mishicomco/dev-receta), con estas diferencias de fondo:
 //
-// Un feature (rama) = un namespace efímero con:
-//   · postgres efímero (postgres:16-alpine, emptyDir — sin PVC)
-//   · Secret del app (DATABASE_URL -> pg efímero + llaves fail-closed + PREVIEW=true)
-//   · el Deployment del app (su k8s/base, imagen construida desde la rama)
-//   · un Ingress Traefik con host <slugApp>-<feature>-pre.mishi.com.co (path / -> backend)
-//   · un CNAME <slugApp>-<feature>-pre -> UUID del túnel mke-preview (--overwrite-dns)
+//   1. Namespace/host PROPIOS con la rama SIEMPRE en el nombre: `preview` (ns),
+//      host BARE `<app>-<slug(rama)>.mishi.com.co` (sin sufijo).
+//   2. DB = SIDECAR postgres efímero en el pod: muere con el pod, sin DROP
+//      central. `--espejo` restaura datos de STAGE (sanitizados) DENTRO del
+//      sidecar (ver `previewEspejo.ts`); si no, se migra + siembra (db:sembrar).
+//   3. Secretos/config por LEASE del vault (Contrato 1) leyendo `mke.preview.yaml`
+//      de la app (Contrato 2). CERO `--env` humano. DEGRADACIÓN interina: si el
+//      vault aún no tiene el escenario 4, `up` arranca SIN lease (warning claro)
+//      para poder probar en vivo pod+DB+HMR antes del merge del vault.
+//   4. Un git WORKTREE local persistido en `<app>.wt-<rama-slug>` (hermano del
+//      repo), para editar la rama localmente Y en el pod a la vez.
 //
-// El NOMBRE del preview (= namespace = prefijo del host) es `<slugApp>-<feature>`:
-// el slug público de la app al inicio para que con muchas apps se sepa qué es qué.
-// `down` recibe ese nombre completo (lo que muestra `ls`).
-//
-// `up` construye desde la RAMA (git worktree efímero + docker build + k3d import),
-// aplica los manifests, crea el DNS y verifica alcance (curl con reintentos).
-// `down` borra el namespace + el CNAME (vía API de Cloudflare; cloudflared no borra).
+// `mke preview merge` es el ÚNICO comando del final feliz (mergea a main + borra
+// la rama remota → dispara el workflow `on: delete` → limpieza del cluster).
+// `mke preview down` a mano = ABORTO TOTAL (revoca lease + borra bundle + rama).
+// En modo runner (`--sin-worktree` / sin worktree) `down` solo limpia el cluster.
 
-import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { appsRoot, PREVIEW, previewHost, previewName, slugFeature } from "./mkeConfig.js";
-import { previewApp, type PreviewApp, type SecretValue } from "./previewApps.js";
+import { appsRoot, PREVIEW, VAULT } from "./mkeConfig.js";
+import {
+  manifiestosPreview,
+  previewPodName,
+  previewPodHost,
+  selectorDePreview,
+  slugDev,
+  PREVIEW_SIN_LEASE,
+} from "@mishicomco/dev-receta";
 import { deleteRecordsByName, tunnelTarget, upsertCname } from "./cf.js";
 import { previewTunnelUuid } from "./dns.js";
+import { leerTablasSensibles, truncarSidecar, restaurarEspejo } from "./previewEspejo.js";
+import { parsePreviewManifest, manifiestoVacio, type PreviewManifest } from "./previewManifest.js";
+import { crearLease, revocarLease, renovarLease, type VaultClienteOpts } from "./vaultLease.js";
 import { run, ok, bad, warn, info, dim } from "./sh.js";
 
 const CTX = PREVIEW.context;
-
-async function resolveSecret(v: SecretValue): Promise<string> {
-  if (typeof v === "string") {
-    return v === "__RANDOM__" ? randomBytes(16).toString("hex") : v;
-  }
-  const r = await run("mishi-secret", ["get", v.fromSecret]);
-  if (r.code !== 0 || !r.stdout) throw new Error(`no pude leer el secreto ${v.fromSecret}`);
-  return r.stdout.trim();
-}
+const NS = "preview";
 
 export interface PreviewUpOpts {
-  feature?: string;
-  dir?: string;
+  espejo?: boolean;
+  live?: boolean;
+  json?: boolean;
   dryRun?: boolean;
+  repoUrl?: string;
+  /** TTL del lease en segundos (backstop de vida; default del vault si se omite). */
+  ttlSegundos?: number;
 }
+
+export interface PreviewMutOpts {
+  json?: boolean;
+}
+
+export interface PreviewDownOpts {
+  json?: boolean;
+  /** salta el borrado del worktree/ramas: modo runner (el `on: delete` del CI). */
+  sinWorktree?: boolean;
+  /** fuerza el down aunque la rama tenga commits no mergeados a main. */
+  forzar?: boolean;
+}
+
+export interface PreviewMergeOpts {
+  json?: boolean;
+}
+
+export interface PreviewLsOpts {
+  json?: boolean;
+}
+
+// helper de push/borrado remoto (el GITHUB_TOKEN del env pisa el de gh — ver CLAUDE.md).
+function gitCredArgs(appDir: string, ...rest: string[]): string[] {
+  return ["-u", "GITHUB_TOKEN", "git", "-c", "credential.helper=!gh auth git-credential", "-C", appDir, ...rest];
+}
+
+// ─── git local: rama + worktree persistido ───────────────────────────────────
+
+function worktreeDir(appDir: string, ramaSlug: string): string {
+  return `${appDir}.wt-${ramaSlug}`;
+}
+
+/** asegura que la rama exista LOCALMENTE (creada desde main actualizado si no
+ * existe) y que haya un worktree persistido en `<app>.wt-<rama-slug>`. Devuelve
+ * el path del worktree. Idempotente. */
+async function asegurarWorktree(appDir: string, rama: string, ramaSlug: string): Promise<string> {
+  if (!existsSync(appDir)) throw new Error(`no existe el repo del app: ${appDir} (¿falta clonarlo como hermano?)`);
+  const wt = worktreeDir(appDir, ramaSlug);
+
+  const existeRamaLocal = (await run("git", ["-C", appDir, "show-ref", "--verify", "-q", `refs/heads/${rama}`])).code === 0;
+  if (!existeRamaLocal) {
+    console.log(info(`la rama ${dim(rama)} no existe local: creándola desde main`));
+    const fetch = await run("git", ["-C", appDir, "fetch", "origin", "main"]);
+    if (fetch.code !== 0) console.log(warn(`fetch de main falló (sigo con lo local): ${fetch.stderr}`));
+    const base = (await run("git", ["-C", appDir, "rev-parse", "--verify", "-q", "origin/main"])).code === 0 ? "origin/main" : "main";
+    const crear = await run("git", ["-C", appDir, "branch", rama, base]);
+    if (crear.code !== 0) throw new Error(`no pude crear la rama ${rama} desde ${base}: ${crear.stderr || crear.stdout}`);
+  }
+
+  if (!existsSync(wt)) {
+    console.log(info(`git worktree ${dim(rama)} → ${dim(wt)}`));
+    const add = await run("git", ["-C", appDir, "worktree", "add", wt, rama]);
+    if (add.code !== 0) throw new Error(`git worktree add falló: ${add.stderr || add.stdout}`);
+  }
+
+  const push = await run("env", gitCredArgs(appDir, "push", "-u", "origin", rama));
+  if (push.code !== 0) console.log(warn(`push de ${rama} falló (sigo; el pod igual clona lo que ya esté en origin): ${push.stderr || push.stdout}`));
+  else console.log(ok(`rama ${dim(rama)} empujada a origin`));
+
+  return wt;
+}
+
+/** best-effort: borra el worktree local. Silencioso si no existe en ESTA máquina. */
+async function borrarWorktreeSiExiste(appDir: string, ramaSlug: string, opts: { json?: boolean }): Promise<void> {
+  const wt = worktreeDir(appDir, ramaSlug);
+  if (!existsSync(wt)) {
+    if (!opts.json) console.log(dim(`  sin worktree local en esta máquina (${wt}) — nada que borrar`));
+    return;
+  }
+  const del = await run("git", ["-C", appDir, "worktree", "remove", "--force", wt]);
+  if (del.code === 0) { if (!opts.json) console.log(ok(`worktree ${dim(wt)} borrado`)); }
+  else if (!opts.json) console.log(warn(`no pude borrar el worktree ${wt}: ${del.stderr || del.stdout}`));
+}
+
+// ─── credenciales de git/npm/vault (mismo patrón que `mke dev`/`mke feature`) ─
+
+async function resolveRepoUrl(app: string, override: string | undefined, dryRun: boolean): Promise<string> {
+  if (override) return override;
+  const base = `https://github.com/mishicomco/${app}.git`;
+  if (dryRun) return base;
+  const t = await run("mishi-secret", ["get", "mishi-studio-gh-read-pat"]);
+  if (t.code === 0 && t.stdout.trim()) return `https://x-access-token:${t.stdout.trim()}@github.com/mishicomco/${app}.git`;
+  return base;
+}
+
+async function resolveNpmToken(dryRun: boolean): Promise<string | undefined> {
+  if (dryRun) return undefined;
+  const t = await run("mishi-secret", ["get", "mishi-gh-read-packages-pat"]);
+  const token = t.stdout.trim();
+  return t.code === 0 && token ? token : undefined;
+}
+
+/** token de la identidad EMISORA del vault. DEGRADA (null) si no está: en el
+ * interino el vault puede no tener el escenario 4 desplegado. */
+async function resolveEmisorTokenSuave(): Promise<string | null> {
+  const t = await run("mishi-secret", ["get", VAULT.emisorTokenSecret]);
+  const token = t.stdout.trim();
+  return t.code === 0 && token ? token : null;
+}
+
+function vaultCliente(emisorToken: string): VaultClienteOpts {
+  return { vaultUrl: VAULT.url, emisorToken };
+}
+
+// ─── manifiesto de la app (Contrato 2) ───────────────────────────────────────
+
+/** Lee `mke.preview.yaml` del checkout LOCAL de la app (repo hermano). Archivo
+ * ausente ⇒ manifiesto vacío (Contrato 2, no es error). */
+export async function leerManifiestoPreview(app: string, dir?: string): Promise<PreviewManifest> {
+  const repoDir = dir ?? join(appsRoot(), app);
+  try {
+    const text = await readFile(join(repoDir, "mke.preview.yaml"), "utf8");
+    return parsePreviewManifest(text);
+  } catch (e: unknown) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === "ENOENT") return manifiestoVacio(app);
+    throw e;
+  }
+}
+
+// ─── lease del vault (Contrato 1) con DEGRADACIÓN interina ────────────────────
+
+interface LeaseResuelto {
+  leaseId: string;
+  leaseToken?: string;
+}
+
+/** Pide un lease al vault; si el vault no está / no responde / 404, DEGRADA con
+ * gracia a `sin-lease` (warning claro) para poder probar pod+DB+HMR en vivo
+ * antes de que el escenario 4 del vault esté desplegado. */
+async function adquirirLease(app: string, rama: string, manifiesto: PreviewManifest, opts: { json?: boolean; ttlSegundos?: number }): Promise<LeaseResuelto> {
+  const emisor = await resolveEmisorTokenSuave();
+  if (!emisor) {
+    if (!opts.json) console.log(warn(`vault sin escenario 4 — pod sin lease, secretos de app no disponibles (no encontré ${VAULT.emisorTokenSecret})`));
+    return { leaseId: PREVIEW_SIN_LEASE };
+  }
+  if (!opts.json) console.log(info(`pidiendo lease al vault, acotado a ${manifiesto.secretos.length} secreto(s) declarado(s) en mke.preview.yaml…`));
+  try {
+    const lease = await crearLease(vaultCliente(emisor), {
+      ns: app,
+      rama,
+      secretos: manifiesto.secretos,
+      ttlSegundos: opts.ttlSegundos,
+    });
+    if (!opts.json) console.log(ok(`lease ${dim(lease.leaseId)} · expira ${dim(lease.expiraEn)}`));
+    return { leaseId: lease.leaseId, leaseToken: lease.token };
+  } catch (e) {
+    if (!opts.json) console.log(warn(`vault sin escenario 4 — pod sin lease, secretos de app no disponibles (${e instanceof Error ? e.message : String(e)})`));
+    return { leaseId: PREVIEW_SIN_LEASE };
+  }
+}
+
+/** lee el label `mke.preview/lease` del Deployment del bundle app×rama. `null`
+ * si no hay bundle vivo o si se arrancó en modo degradado (sin-lease). */
+export async function leaseIdDe(app: string, rama: string): Promise<string | null> {
+  const sel = selectorDePreview(app, rama);
+  const r = await run("kubectl", ["--context", CTX, "-n", NS, "get", "deploy", "-l", sel, "-o", "jsonpath={.items[0].metadata.labels.mke\\.preview/lease}"]);
+  const leaseId = r.stdout.trim();
+  if (r.code !== 0 || !leaseId || leaseId === PREVIEW_SIN_LEASE) return null;
+  return leaseId;
+}
+
+/**
+ * Compone el "buscar leaseId → revoke" de forma IDEMPOTENTE y testeable sin red:
+ * sin lease (bundle ya bajado / modo degradado) es no-op; con lease, delega en
+ * el `revocar` inyectado exactamente una vez. Corazón de `preview down`.
+ */
+export async function revocarSiHayLease(
+  leaseId: string | null,
+  revocar: (leaseId: string) => Promise<{ leaseId: string; estado: string }>,
+): Promise<{ revocado: boolean; leaseId: string | null }> {
+  if (!leaseId || leaseId === PREVIEW_SIN_LEASE) return { revocado: false, leaseId: null };
+  await revocar(leaseId);
+  return { revocado: true, leaseId };
+}
+
+// ─── up ──────────────────────────────────────────────────────────────────────
 
 export async function previewUp(app: string, rama: string, opts: PreviewUpOpts): Promise<void> {
-  const feature = opts.feature ? slugFeature(opts.feature) : slugFeature(rama);
-  const appDir = opts.dir ?? join(appsRoot(), app);
-  const cfg = previewApp(app);
-  // nombre del preview = <slugApp>-<feature> (sin duplicar si la rama ya lo trae)
-  const nombre = previewName(cfg.slug, feature);
-  const ns = nombre;
-  const host = previewHost(nombre);
-  const image = `${app}:pre-${feature}`;
-  const baseDir = join(appDir, "k8s", "base");
+  const ramaSlug = slugDev(rama);
+  const name = previewPodName(app, rama);
+  const host = previewPodHost(app, rama);
+  const url = `https://${host}`;
+  const appDir = join(appsRoot(), app);
 
-  if (!existsSync(appDir)) throw new Error(`no existe el repo del app: ${appDir}`);
-  if (!existsSync(baseDir)) throw new Error(`el app no tiene k8s/base: ${baseDir}`);
+  if (!opts.json) console.log(info(`preview ${dim(app)} · rama ${dim(rama)} → ${dim(host)}`));
 
-  console.log(info(`preview ${dim(app)} · rama ${dim(rama)} · feature ${dim(feature)} → ${dim(host)}`));
+  const wt = worktreeDir(appDir, ramaSlug);
+  const repoUrl = await resolveRepoUrl(app, opts.repoUrl, opts.dryRun === true);
+  const npmToken = await resolveNpmToken(opts.dryRun === true);
 
   if (opts.dryRun) {
+    // en dry-run el worktree aún no existe: leemos el manifiesto de lo que haya
+    // en el repo hermano (best-effort) solo para narrar el plan.
+    const preview = await leerManifiestoPreview(app);
     console.log(info("DRY RUN — no se toca nada. Plan:"));
-    console.log(`  1. git worktree efímero de \`${rama}\` en ${appDir}`);
-    console.log(`  2. docker build -t ${image} (Dockerfile: ${cfg.dockerfile ?? "auto-detectado"})`);
-    console.log(`  3. k3d image import ${image} → ${PREVIEW.cluster}`);
-    console.log(`  4. namespace \`${ns}\` (${CTX}): postgres efímero (${cfg.db.name}/${cfg.db.user}) + Secret \`${cfg.secretName}\` + Deployment/Ingress de la base`);
-    console.log(`  5. DNS: ${host} → túnel ${PREVIEW.tunnelName} (--overwrite-dns)`);
-    console.log(`  6. esperar rollout + verificar https://${host}/health`);
+    console.log(`  1. asegurar rama '${rama}' local (crear desde main si falta) + worktree en ${wt} + push`);
+    console.log(`  2. lease del vault (Contrato 1) acotado a ${preview.secretos.length} secreto(s) de mke.preview.yaml; DEGRADA a sin-lease si el vault no responde`);
+    console.log(`  3. kubectl apply del preview-pod (ns ${NS}, ${CTX}, SIDECAR postgres) → ${host}`);
+    console.log(`  4. DNS: ${host} → túnel ${PREVIEW.tunnelName}`);
+    console.log(`  5. migrar (db:migrate) y ${opts.espejo ? "restaurar el espejo de stage (sanitizado) en el sidecar" : "sembrar (db:sembrar)"} dentro del pod`);
     console.log(info("nada ejecutado (--dry-run)"));
     return;
   }
 
-  // 0) resolvé el túnel ANTES de trabajar (falla rápido si no hay bootstrap)
+  // 0) worktree local + push (falla rápido si el repo hermano no existe)
+  await asegurarWorktree(appDir, rama, ramaSlug);
+
+  // 1) manifiesto de la RAMA (Contrato 2): se lee del WORKTREE recién creado —
+  //    lo que declara ESTA rama, no main. Ausente/vacío ⇒ lista vacía + warning.
+  const manifiesto = await leerManifiestoPreview(app, wt);
+  if (!opts.json && manifiesto.secretos.length === 0) {
+    console.log(warn(`la rama '${rama}' no declara secretos en mke.preview.yaml — el lease se acota a CERO secretos (la app no leerá ninguno del vault)`));
+  }
+
+  // 2) lease del vault (o degradación a sin-lease)
+  const lease = await adquirirLease(app, rama, manifiesto, { json: opts.json, ttlSegundos: opts.ttlSegundos });
+
+  // 3) túnel + manifiestos + apply (idempotente)
   const uuid = await previewTunnelUuid();
+  const items = manifiestosPreview({
+    app, rama, repoUrl,
+    leaseId: lease.leaseId,
+    leaseToken: lease.leaseToken,
+    config: manifiesto.config,
+    npmToken,
+    live: opts.live,
+  });
+  const manifiestos = JSON.stringify({ apiVersion: "v1", kind: "List", items }, null, 2);
+  const apply = await run("kubectl", ["--context", CTX, "apply", "-f", "-"], manifiestos);
+  if (apply.code !== 0) throw new Error(`apply falló: ${apply.stderr || apply.stdout}`);
+  console.log(ok(apply.stdout.split("\n").join(" · ")));
 
-  // 1) worktree efímero de la rama (detached: no choca con ramas ya usadas)
-  const wt = mkdtempSync(join(tmpdir(), `mke-pre-${feature}-`));
-  let builtOk = false;
+  // 4) rollout
+  console.log(info("esperando el pod (clone + npm install + postgres)…"));
+  const rollout = await run("kubectl", ["--context", CTX, "-n", NS, "rollout", "status", `deploy/${name}`, "--timeout=600s"]);
+  const listo = rollout.code === 0;
+  console.log(listo ? ok(rollout.stdout.split("\n").pop() ?? "pod listo") : warn(`el pod no convergió aún: ${rollout.stderr || rollout.stdout}`));
+
+  // 5) DNS
   try {
-    console.log(info(`git worktree ${dim(rama)} → ${dim(wt)}`));
-    const add = await run("git", ["-C", appDir, "worktree", "add", "--detach", "--force", wt, rama]);
-    if (add.code !== 0) throw new Error(`git worktree add falló: ${add.stderr || add.stdout}`);
-
-    // 2) build desde la rama (context = raíz del repo, -f el Dockerfile del app)
-    const dockerfile = cfg.dockerfile ?? (existsSync(join(wt, "Dockerfile")) ? "Dockerfile" : "apps/backend/Dockerfile");
-    console.log(info(`docker build ${dim(image)} (-f ${dockerfile})`));
-    const build = await run("docker", ["build", "-t", image, "-f", join(wt, dockerfile), wt]);
-    if (build.code !== 0) throw new Error(`docker build falló: ${build.stderr || build.stdout}`);
-    console.log(ok("imagen construida"));
-
-    // 3) import directo al clúster de previews
-    console.log(info(`k3d image import ${dim(image)} → ${PREVIEW.cluster}`));
-    const imp = await run("k3d", ["image", "import", image, "-c", PREVIEW.cluster]);
-    if (imp.code !== 0) throw new Error(`k3d image import falló: ${imp.stderr || imp.stdout}`);
-    console.log(ok("imagen importada"));
-
-    // 4) overlay de preview DENTRO del worktree (para que ../../base resuelva y
-    //    kubectl -k lo acepte sin salir de la raíz de la kustomización)
-    const overlayDir = join(wt, "k8s", "overlays", "preview");
-    mkdirSync(overlayDir, { recursive: true });
-    const dbUrl = `postgres://${cfg.db.user}:${cfg.db.password}@${app}-pg.${ns}.svc.cluster.local:5432/${cfg.db.name}`;
-    const literals: Record<string, string> = { [cfg.databaseUrlKey ?? "DATABASE_URL"]: dbUrl };
-    for (const [k, v] of Object.entries(cfg.secretLiterals)) literals[k] = await resolveSecret(v);
-
-    writeFileSync(join(overlayDir, "resources.yaml"), resourcesYaml(app, ns, host, cfg, literals));
-    writeFileSync(join(overlayDir, "kustomization.yaml"), kustomizationYaml(app, ns, host, image, cfg));
-
-    // 5) apply (kubectl ordena: Namespace primero)
-    console.log(info(`kubectl apply -k (${CTX}/${ns})`));
-    const apply = await run("kubectl", ["--context", CTX, "apply", "-k", overlayDir]);
-    if (apply.code !== 0) throw new Error(`apply falló: ${apply.stderr || apply.stdout}`);
-    console.log(ok(apply.stdout.split("\n").join(" · ")));
-
-    // 6) esperá postgres y el backend
-    await run("kubectl", ["--context", CTX, "-n", ns, "rollout", "status", `deploy/${app}-pg`, "--timeout=120s"]);
-    const deployName = cfg.deployName ?? app;
-    const st = await run("kubectl", ["--context", CTX, "-n", ns, "rollout", "status", `deploy/${deployName}`, "--timeout=150s"]);
-    if (st.code !== 0) console.log(warn(`el backend no convergió aún: ${st.stderr || st.stdout}`));
-    else console.log(ok(st.stdout.split("\n").pop() ?? "backend listo"));
-
-    // 7) DNS: CNAME <slugApp>-<feature>-pre -> túnel (API; gana sobre el wildcard)
-    console.log(info(`DNS: ${host} → túnel ${uuid}`));
-    try {
-      const que = await upsertCname(host, tunnelTarget(uuid));
-      console.log(ok(que === "ok" ? `CNAME ya apuntaba bien (${host})` : `CNAME ${que} para ${host}`));
-    } catch (e) {
-      console.log(warn(`Cloudflare API: ${e instanceof Error ? e.message : String(e)}`));
-    }
-
-    builtOk = true;
-
-    // 8) verificá alcance (reintentos, sin sleeps ciegos)
-    const reachable = await waitReachable(`https://${host}/health`);
-    console.log("");
-    if (reachable) console.log(ok(`preview VIVO → https://${host}`));
-    else {
-      console.log(warn(`preview aplicado pero aún NO responde 2xx en https://${host}/health`));
-      console.log(info(`  revisá: kubectl --context ${CTX} -n ${ns} get pods`));
-    }
-  } finally {
-    // limpiá el worktree efímero (la imagen queda en el clúster)
-    await run("git", ["-C", appDir, "worktree", "remove", "--force", wt]);
-    try { rmSync(wt, { recursive: true, force: true }); } catch { /* ya lo quitó git */ }
-  }
-  if (!builtOk) process.exitCode = 1;
-}
-
-/** baja un preview por su NOMBRE completo `<slugApp>-<feature>` (lo que muestra `ls`). */
-export async function previewDown(nombre: string, opts: { dryRun?: boolean } = {}): Promise<void> {
-  const ns = slugFeature(nombre);
-  const host = previewHost(ns);
-  console.log(info(`bajando preview ${dim(ns)} (${host})`));
-
-  if (opts.dryRun) {
-    console.log(info("DRY RUN — no se toca nada. Plan:"));
-    console.log(`  1. kubectl --context ${CTX} delete namespace ${ns}`);
-    console.log(`  2. borrar CNAME ${host} (API Cloudflare)`);
-    console.log(info("nada ejecutado (--dry-run)"));
-    return;
-  }
-
-  const del = await run("kubectl", ["--context", CTX, "delete", "namespace", ns, "--ignore-not-found", "--wait=false"]);
-  if (del.code === 0) console.log(ok(del.stdout || `namespace ${ns} borrándose`));
-  else console.log(warn(`no pude borrar el namespace: ${del.stderr || del.stdout}`));
-
-  try {
-    const n = await deleteRecordsByName(host);
-    console.log(ok(n ? `CNAME ${host} borrado` : `no había CNAME ${host}`));
+    const que = await upsertCname(host, tunnelTarget(uuid));
+    console.log(ok(que === "ok" ? "CNAME ya apuntaba bien" : `CNAME ${que}`));
   } catch (e) {
-    console.log(bad(`DNS: ${e instanceof Error ? e.message : String(e)}`));
+    console.log(warn(`Cloudflare API: ${e instanceof Error ? e.message : String(e)}`));
   }
-}
 
-export async function previewLs(): Promise<void> {
-  // Los namespaces de preview son los que NO son de sistema/infra.
-  const infra = new Set(["default", "ingress", "cloudflare", "kube-system", "kube-public", "kube-node-lease"]);
-  const r = await run("kubectl", ["--context", CTX, "get", "ns", "-o", "jsonpath={range .items[*]}{.metadata.name}{\"\\t\"}{.status.phase}{\"\\n\"}{end}"]);
-  if (r.code !== 0) {
-    console.log(bad(`no pude listar (¿existe el clúster mke-preview?): ${r.stderr.split("\n")[0]}`));
+  // 6) migrar + (espejo | sembrar) DENTRO del pod, PREVIEW_MODE=true
+  if (listo) {
+    console.log(info("migrando (db:migrate) dentro del pod…"));
+    const migrate = await run("kubectl", ["--context", CTX, "-n", NS, "exec", `deploy/${name}`, "-c", "dev", "--", "sh", "-c", "cd /workspace/repo && npm run db:migrate -w apps/backend"]);
+    if (migrate.code !== 0) console.log(warn(`db:migrate falló (sigo): ${migrate.stderr || migrate.stdout}`));
+    else console.log(ok("migraciones al día"));
+
+    if (opts.espejo) {
+      console.log(info("--espejo: truncando + restaurando datos de stage (sanitizado) en el sidecar…"));
+      const tablasSensibles = await leerTablasSensibles(app, appsRoot());
+      await truncarSidecar(name);
+      await restaurarEspejo(app, name, tablasSensibles);
+      console.log(ok(`espejo de stage restaurado en el sidecar (excluidas ${tablasSensibles.length} tabla(s) sensible(s))`));
+    } else {
+      const hayScript = await run("kubectl", ["--context", CTX, "-n", NS, "exec", `deploy/${name}`, "-c", "dev", "--", "sh", "-c", "cd /workspace/repo && npm run -w apps/backend 2>/dev/null | grep -q '^  db:sembrar$'"]);
+      if (hayScript.code === 0) {
+        const sembrar = await run("kubectl", ["--context", CTX, "-n", NS, "exec", `deploy/${name}`, "-c", "dev", "--", "sh", "-c", "cd /workspace/repo && npm run db:sembrar -w apps/backend"]);
+        if (sembrar.code !== 0) console.log(warn(`db:sembrar falló (sigo): ${sembrar.stderr || sembrar.stdout}`));
+        else console.log(ok("sembrado (db:sembrar)"));
+      } else {
+        console.log(warn(`${app} no tiene script db:sembrar en apps/backend — sigo sin sembrar`));
+      }
+    }
+  }
+
+  const reachable = listo ? await waitReachable(`${url}/`) : false;
+  console.log("");
+  if (opts.json) {
+    console.log(JSON.stringify({ app, rama, name, host, url, leaseId: lease.leaseId, estado: reachable ? "vivo" : listo ? "aplicado" : "pendiente" }));
     return;
   }
-  const rows = r.stdout.split("\n").map((l) => l.split("\t")[0]).filter((n) => n && !infra.has(n));
-  console.log(`\n  previews vivos ${dim(`(${CTX})`)}`);
+  console.log(reachable ? ok(`preview VIVO → ${url}`) : warn(`aplicado pero aún no responde en ${url}`));
+}
+
+// ─── pull (git en el pod + renovar el lease) ──────────────────────────────────
+
+export async function previewPull(app: string, rama: string, opts: PreviewMutOpts): Promise<void> {
+  const name = previewPodName(app, rama);
+  if (!opts.json) console.log(info(`preview ${dim(name)}: pull de la rama activa`));
+  const r = await run("kubectl", ["--context", CTX, "-n", NS, "exec", `deploy/${name}`, "-c", "dev", "--", "sh", "/mke/pull.sh"]);
+  if (!opts.json) for (const l of (r.stdout || r.stderr).split("\n")) if (l.trim()) console.log(dim(`  │ ${l}`));
+  if (r.code !== 0) {
+    if (!opts.json) console.log(bad(`pull falló: ${r.stderr || r.stdout}`));
+    else console.log(JSON.stringify({ app, rama, name, estado: "error" }));
+    return;
+  }
+
+  // renovar el lease (backstop de vida; best-effort — el vault puede no estar)
+  const leaseId = await leaseIdDe(app, rama);
+  let renovado: string | null = null;
+  if (leaseId) {
+    const emisor = await resolveEmisorTokenSuave();
+    if (emisor) {
+      try {
+        const r2 = await renovarLease(vaultCliente(emisor), leaseId);
+        renovado = r2.expiraEn;
+      } catch (e) {
+        if (!opts.json) console.log(warn(`no pude renovar el lease: ${e instanceof Error ? e.message : String(e)}`));
+      }
+    }
+  }
+
+  if (!opts.json) console.log(ok(`al día${renovado ? ` · lease renovado hasta ${renovado}` : ""}`));
+  else console.log(JSON.stringify({ app, rama, name, leaseId, expiraEn: renovado, estado: "al-dia" }));
+}
+
+// ─── estado / ls ──────────────────────────────────────────────────────────────
+
+export async function previewEstado(app: string, rama: string, opts: PreviewMutOpts): Promise<void> {
+  const name = previewPodName(app, rama);
+  const host = previewPodHost(app, rama);
+  const r = await run("kubectl", ["--context", CTX, "-n", NS, "get", "deploy", name, "-o", "json"]);
+  if (r.code !== 0) {
+    if (opts.json) console.log(JSON.stringify({ app, rama, name, host, estado: "apagado" }));
+    else console.log(warn(`no hay preview-pod ${dim(name)} encendido`));
+    return;
+  }
+  let d: any = {};
+  try { d = JSON.parse(r.stdout); } catch { /* vacío */ }
+  const labels = d.metadata?.labels ?? {};
+  const avail = d.status?.availableReplicas ?? 0;
+  const total = d.status?.replicas ?? 0;
+  const estadoPod = avail > 0 ? "vivo" : total > 0 ? "arrancando" : "detenido";
+  const edad = edadDesde(d.metadata?.creationTimestamp);
+  const leaseId = labels["mke.preview/lease"] ?? PREVIEW_SIN_LEASE;
+
+  if (opts.json) {
+    console.log(JSON.stringify({ app, rama, name, host, leaseId, edad, estado: estadoPod }));
+    return;
+  }
+  console.log(`\n  preview-pod ${info(name)} ${dim(`[${estadoPod} · ${edad}]`)}`);
+  console.log(`    rama: ${info(rama)}   lease: ${info(leaseId)}`);
+  console.log(`    → https://${host}\n`);
+}
+
+interface PreviewRow {
+  app: string;
+  rama: string;
+  name: string;
+  host: string;
+  edad: string;
+  estado: string;
+}
+
+export async function previewLs(app: string | undefined, opts: PreviewLsOpts): Promise<void> {
+  const sel = app ? `mke.preview/app=${app}` : "mke.preview/app";
+  const r = await run("kubectl", ["--context", CTX, "-n", NS, "get", "deploy", "-l", sel, "-o", "json"]);
+  if (r.code !== 0) {
+    if (opts.json) console.log("[]");
+    else console.log(bad(`no pude listar (¿existe el clúster/namespace ${NS}?): ${r.stderr.split("\n")[0]}`));
+    return;
+  }
+  let items: unknown[] = [];
+  try { items = (JSON.parse(r.stdout) as { items?: unknown[] }).items ?? []; } catch { /* namespace vacío */ }
+
+  const rows: PreviewRow[] = items.map((it) => {
+    const d = it as {
+      metadata?: { labels?: Record<string, string>; creationTimestamp?: string };
+      status?: { availableReplicas?: number; replicas?: number };
+    };
+    const labels = d.metadata?.labels ?? {};
+    const appL = labels["mke.preview/app"] ?? "?";
+    const ramaSlug = labels["mke.preview/rama"] ?? "?";
+    const avail = d.status?.availableReplicas ?? 0;
+    const total = d.status?.replicas ?? 0;
+    return {
+      app: appL,
+      rama: ramaSlug,
+      name: `${appL}-${ramaSlug}`,
+      host: previewPodHost(appL, ramaSlug),
+      edad: edadDesde(d.metadata?.creationTimestamp),
+      estado: avail > 0 ? "vivo" : total > 0 ? "arrancando" : "detenido",
+    };
+  });
+
+  if (opts.json) { console.log(JSON.stringify(rows)); return; }
+  console.log(`\n  previews vivos ${dim(`(${CTX} · ns ${NS})`)}`);
   if (!rows.length) { console.log(`    ${dim("(ninguno)")}\n`); return; }
-  for (const ns of rows) console.log(`    ${info(ns)} → https://${previewHost(ns)}`);
+  for (const row of rows) console.log(`    ${info(row.name)} ${dim(`[${row.estado} · ${row.edad}]`)} → https://${row.host}`);
   console.log("");
 }
 
-// ─── generación de manifests ────────────────────────────────────────────────
+// ─── limpieza del cluster (lease + bundle + DNS) — común a down y merge ────────
 
-/** Namespace + postgres efímero + Secret del app. */
-function resourcesYaml(app: string, ns: string, host: string, cfg: PreviewApp, literals: Record<string, string>): string {
-  const b64 = (s: string): string => Buffer.from(s, "utf8").toString("base64");
-  const data = Object.entries(literals).map(([k, v]) => `  ${k}: ${b64(v)}`).join("\n");
-  return `apiVersion: v1
-kind: Namespace
-metadata:
-  name: ${ns}
-  labels:
-    app.kubernetes.io/part-of: mke-preview
-    mke.preview/feature: ${ns}
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ${app}-pg
-  labels: { app: ${app}-pg }
-spec:
-  replicas: 1
-  selector: { matchLabels: { app: ${app}-pg } }
-  template:
-    metadata:
-      labels: { app: ${app}-pg }
-    spec:
-      containers:
-        - name: postgres
-          image: postgres:16-alpine
-          env:
-            - { name: POSTGRES_USER, value: "${cfg.db.user}" }
-            - { name: POSTGRES_PASSWORD, value: "${cfg.db.password}" }
-            - { name: POSTGRES_DB, value: "${cfg.db.name}" }
-            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
-          ports: [{ containerPort: 5432 }]
-          readinessProbe:
-            exec: { command: ["pg_isready", "-U", "${cfg.db.user}", "-d", "${cfg.db.name}"] }
-            periodSeconds: 3
-            failureThreshold: 20
-          volumeMounts:
-            - { name: data, mountPath: /var/lib/postgresql/data }
-      volumes:
-        - name: data
-          emptyDir: {}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: ${app}-pg
-spec:
-  selector: { app: ${app}-pg }
-  ports: [{ port: 5432, targetPort: 5432 }]
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: ${cfg.secretName}
-type: Opaque
-data:
-${data}
-`;
+async function limpiarCluster(app: string, rama: string, opts: { json?: boolean }): Promise<{ leaseId: string | null; revocado: boolean; dnsBorrado: boolean }> {
+  const name = previewPodName(app, rama);
+  const host = previewPodHost(app, rama);
+
+  // 1) revoca el lease (si hay y el vault responde). Doble vía: aunque el vault
+  //    no esté, igual borramos el bundle por labels — idempotente.
+  const leaseId = await leaseIdDe(app, rama);
+  let revocado = false;
+  if (leaseId) {
+    const emisor = await resolveEmisorTokenSuave();
+    if (emisor) {
+      try {
+        const r = await revocarSiHayLease(leaseId, (id) => revocarLease(vaultCliente(emisor), id));
+        revocado = r.revocado;
+        if (!opts.json) console.log(ok(`lease ${dim(leaseId)} revocado`));
+      } catch (e) {
+        if (!opts.json) console.log(warn(`no pude revocar el lease (¿vault caído? el TTL lo limpia): ${e instanceof Error ? e.message : String(e)}`));
+      }
+    } else if (!opts.json) {
+      console.log(dim("  vault sin emisor a mano — salto la revocación (el TTL del lease lo limpia)"));
+    }
+  } else if (!opts.json) {
+    console.log(dim("  sin lease vivo para esta app×rama (no-op)"));
+  }
+
+  // 2) borra el bundle k8s DIRECTO por labels (siempre, idempotente)
+  const del = await run("kubectl", [
+    "--context", CTX, "-n", NS,
+    "delete", "deployment,service,ingress,secret,configmap",
+    "-l", selectorDePreview(app, rama),
+    "--ignore-not-found", "--wait=false",
+  ]);
+  if (!opts.json) {
+    if (del.code === 0) console.log(ok(del.stdout || `recursos de ${name} borrándose (o ya no existían)`));
+    else console.log(warn(`no pude borrar recursos k8s (sigo): ${del.stderr || del.stdout}`));
+  }
+
+  // 3) DNS
+  let dnsBorrado = false;
+  try {
+    const n = await deleteRecordsByName(host, { previewApp: app, previewRama: rama });
+    dnsBorrado = n > 0;
+    if (!opts.json) console.log(ok(n ? `CNAME ${host} borrado` : `no había CNAME ${host}`));
+  } catch (e) {
+    if (!opts.json) console.log(warn(`DNS (sigo): ${e instanceof Error ? e.message : String(e)}`));
+  }
+
+  return { leaseId, revocado, dnsBorrado };
 }
 
-/** overlay que reusa la base del app + parches de preview. */
-function kustomizationYaml(app: string, ns: string, host: string, image: string, cfg: PreviewApp): string {
-  const [imgName, imgTag] = image.split(":");
-  const deployName = cfg.deployName ?? app;
-  return `apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-
-namespace: ${ns}
-
-resources:
-  - ../../base
-  - resources.yaml
-
-images:
-  - name: ${imgName}
-    newTag: ${imgTag}
-
-patches:
-  # host del preview + ruta / -> backend (la base solo enruta /api; en preview no
-  # hay static-mishi, así que exponemos todo el backend, incluido /health)
-  - target: { kind: Ingress }
-    patch: |
-      - op: replace
-        path: /spec/rules/0/host
-        value: ${host}
-      - op: replace
-        path: /spec/rules/0/http/paths/0/path
-        value: /
-  # PREVIEW=true: siembra por escenario de Studio si el app lo soporta
-  - target: { kind: Deployment, name: ${deployName} }
-    patch: |
-      - op: add
-        path: /spec/template/spec/containers/0/env/-
-        value: { name: PREVIEW, value: "true" }
-`;
+/** commits en `rama` que NO están en main (origin/main tras fetch). >0 = trabajo
+ * sin mergear. Devuelve -1 si no se pudo determinar (rama local ausente). */
+async function commitsSinMergear(appDir: string, rama: string): Promise<number> {
+  if ((await run("git", ["-C", appDir, "show-ref", "--verify", "-q", `refs/heads/${rama}`])).code !== 0) return -1;
+  await run("git", ["-C", appDir, "fetch", "origin", "main"]);
+  const base = (await run("git", ["-C", appDir, "rev-parse", "--verify", "-q", "origin/main"])).code === 0 ? "origin/main" : "main";
+  const r = await run("git", ["-C", appDir, "rev-list", "--count", `${base}..${rama}`]);
+  const n = Number(r.stdout.trim());
+  return Number.isNaN(n) ? -1 : n;
 }
 
-// ─── alcance ────────────────────────────────────────────────────────────────
+// ─── down (ABORTO TOTAL a mano · limpieza de cluster desde el runner) ─────────
+
+/**
+ * Baja un preview. Dos modos:
+ *  - A MANO (hay worktree y no se pasa --sin-worktree) = ABORTO TOTAL: revoca el
+ *    lease + borra el bundle + DNS + worktree + rama LOCAL + rama REMOTA.
+ *    GUARDARRAÍL: si la rama tiene commits que no están en main, se niega salvo
+ *    `--forzar` (no querés tirar trabajo sin querer).
+ *  - MODO RUNNER (`--sin-worktree`, o no hay worktree en esta máquina) = solo
+ *    limpieza de cluster (lease + bundle + DNS). NO toca ramas: cuando corre el
+ *    workflow `on: delete` la rama ya no existe. IDEMPOTENTE, sin TTY.
+ */
+export async function previewDown(app: string, rama: string, opts: PreviewDownOpts = {}): Promise<void> {
+  const ramaSlug = slugDev(rama);
+  const name = previewPodName(app, rama);
+  const host = previewPodHost(app, rama);
+  const appDir = join(appsRoot(), app);
+  const wt = worktreeDir(appDir, ramaSlug);
+  const esRunner = opts.sinWorktree === true || !existsSync(wt);
+
+  if (!opts.json) console.log(info(`bajando preview ${dim(name)} (${host})${esRunner ? dim(" · modo runner (solo cluster)") : ""}`));
+
+  // GUARDARRAÍL (solo a mano): no tirar trabajo sin mergear sin --forzar.
+  if (!esRunner && !opts.forzar) {
+    const sin = await commitsSinMergear(appDir, rama);
+    if (sin > 0) {
+      throw new Error(
+        `la rama '${rama}' tiene ${sin} commit(s) que NO están en main — \`mke preview down\` es un ABORTO que borra la rama. ` +
+        `Si querés conservar el trabajo, mergealo con \`mke preview merge ${app} ${rama}\`. Para descartar igual: --forzar.`,
+      );
+    }
+  }
+
+  const { leaseId, revocado, dnsBorrado } = await limpiarCluster(app, rama, { json: opts.json });
+
+  if (esRunner) {
+    if (!opts.json) console.log(dim("  modo runner: no se tocan ramas (la rama ya no existe cuando corre el workflow)"));
+    if (opts.json) console.log(JSON.stringify({ app, rama, name, host, leaseId, revocado, dnsBorrado, modo: "runner", estado: "apagado" }));
+    return;
+  }
+
+  // A MANO: borra worktree + rama local + rama remota (dispara el on:delete → cluster).
+  await borrarWorktreeSiExiste(appDir, ramaSlug, { json: opts.json });
+  const delLocal = await run("git", ["-C", appDir, "branch", "-D", rama]);
+  if (!opts.json) console.log(delLocal.code === 0 ? ok(`rama local ${dim(rama)} borrada`) : dim(`  rama local ${rama} ausente (nada que borrar)`));
+  const delRemota = await run("env", gitCredArgs(appDir, "push", "origin", "--delete", rama));
+  if (!opts.json) console.log(delRemota.code === 0 ? ok(`rama remota ${dim(rama)} borrada`) : dim(`  rama remota ${rama} ausente o sin permiso (${delRemota.stderr.split("\n")[0]})`));
+
+  if (opts.json) console.log(JSON.stringify({ app, rama, name, host, leaseId, revocado, dnsBorrado, modo: "abort", estado: "apagado" }));
+}
+
+// ─── merge: el ÚNICO comando del final feliz ─────────────────────────────────
+
+/**
+ * Cierra un preview con éxito: mergea la rama a main + push de main, luego borra
+ * worktree + rama local + rama REMOTA. Borrar la rama remota dispara el workflow
+ * `on: delete` de la app → limpieza del cluster (no la esperamos acá). Aborta si
+ * el worktree tiene cambios sin commit (no querés mergear a medias).
+ */
+export async function previewMerge(app: string, rama: string, opts: PreviewMergeOpts = {}): Promise<void> {
+  const ramaSlug = slugDev(rama);
+  const appDir = join(appsRoot(), app);
+  const wt = worktreeDir(appDir, ramaSlug);
+  if (!existsSync(appDir)) throw new Error(`no existe el repo del app: ${appDir}`);
+  if (!opts.json) console.log(info(`merge ${dim(app)} · rama ${dim(rama)} → main`));
+
+  // 1) worktree limpio (o inexistente): sin cambios sin commit.
+  if (existsSync(wt)) {
+    const st = await run("git", ["-C", wt, "status", "--porcelain"]);
+    if (st.stdout.trim()) {
+      throw new Error(`el worktree ${wt} tiene cambios sin commit — commiteá o descartá antes de mergear:\n${st.stdout}`);
+    }
+  }
+
+  // 2) merge a main en el repo principal + push.
+  const fetch = await run("git", ["-C", appDir, "fetch", "origin", "main"]);
+  if (fetch.code !== 0 && !opts.json) console.log(warn(`fetch de main falló (sigo con lo local): ${fetch.stderr}`));
+  const co = await run("git", ["-C", appDir, "checkout", "main"]);
+  if (co.code !== 0) throw new Error(`no pude checkout main en ${appDir} (¿cambios sin commit?): ${co.stderr || co.stdout}`);
+  const ff = await run("git", ["-C", appDir, "merge", "--ff-only", "origin/main"]);
+  if (ff.code !== 0 && !opts.json) console.log(dim(`  main local no avanzó a origin/main por ff (${ff.stderr.split("\n")[0]})`));
+  const merge = await run("git", ["-C", appDir, "merge", "--no-edit", rama]);
+  if (merge.code !== 0) throw new Error(`merge de ${rama} a main falló (¿conflicto?): ${merge.stderr || merge.stdout}`);
+  if (!opts.json) console.log(ok(`rama ${dim(rama)} mergeada a main`));
+  const push = await run("env", gitCredArgs(appDir, "push", "origin", "main"));
+  if (push.code !== 0) throw new Error(`push de main falló: ${push.stderr || push.stdout}`);
+  if (!opts.json) console.log(ok("main empujado a origin"));
+
+  // 3) borra worktree + rama local + rama remota (→ dispara on:delete → cluster).
+  await borrarWorktreeSiExiste(appDir, ramaSlug, { json: opts.json });
+  const delLocal = await run("git", ["-C", appDir, "branch", "-D", rama]);
+  if (!opts.json) console.log(delLocal.code === 0 ? ok(`rama local ${dim(rama)} borrada`) : dim(`  rama local ${rama} ausente`));
+  const delRemota = await run("env", gitCredArgs(appDir, "push", "origin", "--delete", rama));
+  const remotaOk = delRemota.code === 0;
+  if (!opts.json) {
+    console.log(remotaOk ? ok(`rama remota ${dim(rama)} borrada`) : warn(`no pude borrar la rama remota ${rama}: ${delRemota.stderr.split("\n")[0]}`));
+    if (remotaOk) console.log(dim("  → borrar la rama remota dispara el workflow `on: delete` de la app, que limpia el preview en el cluster (no lo esperamos acá)."));
+    else console.log(warn(`el preview del cluster NO se limpiará solo (el on:delete no se disparó) — corré \`mke preview down ${app} ${rama} --sin-worktree\` para limpiarlo a mano.`));
+    console.log(ok(`merge de ${dim(rama)} completo.`));
+  } else {
+    console.log(JSON.stringify({ app, rama, mergeada: true, ramaRemotaBorrada: remotaOk, estado: "mergeado" }));
+  }
+}
+
+// ─── limpiar: red de seguridad (no el mecanismo primario — ver AI_REPO_STATE) ─
+
+/**
+ * Barrido de previews cuya rama YA NO EXISTE en origin. El mecanismo PRIMARIO
+ * de limpieza es el workflow `on: delete` de cada app (self-hosted runner →
+ * `mke preview down --sin-worktree` inmediato); `limpiar` es la red de seguridad
+ * para lo que ese workflow no alcanzó a bajar (runner caído, app sin el workflow).
+ */
+export async function previewLimpiar(opts: { json?: boolean } = {}): Promise<void> {
+  const r = await run("kubectl", ["--context", CTX, "-n", NS, "get", "deploy", "-l", "mke.preview/app", "-o", "json"]);
+  if (r.code !== 0) {
+    if (!opts.json) console.log(bad(`no pude listar previews: ${r.stderr.split("\n")[0]}`));
+    return;
+  }
+  let items: unknown[] = [];
+  try { items = (JSON.parse(r.stdout) as { items?: unknown[] }).items ?? []; } catch { /* vacío */ }
+
+  let bajados = 0;
+  for (const it of items) {
+    const d = it as { metadata?: { labels?: Record<string, string> } };
+    const labels = d.metadata?.labels ?? {};
+    const app = labels["mke.preview/app"];
+    const ramaSlug = labels["mke.preview/rama"];
+    if (!app || !ramaSlug) continue;
+    const appDir = join(appsRoot(), app);
+    const remoto = await run("git", ["-C", appDir, "ls-remote", "--heads", "origin"]);
+    const ramas = remoto.code === 0 ? remoto.stdout.split("\n").map((l) => l.split("refs/heads/")[1]).filter(Boolean) : [];
+    const viva = ramas.some((r2) => slugDev(r2) === ramaSlug);
+    if (viva) continue;
+    if (!opts.json) console.log(info(`rama de ${app}-${ramaSlug} ya no existe en origin → bajando (solo cluster)`));
+    await previewDown(app, ramaSlug, { json: opts.json, sinWorktree: true });
+    bajados++;
+  }
+  if (!opts.json) console.log(bajados ? ok(`${bajados} preview(s) bajado(s)`) : dim("nada que limpiar"));
+  else console.log(JSON.stringify({ bajados }));
+}
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+export function edadDesde(ts: string | undefined, ahora = Date.now()): string {
+  if (!ts) return "?";
+  const ms = ahora - new Date(ts).getTime();
+  if (Number.isNaN(ms) || ms < 0) return "?";
+  const min = Math.floor(ms / 60000);
+  if (min < 60) return `${min}m`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
 
 async function waitReachable(url: string, tries = 20, gapMs = 3000): Promise<boolean> {
   for (let i = 0; i < tries; i++) {
     const r = await run("curl", ["-s", "-m", "8", "-o", "/dev/null", "-w", "%{http_code}", url]);
     const code = r.stdout.trim();
     if (/^(200|201|204|301|302|401|403)$/.test(code)) return true;
-    process.stdout.write(dim(`  intento ${i + 1}/${tries}: HTTP ${code || "000"}\r`));
     if (i < tries - 1) await new Promise((res) => setTimeout(res, gapMs));
   }
   return false;
