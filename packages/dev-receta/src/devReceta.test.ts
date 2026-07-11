@@ -13,6 +13,10 @@ import {
   mergeDevEnv,
   clavesViteTokenProhibidas,
   DEV_VITE_PORT,
+  previewPodName,
+  previewPodHost,
+  selectorDePreview,
+  manifiestosPreview,
   type K8sManifest,
 } from "./devReceta.js";
 
@@ -414,4 +418,84 @@ test("manifiestosDev: annotations vivos rama/sha en el Deployment", () => {
   const ann = (porKind(ms, "Deployment").metadata as any).annotations;
   assert.equal(ann["mke.dev/rama"], "feat/x");
   assert.ok("mke.dev/sha" in ann, "annotation de sha presente (la llena el CLI)");
+});
+
+// ─── preview-pod (`mke preview`) ─────────────────────────────────────────────
+
+test("previewPodName: <app>-<slug(rama)>, SIEMPRE con la rama, recorta a 50", () => {
+  assert.equal(previewPodName("mishi-bank", "feat/cobros"), "mishi-bank-feat-cobros");
+  const largo = previewPodName("mishi-bank", "x".repeat(80));
+  assert.ok(largo.length <= 50, `nombre demasiado largo: ${largo.length}`);
+  assert.ok(!largo.endsWith("-"), "no debe terminar en guion");
+});
+
+test("previewPodHost: BARE, sin sufijo — un solo label DNS", () => {
+  assert.equal(previewPodHost("mishi-bank", "feat/cobros"), "mishi-bank-feat-cobros.mishi.com.co");
+  assert.ok(!previewPodHost("mishi-bank", "main").includes("-pre"), "sin el viejo sufijo -pre");
+  assert.ok(!previewPodHost("mishi-bank", "main").includes("-feat"), "sin el sufijo -feat de dev/feature");
+});
+
+test("selectorDePreview: label por app×rama (rama slugueada)", () => {
+  assert.equal(selectorDePreview("mishi-bank", "feat/Cobros"), "mke.preview/app=mishi-bank,mke.preview/rama=feat-cobros");
+});
+
+test("manifiestosPreview: recursos esperados, ns preview, SIN sidecar postgres", () => {
+  const ms = manifiestosPreview({
+    app: "mishi-bank",
+    rama: "feat/cobros",
+    repoUrl: "https://github.com/mishicomco/mishi-bank.git",
+    databaseUrl: "postgres://mishi_bank:pw@postgres.databases-dev.svc.cluster.local:5432/mishi_bank_feat_cobros",
+  });
+  assert.deepEqual(
+    ms.map((m) => m.kind),
+    ["Namespace", "Secret", "ConfigMap", "Deployment", "Service", "Ingress"],
+  );
+  assert.equal((porKind(ms, "Namespace").metadata as any).name, "preview");
+  const name = previewPodName("mishi-bank", "feat/cobros");
+  assert.equal((porKind(ms, "Deployment").metadata as any).name, name);
+  assert.equal((porKind(ms, "Deployment").metadata as any).labels["mke.preview/app"], "mishi-bank");
+  assert.equal((porKind(ms, "Deployment").metadata as any).labels["mke.preview/rama"], "feat-cobros");
+  assert.equal(((porKind(ms, "Ingress").spec as any).rules[0].host), previewPodHost("mishi-bank", "feat/cobros"));
+
+  const podSpec = (porKind(ms, "Deployment").spec as any).template.spec;
+  const nombres = podSpec.containers.map((c: any) => c.name).sort();
+  assert.deepEqual(nombres, ["dev", "web"], "sin sidecar postgres: la DB es externa");
+
+  const dev = podSpec.containers.find((c: any) => c.name === "dev");
+  assert.deepEqual(dev.command, ["sh", "/mke/boot-preview.sh"]);
+  const val = (n: string) => dev.env.find((e: any) => e.name === n)?.value;
+  assert.equal(val("PREVIEW"), "true");
+  assert.equal(val("PREVIEW_MODE"), "true");
+  assert.equal(
+    val("DATABASE_URL"),
+    "postgres://mishi_bank:pw@postgres.databases-dev.svc.cluster.local:5432/mishi_bank_feat_cobros",
+  );
+});
+
+test("manifiestosPreview: envExtra/npmToken siguen la misma convención que mke dev (Secret + envFrom, nunca en claro)", () => {
+  const ms = manifiestosPreview({
+    app: "mishi-bank",
+    rama: "main",
+    repoUrl: "https://x/y.git",
+    databaseUrl: "postgres://x/y",
+    envExtra: { CONNECT_URL: "http://connect.dev.svc" },
+    npmToken: "ghp_secreto",
+  });
+  const envSecret = ms.find(
+    (m) => m.kind === "Secret" && (m.metadata as any).name === "mishi-bank-main-env",
+  ) as any;
+  assert.ok(envSecret, "Secret <name>-env presente");
+  assert.equal(Buffer.from(envSecret.data.CONNECT_URL, "base64").toString("utf8"), "http://connect.dev.svc");
+  const npmSecret = ms.find(
+    (m) => m.kind === "Secret" && (m.metadata as any).name === "mishi-bank-main-npm",
+  ) as any;
+  assert.ok(npmSecret, "Secret <name>-npm presente");
+  assert.ok(!JSON.stringify(ms).includes("ghp_secreto"), "token nunca en claro");
+});
+
+test("manifiestosPreview: sin --live NO hay redirect ni annotation live; con --live sí", () => {
+  const sinLive = manifiestosPreview({ app: "mishi-bank", rama: "main", repoUrl: "https://x/y.git", databaseUrl: "postgres://x/y" });
+  assert.ok(!("mke.dev/live" in ((porKind(sinLive, "Deployment").metadata as any).annotations)));
+  const conLive = manifiestosPreview({ app: "mishi-bank", rama: "main", repoUrl: "https://x/y.git", databaseUrl: "postgres://x/y", live: true });
+  assert.equal(((porKind(conLive, "Deployment").metadata as any).annotations)["mke.dev/live"], "true");
 });
