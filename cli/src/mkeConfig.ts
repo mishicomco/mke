@@ -85,14 +85,16 @@ export const ENVS: Record<string, EnvSpec> = {
 export const DOMAIN = "mishi.com.co";
 
 /**
- * Clúster de PREVIEWS por FEATURE (Studio v2). Cluster k3d SEPARADO del de prod
- * (nunca se toca mke-prod). Cada feature = un namespace efímero; cada preview
- * lleva su propio postgres efímero y su CNAME `<slugApp>-<feature>-pre.mishi.com.co`
- * (el slug público de la app al inicio para que con muchas apps se sepa qué es qué).
+ * Clúster de PREVIEWS/RAMAS (Studio v2 + `mke preview`/`mke dev`). Cluster k3d
+ * SEPARADO del de prod (nunca se toca mke-prod). Infra compartida (contexto,
+ * cluster, túnel, zone id) por los mecanismos de rama; cada uno vive en su
+ * propio namespace (`dev`, `preview`, …) y define su propio host/nombre — ver
+ * `@mishicomco/dev-receta` (`previewPodName`/`previewPodHost` para `mke preview`,
+ * `devName`/`devHost` para `mke dev`).
  *
  * El túnel `mke-preview` se crea en bootstrap-preview.sh; su UUID se resuelve en
  * runtime (`cloudflared tunnel list`) para no hardcodearlo. Zone id de la zona
- * mishi.com.co (para borrar DNS vía API en `preview down`).
+ * mishi.com.co (para crear/borrar DNS vía API).
  */
 export const PREVIEW = {
   context: "k3d-mke-preview",
@@ -149,22 +151,6 @@ export const DEV = {
   hostSuffix: DEV_HOST_SUFFIX,
   runnerImage: DEV_RUNNER_IMAGE,
 } as const;
-
-/**
- * host público de un preview: `<nombre>-pre.mishi.com.co`, donde `nombre` es
- * `<slugApp>-<feature>` (ej. bank-studio-escenarios-pre.mishi.com.co).
- */
-export function previewHost(nombre: string): string {
-  return `${nombre}${PREVIEW.hostSuffix}.${DOMAIN}`;
-}
-
-/**
- * nombre completo del preview: `<slugApp>-<feature>`. Si el feature ya empieza
- * con el slug (rama `bank-fix-x` con slug `bank`), no lo duplica.
- */
-export function previewName(slug: string, feature: string): string {
-  return feature === slug || feature.startsWith(`${slug}-`) ? feature : `${slug}-${feature}`;
-}
 
 /** host público por convención; el id interno del app puede diferir del subdominio. */
 export function hostFor(app: string, env: string): string {
