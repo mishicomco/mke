@@ -152,6 +152,19 @@ export const DEV = {
   runnerImage: DEV_RUNNER_IMAGE,
 } as const;
 
+/**
+ * vault-mishi: emisor de LEASES efímeros app×rama para `mke preview` (Contrato 1).
+ * URL horneada como los demás EnvSpec; override con `VAULT_URL`. El token de la
+ * identidad EMISORA (DEDICADA, no root) se lee de `mishi-secret get
+ * vault-mishi-emisor-token` en tiempo de uso — nunca acá. DEGRADACIÓN interina:
+ * mientras el escenario 4 del vault no esté desplegado, `mke preview up` arranca
+ * SIN lease (warning) y el pod corre igual para probar pod+DB+HMR.
+ */
+export const VAULT = {
+  url: process.env.VAULT_URL ?? "http://vault-mishi.vault-mishi.svc.cluster.local:8080",
+  emisorTokenSecret: "vault-mishi-emisor-token",
+} as const;
+
 /** host público por convención; el id interno del app puede diferir del subdominio. */
 export function hostFor(app: string, env: string): string {
   const spec = ENVS[env];
