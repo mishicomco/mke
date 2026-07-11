@@ -161,7 +161,9 @@ export const DEV = {
  * SIN lease (warning) y el pod corre igual para probar pod+DB+HMR.
  */
 export const VAULT = {
-  url: process.env.VAULT_URL ?? "http://vault-mishi.vault-mishi.svc.cluster.local:8080",
+  // el CLI corre en el laptop o en el runner (fuera del cluster del vault):
+  // default = el host público de stage; dentro de un cluster, override VAULT_URL.
+  url: process.env.VAULT_URL ?? "https://vault-stage.mishi.com.co",
   emisorTokenSecret: "vault-mishi-emisor-token",
 } as const;
 
