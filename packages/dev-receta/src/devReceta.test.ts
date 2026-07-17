@@ -188,3 +188,59 @@ test("manifiestosPreview: sin --live NO hay annotation live; con --live sí", ()
   const conLive = manifiestosPreview({ app: "mishi-bank", rama: "main", repoUrl: "https://x/y.git", leaseId: "l1", leaseToken: "t", live: true });
   assert.equal(((porKind(conLive, "Deployment").metadata as any).annotations)["mke.dev/live"], "true");
 });
+
+// ─── FORMA de la app (derivada por el CLI; default = completa) ───────────────
+
+test("manifiestosPreview: backend-only — sin vite config, Caddyfile todo→backend, readiness /health", () => {
+  const ms = manifiestosPreview({
+    app: "chrome-mishi", rama: "perfiles", repoUrl: "https://x/y.git",
+    leaseId: PREVIEW_SIN_LEASE, frontend: false,
+  });
+  const cm = porKind(ms, "ConfigMap") as any;
+  assert.ok(!("vite.dev.mke.config.ts" in cm.data), "sin config de vite");
+  assert.ok(!cm.data.Caddyfile.includes("5173"), "caddy no apunta a vite");
+  assert.match(cm.data.Caddyfile, /reverse_proxy 127\.0\.0\.1:3000/, "todo al backend");
+  const podSpec = (porKind(ms, "Deployment").spec as any).template.spec;
+  const web = podSpec.containers.find((c: any) => c.name === "web");
+  assert.equal(web.readinessProbe.httpGet.path, "/health", "readiness prueba caddy→backend");
+  assert.deepEqual(podSpec.containers.map((c: any) => c.name).sort(), ["dev", "postgres", "web"], "el sidecar postgres sigue (hay backend)");
+});
+
+test("manifiestosPreview: frontend-only — sin sidecar postgres, sin DATABASE_URL, readiness /", () => {
+  const ms = manifiestosPreview({
+    app: "solo-front", rama: "main", repoUrl: "https://x/y.git",
+    leaseId: PREVIEW_SIN_LEASE, backend: false,
+  });
+  const podSpec = (porKind(ms, "Deployment").spec as any).template.spec;
+  assert.deepEqual(podSpec.containers.map((c: any) => c.name).sort(), ["dev", "web"], "sin sidecar postgres");
+  assert.ok(!podSpec.volumes.some((v: any) => v.name === "pgdata"), "sin volumen pgdata");
+  const dev = podSpec.containers.find((c: any) => c.name === "dev");
+  assert.ok(!dev.env.some((e: any) => e.name === "DATABASE_URL"), "sin DATABASE_URL");
+  const web = podSpec.containers.find((c: any) => c.name === "web");
+  assert.equal(web.readinessProbe.httpGet.path, "/");
+  const cm = porKind(ms, "ConfigMap") as any;
+  assert.ok(!cm.data.Caddyfile.includes(":3000"), "caddy no apunta al backend");
+});
+
+test("manifiestosPreview: default (sin forma) = receta histórica intacta", () => {
+  const ms = manifiestosPreview({ app: "mishi-bank", rama: "main", repoUrl: "https://x/y.git", leaseId: "l1" });
+  const podSpec = (porKind(ms, "Deployment").spec as any).template.spec;
+  assert.deepEqual(podSpec.containers.map((c: any) => c.name).sort(), ["dev", "postgres", "web"]);
+  const web = podSpec.containers.find((c: any) => c.name === "web");
+  assert.equal(web.readinessProbe.httpGet.path, "/");
+  const cm = porKind(ms, "ConfigMap") as any;
+  assert.ok("vite.dev.mke.config.ts" in cm.data);
+  assert.match(cm.data.Caddyfile, /handle \/api\/\*/);
+});
+
+test("manifiestosPreview: sin backend NI frontend revienta claro; --live sin frontend revienta", () => {
+  assert.throws(() => manifiestosPreview({ app: "x", rama: "m", repoUrl: "u", leaseId: "l", backend: false, frontend: false }), /nada que encender/);
+  assert.throws(() => manifiestosPreview({ app: "x", rama: "m", repoUrl: "u", leaseId: "l", frontend: false, live: true }), /--live.*frontend/);
+});
+
+test("manifiestosPreview: imagen alternativa del runner llega a init y dev", () => {
+  const ms = manifiestosPreview({ app: "chrome-mishi", rama: "perfiles", repoUrl: "u", leaseId: "l", frontend: false, imagen: "mke-chrome-runner:1" });
+  const podSpec = (porKind(ms, "Deployment").spec as any).template.spec;
+  assert.equal(podSpec.initContainers[0].image, "mke-chrome-runner:1");
+  assert.equal(podSpec.containers.find((c: any) => c.name === "dev").image, "mke-chrome-runner:1");
+});

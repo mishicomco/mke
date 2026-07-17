@@ -17,6 +17,10 @@ export interface PreviewManifest {
   app: string;
   secretos: string[];
   config: Record<string, string>;
+  /** imagen alternativa del runner del pod (opcional): para apps con dependencias
+   * de SISTEMA que el runner genérico no trae (ej. chrome-mishi → Chrome+Xvfb).
+   * Es declaración legítima (no derivable del árbol del repo). */
+  imagen?: string;
 }
 
 /** manifiesto vacío (Contrato 2: "Archivo ausente ⇒ arranca sin secretos ni config extra"). */
@@ -39,6 +43,7 @@ function despojarComentario(linea: string): string {
 export function parsePreviewManifest(text: string, appEsperada?: string): PreviewManifest {
   const lineasCrudas = text.split(/\r?\n/);
   let app: string | undefined;
+  let imagen: string | undefined;
   const secretos: string[] = [];
   const config: Record<string, string> = {};
   let seccion: "secretos" | "config" | null = null;
@@ -57,12 +62,16 @@ export function parsePreviewManifest(text: string, appEsperada?: string): Previe
         if (!valor.trim()) throw new Error("mke.preview.yaml: 'app' vacío");
         app = valor.trim();
         seccion = null;
+      } else if (clave === "imagen") {
+        if (!valor.trim()) throw new Error("mke.preview.yaml: 'imagen' vacía (o quita la clave para usar el runner genérico)");
+        imagen = valor.trim();
+        seccion = null;
       } else if (clave === "secretos") {
         seccion = "secretos";
       } else if (clave === "config") {
         seccion = "config";
       } else {
-        throw new Error(`mke.preview.yaml: clave de nivel raíz desconocida "${clave}" (esperado: app|secretos|config)`);
+        throw new Error(`mke.preview.yaml: clave de nivel raíz desconocida "${clave}" (esperado: app|imagen|secretos|config)`);
       }
       continue;
     }
@@ -92,5 +101,5 @@ export function parsePreviewManifest(text: string, appEsperada?: string): Previe
   }
   const appFinal = app ?? appEsperada;
   if (!appFinal) throw new Error("mke.preview.yaml: falta 'app' (y no se pasó app esperada)");
-  return { app: appFinal, secretos, config };
+  return { app: appFinal, secretos, config, ...(imagen ? { imagen } : {}) };
 }

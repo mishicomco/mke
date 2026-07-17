@@ -67,3 +67,10 @@ test("parsePreviewManifest: ignora líneas vacías y comentarios de línea compl
 test("manifiestoVacio: archivo ausente ⇒ sin secretos ni config (Contrato 2: no es error)", () => {
   assert.deepEqual(manifiestoVacio("mishi-bank"), { app: "mishi-bank", secretos: [], config: {} });
 });
+
+test("parsePreviewManifest: 'imagen' opcional — runner alternativo declarado por la app", () => {
+  const m = parsePreviewManifest("imagen: mke-chrome-runner:1\nsecretos: []\n", "chrome-mishi");
+  assert.equal(m.imagen, "mke-chrome-runner:1");
+  assert.equal(parsePreviewManifest("app: x\n").imagen, undefined, "ausente ⇒ undefined (runner genérico)");
+  assert.throws(() => parsePreviewManifest("imagen:\n", "x"), /'imagen' vacía/);
+});

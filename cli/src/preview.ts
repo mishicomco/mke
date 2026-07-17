@@ -274,9 +274,26 @@ export async function previewUp(app: string, rama: string, opts: PreviewUpOpts):
   // 0) worktree local + push (falla rápido si el repo hermano no existe)
   await asegurarWorktree(appDir, rama, ramaSlug);
 
+  // 0.5) FORMA de la app: DERIVADA del árbol del worktree de la rama (la verdad
+  //      se deriva, no se declara). backend-only → sin vite, readiness /health;
+  //      frontend-only → sin sidecar postgres ni migraciones.
+  const forma = {
+    backend: existsSync(join(wt, "apps", "backend")),
+    frontend: existsSync(join(wt, "apps", "frontend")),
+  };
+  if (!forma.backend && !forma.frontend) {
+    throw new Error(`la rama '${rama}' de ${app} no tiene apps/backend ni apps/frontend — nada que encender`);
+  }
+  if (!opts.json && !(forma.backend && forma.frontend)) {
+    console.log(info(`forma derivada del worktree: ${forma.backend ? "backend-only (sin vite; readiness por /health)" : "frontend-only (sin sidecar postgres)"}`));
+  }
+
   // 1) manifiesto de la RAMA (Contrato 2): se lee del WORKTREE recién creado —
   //    lo que declara ESTA rama, no main. Ausente/vacío ⇒ lista vacía + warning.
   const manifiesto = await leerManifiestoPreview(app, wt);
+  if (!opts.json && manifiesto.imagen) {
+    console.log(info(`runner declarado en mke.preview.yaml: ${dim(manifiesto.imagen)}`));
+  }
   if (!opts.json && manifiesto.secretos.length === 0) {
     console.log(warn(`la rama '${rama}' no declara secretos en mke.preview.yaml — el lease se acota a CERO secretos (la app no leerá ninguno del vault)`));
   }
@@ -293,6 +310,9 @@ export async function previewUp(app: string, rama: string, opts: PreviewUpOpts):
     config: manifiesto.config,
     npmToken,
     live: opts.live,
+    imagen: manifiesto.imagen,
+    backend: forma.backend,
+    frontend: forma.frontend,
   });
   const manifiestos = JSON.stringify({ apiVersion: "v1", kind: "List", items }, null, 2);
   const apply = await run("kubectl", ["--context", CTX, "apply", "-f", "-"], manifiestos);
@@ -310,6 +330,7 @@ export async function previewUp(app: string, rama: string, opts: PreviewUpOpts):
   );
   const listo = rollout.code === 0;
   console.log(listo ? ok(rollout.stdout.split("\n").pop() ?? "pod listo") : warn(`el pod no convergió aún: ${rollout.stderr || rollout.stdout}`));
+  if (!listo && !opts.json) await diagnosticarPodNoListo(name);
 
   // 5) DNS
   try {
@@ -321,7 +342,8 @@ export async function previewUp(app: string, rama: string, opts: PreviewUpOpts):
 
   // 6) migrar + (espejo | sembrar) DENTRO del pod, PREVIEW_MODE=true — se
   //    transmite el stdout del exec DIMMED en vivo (antes se capturaba mudo).
-  if (listo) {
+  //    Sin backend no hay DB: se salta entero (frontend-only).
+  if (listo && forma.backend) {
     const migrateCode = await pasoStreamCmd(
       "migrando (db:migrate) dentro del pod",
       "kubectl",
@@ -353,7 +375,9 @@ export async function previewUp(app: string, rama: string, opts: PreviewUpOpts):
     }
   }
 
-  const reachable = listo ? await waitReachable(`${url}/`) : false;
+  // backend-only: el / puede ser un 404 legítimo (servicio sin ruta raíz) — se
+  // sondea /health, la misma cadena túnel→ingress→caddy→backend.
+  const reachable = listo ? await waitReachable(forma.frontend ? `${url}/` : `${url}/health`) : false;
   console.log("");
   if (opts.json) {
     console.log(JSON.stringify({ app, rama, name, host, url, leaseId: lease.leaseId, estado: reachable ? "vivo" : listo ? "aplicado" : "pendiente" }));
@@ -678,6 +702,20 @@ export function edadDesde(ts: string | undefined, ahora = Date.now()): string {
   const h = Math.floor(min / 60);
   if (h < 24) return `${h}h`;
   return `${Math.floor(h / 24)}d`;
+}
+
+/** cuando `rollout status` vence: nombra los contenedores not-ready y muestra sus
+ * últimas líneas de log — el diagnóstico que antes había que excavar a mano. */
+async function diagnosticarPodNoListo(name: string): Promise<void> {
+  const r = await run("kubectl", ["--context", CTX, "-n", NS, "get", "pod", "-l", `app=${name}`, "-o",
+    "jsonpath={range .items[0].status.containerStatuses[*]}{.name}={.ready}{\"\\n\"}{end}"]);
+  const noListos = r.stdout.split("\n").filter((l) => l.trim().endsWith("=false")).map((l) => l.split("=")[0]);
+  if (!noListos.length) return;
+  console.log(warn(`contenedor(es) not-ready: ${noListos.join(", ")} — últimas líneas:`));
+  for (const c of noListos) {
+    const logs = await run("kubectl", ["--context", CTX, "-n", NS, "logs", `deploy/${name}`, "-c", c, "--tail=10"]);
+    for (const l of (logs.stdout || logs.stderr).split("\n").slice(-10)) if (l.trim()) console.log(dim(`  [${c}] ${l}`));
+  }
 }
 
 async function waitReachable(url: string, tries = 20, gapMs = 3000): Promise<boolean> {

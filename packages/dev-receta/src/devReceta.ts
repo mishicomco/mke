@@ -309,7 +309,32 @@ done
  * /api,/health,/dev → backend. Un solo origen. /dev/* es el contrato de escena
  * del ecosistema (estado/entrar-como/salir, solo-preview) que Studio consume
  * vía el host del pod. */
-function caddyfile(backendPort: number, vitePort: number, liveBase?: string): string {
+function caddyfile(
+  backendPort: number,
+  vitePort: number,
+  liveBase?: string,
+  forma: { frontend: boolean; backend: boolean } = { frontend: true, backend: true },
+): string {
+  // backend-only: NO hay vite — todo el host va al backend (un solo origen se
+  // conserva: ingress→caddy→backend). El readiness del pod prueba /health por
+  // esta misma cadena.
+  if (!forma.frontend) {
+    return `:${DEV_CADDY_PORT} {
+	handle {
+		reverse_proxy 127.0.0.1:${backendPort}
+	}
+}
+`;
+  }
+  // frontend-only: sin backend no hay a quién proxear /api|/health|/dev.
+  if (!forma.backend) {
+    return `:${DEV_CADDY_PORT} {
+	handle {
+		reverse_proxy 127.0.0.1:${vitePort}
+	}
+}
+`;
+  }
   // modo EMBED: vite sirve bajo `liveBase` (ej /live/mishi-bank/). Redirigimos
   // SOLO la raíz exacta `/` a esa base para que el host -feat siga usable a mano;
   // el resto (incluido /live/<app>/*) va a vite tal cual. OJO: NO duplicamos acá
@@ -411,8 +436,13 @@ mkdir -p /workspace/.dev
 rm -f /workspace/.dev/restart
 RAMA_ACTIVA=$(cat /workspace/.dev/rama 2>/dev/null || echo "$RAMA")
 
-echo "[preview] esperando postgres…"
-until pg_isready -h 127.0.0.1 -p 5432 -U dev >/dev/null 2>&1; do sleep 2; done
+# La FORMA de la app se DERIVA del árbol del repo (apps/backend, apps/frontend)
+# también acá en runtime — cinturón y tirantes con la derivación del CLI, que
+# decide qué contenedores existen (sin backend no hay sidecar postgres).
+if [ -d apps/backend ]; then
+  echo "[preview] esperando postgres…"
+  until pg_isready -h 127.0.0.1 -p 5432 -U dev >/dev/null 2>&1; do sleep 2; done
+fi
 
 # config PÚBLICA por-rama declarada por la app (k8s/dev.env) → al entorno ANTES
 # de migrar/arrancar la app. La config del Contrato 2 (mke.preview.yaml) ya vino
@@ -421,11 +451,14 @@ until pg_isready -h 127.0.0.1 -p 5432 -U dev >/dev/null 2>&1; do sleep 2; done
 
 # migración idempotente de auto-sanado (si el pod reinició con la DB vacía). La
 # siembra/espejo inicial la corre el CLI tras el rollout — acá NO se siembra.
-npm run db:migrate -w apps/backend || echo "[preview] db:migrate en boot falló (sigo; el CLI lo reintenta)"
+if [ -d apps/backend ]; then
+  npm run db:migrate -w apps/backend || echo "[preview] db:migrate en boot falló (sigo; el CLI lo reintenta)"
+fi
 
 FRONT=apps/frontend
-[ -d "$FRONT" ] || FRONT=.
-cp /mke/vite.dev.mke.config.ts "$FRONT/vite.dev.mke.config.ts"
+if [ -d "$FRONT" ] && [ -f /mke/vite.dev.mke.config.ts ]; then
+  cp /mke/vite.dev.mke.config.ts "$FRONT/vite.dev.mke.config.ts"
+fi
 
 matar_arbol() {
   for hijo in $(cat /proc/"$1"/task/"$1"/children 2>/dev/null); do matar_arbol "$hijo"; done
@@ -464,8 +497,15 @@ if [ -d apps/backend ]; then
   supervisar backend sh -c 'npm run dev -w apps/backend' &
 fi
 
-echo "[preview] vite dev en :$VITE_PORT"
-supervisar vite sh -c "cd '$FRONT' && npx vite -c vite.dev.mke.config.ts" &
+if [ -d apps/frontend ]; then
+  echo "[preview] vite dev en :$VITE_PORT"
+  supervisar vite sh -c "cd '$FRONT' && npx vite -c vite.dev.mke.config.ts" &
+fi
+
+if [ ! -d apps/backend ] && [ ! -d apps/frontend ]; then
+  echo "[preview] la rama no tiene apps/backend ni apps/frontend — nada que arrancar" >&2
+  exit 1
+fi
 
 if [ "\${POLL_SECONDS:-0}" -gt 0 ] 2>/dev/null; then
   echo "[preview] poll cada \${POLL_SECONDS}s sobre $RAMA_ACTIVA"
@@ -501,6 +541,11 @@ export interface PreviewRecetaInput {
   live?: boolean;
   /** token de LECTURA de GitHub Packages (opcional, igual que en `mke dev`). */
   npmToken?: string;
+  /** FORMA de la app, DERIVADA por el CLI del árbol del worktree de la rama
+   * (existsSync apps/frontend|apps/backend) — la verdad se deriva, no se declara.
+   * Default: forma completa (backend+frontend), idéntica a la receta histórica. */
+  frontend?: boolean;
+  backend?: boolean;
 }
 
 /**
@@ -522,6 +567,13 @@ export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
   const host = previewPodHost(app, rama, { hostSuffix: inp.hostSuffix, domain: inp.domain });
   const liveBase = inp.live ? devLiveBase(app) : undefined;
   const ramaSlug = slugDev(rama);
+  const forma = { frontend: inp.frontend ?? true, backend: inp.backend ?? true };
+  if (!forma.frontend && !forma.backend) {
+    throw new Error(`la app ${app} (rama ${rama}) no tiene apps/backend ni apps/frontend — nada que encender`);
+  }
+  if (liveBase && !forma.frontend) {
+    throw new Error(`--live (modo EMBED) requiere frontend y la rama ${rama} de ${app} no tiene apps/frontend`);
+  }
 
   const labels: Record<string, string> = {
     "mke.preview/app": app,
@@ -584,8 +636,8 @@ export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
       "rama.sh": RAMA_SH,
       "pull.sh": PULL_SH,
       "poll.sh": POLL_SH,
-      "vite.dev.mke.config.ts": viteDevConfig(DEV_VITE_PORT, liveBase),
-      Caddyfile: caddyfile(DEV_BACKEND_PORT, DEV_VITE_PORT, liveBase),
+      ...(forma.frontend ? { "vite.dev.mke.config.ts": viteDevConfig(DEV_VITE_PORT, liveBase) } : {}),
+      Caddyfile: caddyfile(DEV_BACKEND_PORT, DEV_VITE_PORT, liveBase, forma),
     },
   };
 
@@ -603,7 +655,7 @@ export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
     { name: "BACKEND_PORT", value: String(DEV_BACKEND_PORT) },
     { name: "VITE_PORT", value: String(DEV_VITE_PORT) },
     { name: "POLL_SECONDS", value: String(pollSeconds) },
-    { name: "DATABASE_URL", value: "postgres://dev:dev@127.0.0.1:5432/dev" },
+    ...(forma.backend ? [{ name: "DATABASE_URL", value: "postgres://dev:dev@127.0.0.1:5432/dev" }] : []),
     ...configEnv,
   ];
 
@@ -649,7 +701,7 @@ export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
             },
           ],
           containers: [
-            {
+            ...(forma.backend ? [{
               name: "postgres",
               image: "postgres:16-alpine",
               env: [
@@ -665,7 +717,7 @@ export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
                 failureThreshold: 40,
               },
               volumeMounts: [{ name: "pgdata", mountPath: "/var/lib/postgresql/data" }],
-            },
+            }] : []),
             {
               name: "dev",
               image: imagen,
@@ -683,7 +735,10 @@ export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
               command: ["caddy", "run", "--config", "/mke/Caddyfile", "--adapter", "caddyfile"],
               ports: [{ containerPort: DEV_CADDY_PORT }],
               readinessProbe: {
-                httpGet: { path: "/", port: DEV_CADDY_PORT },
+                // backend-only: /health prueba la cadena completa caddy→backend
+                // (el / de un backend puede ser 404 legítimo). Con frontend, /
+                // prueba caddy→vite como siempre.
+                httpGet: { path: forma.frontend ? "/" : "/health", port: DEV_CADDY_PORT },
                 periodSeconds: 5,
                 failureThreshold: 120,
               },
@@ -692,7 +747,7 @@ export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
           ],
           volumes: [
             { name: "workspace", emptyDir: {} },
-            { name: "pgdata", emptyDir: {} },
+            ...(forma.backend ? [{ name: "pgdata", emptyDir: {} }] : []),
             { name: "scripts", configMap: { name: `${name}-scripts`, defaultMode: 0o755 } },
           ],
         },
