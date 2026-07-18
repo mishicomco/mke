@@ -25,7 +25,8 @@ RUN apt-get update \
   && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
   && apt-get update \
   && apt-get install -y --no-install-recommends google-chrome-stable \
-  && apt-get purge -y wget gnupg \
+  # OJO: NO purgar wget — google-chrome-stable DEPENDE de wget; purgarlo
+  # desinstala Chrome en silencio (nos pasó: build verde, imagen sin Chrome).
   && rm -rf /var/lib/apt/lists/*
 
 ENV CHROME_PATH=/usr/bin/google-chrome-stable
