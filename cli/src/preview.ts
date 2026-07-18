@@ -311,6 +311,7 @@ export async function previewUp(app: string, rama: string, opts: PreviewUpOpts):
     npmToken,
     live: opts.live,
     imagen: manifiesto.imagen,
+    rutas: manifiesto.rutas,
     backend: forma.backend,
     frontend: forma.frontend,
   });

@@ -314,13 +314,26 @@ function caddyfile(
   vitePort: number,
   liveBase?: string,
   forma: { frontend: boolean; backend: boolean } = { frontend: true, backend: true },
+  rutas: Record<string, number> = {},
 ): string {
+  // rutas extra declaradas por la app (mke.preview.yaml `rutas:`): prefijo →
+  // puerto loopback del pod. handle_path RECORTA el prefijo antes de proxear
+  // (p.ej. /vnc/vnc.html → :6080/vnc.html). Van PRIMERO: ganan al catch-all.
+  const extras = Object.entries(rutas)
+    .map(([p, puerto]) => {
+      const prefijo = p.endsWith("/") ? p : `${p}/`;
+      return `\thandle_path ${prefijo}* {
+\t\treverse_proxy 127.0.0.1:${puerto}
+\t}
+`;
+    })
+    .join("");
   // backend-only: NO hay vite — todo el host va al backend (un solo origen se
   // conserva: ingress→caddy→backend). El readiness del pod prueba /health por
   // esta misma cadena.
   if (!forma.frontend) {
     return `:${DEV_CADDY_PORT} {
-	handle {
+${extras}	handle {
 		reverse_proxy 127.0.0.1:${backendPort}
 	}
 }
@@ -329,7 +342,7 @@ function caddyfile(
   // frontend-only: sin backend no hay a quién proxear /api|/health|/dev.
   if (!forma.backend) {
     return `:${DEV_CADDY_PORT} {
-	handle {
+${extras}	handle {
 		reverse_proxy 127.0.0.1:${vitePort}
 	}
 }
@@ -347,7 +360,7 @@ function caddyfile(
 `
     : "";
   return `:${DEV_CADDY_PORT} {
-	handle /api/* {
+${extras}	handle /api/* {
 		reverse_proxy 127.0.0.1:${backendPort}
 	}
 	handle /health* {
@@ -492,6 +505,15 @@ supervisar() {
   done
 }
 
+# Hook de boot POR-APP (derivado del árbol, como la forma): si el repo trae
+# k8s/preview-boot.sh, se supervisa como un proceso más ANTES de la app — ahí
+# la app arranca lo que su runtime necesite (p.ej. Xvfb/x11vnc/noVNC para un
+# Chrome headful). Corre con la misma dev.env cargada.
+if [ -f k8s/preview-boot.sh ]; then
+  echo "[preview] hook de boot de la app (k8s/preview-boot.sh)"
+  supervisar preview-boot sh k8s/preview-boot.sh &
+fi
+
 if [ -d apps/backend ]; then
   echo "[preview] backend tsx watch en :$BACKEND_PORT"
   supervisar backend sh -c 'npm run dev -w apps/backend' &
@@ -546,6 +568,8 @@ export interface PreviewRecetaInput {
    * Default: forma completa (backend+frontend), idéntica a la receta histórica. */
   frontend?: boolean;
   backend?: boolean;
+  /** rutas extra del caddy (mke.preview.yaml `rutas:`): prefijo → puerto loopback. */
+  rutas?: Record<string, number>;
 }
 
 /**
@@ -637,7 +661,7 @@ export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
       "pull.sh": PULL_SH,
       "poll.sh": POLL_SH,
       ...(forma.frontend ? { "vite.dev.mke.config.ts": viteDevConfig(DEV_VITE_PORT, liveBase) } : {}),
-      Caddyfile: caddyfile(DEV_BACKEND_PORT, DEV_VITE_PORT, liveBase, forma),
+      Caddyfile: caddyfile(DEV_BACKEND_PORT, DEV_VITE_PORT, liveBase, forma, inp.rutas ?? {}),
     },
   };
 

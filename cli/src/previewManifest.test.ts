@@ -74,3 +74,11 @@ test("parsePreviewManifest: 'imagen' opcional — runner alternativo declarado p
   assert.equal(parsePreviewManifest("app: x\n").imagen, undefined, "ausente ⇒ undefined (runner genérico)");
   assert.throws(() => parsePreviewManifest("imagen:\n", "x"), /'imagen' vacía/);
 });
+
+test("parsePreviewManifest: 'rutas' — prefijo→puerto, valida path y puerto", () => {
+  const m = parsePreviewManifest("rutas:\n  /vnc/: 6080\n", "chrome-mishi");
+  assert.deepEqual(m.rutas, { "/vnc/": 6080 });
+  assert.equal(parsePreviewManifest("app: x\n").rutas, undefined, "ausente ⇒ undefined");
+  assert.throws(() => parsePreviewManifest("rutas:\n  vnc: 6080\n", "x"), /debe empezar con '\/'/);
+  assert.throws(() => parsePreviewManifest("rutas:\n  /vnc/: abc\n", "x"), /puerto inválido/);
+});

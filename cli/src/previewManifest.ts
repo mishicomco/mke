@@ -21,6 +21,10 @@ export interface PreviewManifest {
    * de SISTEMA que el runner genérico no trae (ej. chrome-mishi → Chrome+Xvfb).
    * Es declaración legítima (no derivable del árbol del repo). */
   imagen?: string;
+  /** rutas extra del caddy del pod (opcional): prefijo de path → puerto loopback.
+   * Ej. `/vnc/: 6080` proxya el noVNC del pod por el MISMO host del preview
+   * (handle_path: el prefijo se recorta antes de proxear). */
+  rutas?: Record<string, number>;
 }
 
 /** manifiesto vacío (Contrato 2: "Archivo ausente ⇒ arranca sin secretos ni config extra"). */
@@ -46,7 +50,8 @@ export function parsePreviewManifest(text: string, appEsperada?: string): Previe
   let imagen: string | undefined;
   const secretos: string[] = [];
   const config: Record<string, string> = {};
-  let seccion: "secretos" | "config" | null = null;
+  const rutas: Record<string, number> = {};
+  let seccion: "secretos" | "config" | "rutas" | null = null;
 
   for (const cruda of lineasCrudas) {
     const sinComentario = despojarComentario(cruda).replace(/\s+$/, "");
@@ -70,8 +75,10 @@ export function parsePreviewManifest(text: string, appEsperada?: string): Previe
         seccion = "secretos";
       } else if (clave === "config") {
         seccion = "config";
+      } else if (clave === "rutas") {
+        seccion = "rutas";
       } else {
-        throw new Error(`mke.preview.yaml: clave de nivel raíz desconocida "${clave}" (esperado: app|imagen|secretos|config)`);
+        throw new Error(`mke.preview.yaml: clave de nivel raíz desconocida "${clave}" (esperado: app|imagen|secretos|config|rutas)`);
       }
       continue;
     }
@@ -82,6 +89,16 @@ export function parsePreviewManifest(text: string, appEsperada?: string): Previe
       const m = linea.match(/^-\s*(\S.*)$/);
       if (!m) throw new Error(`mke.preview.yaml: item de 'secretos' inválido: "${cruda}" (esperado "- NOMBRE")`);
       secretos.push(m[1].trim());
+    } else if (seccion === "rutas") {
+      const i = linea.indexOf(":");
+      if (i <= 0) throw new Error(`mke.preview.yaml: entrada de 'rutas' inválida: "${cruda}" (esperado "/prefijo/: puerto")`);
+      const pathRuta = linea.slice(0, i).trim();
+      const puerto = Number(linea.slice(i + 1).trim());
+      if (!pathRuta.startsWith("/")) throw new Error(`mke.preview.yaml: la ruta "${pathRuta}" debe empezar con '/'`);
+      if (!Number.isInteger(puerto) || puerto <= 0 || puerto > 65535) {
+        throw new Error(`mke.preview.yaml: puerto inválido para la ruta "${pathRuta}": "${linea.slice(i + 1).trim()}"`);
+      }
+      rutas[pathRuta] = puerto;
     } else if (seccion === "config") {
       const i = linea.indexOf(":");
       if (i <= 0) throw new Error(`mke.preview.yaml: entrada de 'config' inválida: "${cruda}" (esperado "CLAVE: valor")`);
@@ -101,5 +118,11 @@ export function parsePreviewManifest(text: string, appEsperada?: string): Previe
   }
   const appFinal = app ?? appEsperada;
   if (!appFinal) throw new Error("mke.preview.yaml: falta 'app' (y no se pasó app esperada)");
-  return { app: appFinal, secretos, config, ...(imagen ? { imagen } : {}) };
+  return {
+    app: appFinal,
+    secretos,
+    config,
+    ...(imagen ? { imagen } : {}),
+    ...(Object.keys(rutas).length ? { rutas } : {}),
+  };
 }

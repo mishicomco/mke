@@ -244,3 +244,20 @@ test("manifiestosPreview: imagen alternativa del runner llega a init y dev", () 
   assert.equal(podSpec.initContainers[0].image, "mke-chrome-runner:1");
   assert.equal(podSpec.containers.find((c: any) => c.name === "dev").image, "mke-chrome-runner:1");
 });
+
+test("manifiestosPreview: rutas extra → handle_path ANTES del catch-all, prefijo recortado", () => {
+  const ms = manifiestosPreview({
+    app: "chrome-mishi", rama: "perfiles", repoUrl: "u", leaseId: "l",
+    frontend: false, rutas: { "/vnc/": 6080 },
+  });
+  const caddy = (porKind(ms, "ConfigMap") as any).data.Caddyfile as string;
+  assert.match(caddy, /handle_path \/vnc\/\* \{\n\t\treverse_proxy 127\.0\.0\.1:6080/);
+  assert.ok(caddy.indexOf("handle_path /vnc/") < caddy.indexOf("handle {"), "la ruta extra va antes del catch-all");
+});
+
+test("manifiestosPreview: boot-preview.sh supervisa el hook k8s/preview-boot.sh si existe", () => {
+  const ms = manifiestosPreview({ app: "x", rama: "m", repoUrl: "u", leaseId: "l" });
+  const boot = (porKind(ms, "ConfigMap") as any).data["boot-preview.sh"] as string;
+  assert.match(boot, /if \[ -f k8s\/preview-boot\.sh \]/, "derivado del árbol del repo");
+  assert.match(boot, /supervisar preview-boot sh k8s\/preview-boot\.sh/, "supervisado con backoff, no fire-and-forget");
+});
