@@ -171,7 +171,24 @@ ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT ALL PRIVILEGES
   const staticResult = await ensureStaticHostPaso(app, subdominio);
   steps.push({ name: `host static-mishi`, already: staticResult?.already ?? false });
 
-  // 6) resumen.
+  // 6) grant del emisor del vault (decisión Santi 2026-07-19): toda app nace con
+  //    grant `emitir` para su ns — sin esto, `mke preview up` recibe 403 del vault
+  //    y degrada a sin-lease (causa raíz cazada el 2026-07-19). Idempotente
+  //    (emisor:grant usa onConflictDoNothing). Best-effort: si el vault de stage
+  //    no está, warning y se sigue (el backfill es re-corrible).
+  const grant = await run("kubectl", [
+    "--context", EXEC_CONTEXT, "-n", "stage",
+    "exec", "deploy/vault-mishi", "--",
+    "node", "/app/dist/scripts/grantEmisor.js", "mke-runner", app,
+  ]);
+  if (grant.code === 0) {
+    steps.push({ name: `grant vault (emisor mke-runner → ${app})`, already: false });
+    console.log(ok(`grant \`emitir\` del vault asegurado para ${app}`));
+  } else {
+    console.log(warn(`grant del vault falló (sigo; re-corre con: kubectl -n stage exec deploy/vault-mishi -- node /app/dist/scripts/grantEmisor.js mke-runner ${app}): ${(grant.stderr || grant.stdout).split("\n")[0]}`));
+  }
+
+  // 7) resumen.
   console.log(`\n  ${info("resumen")}`);
   for (const s of steps) {
     console.log(`    ${s.already ? warn(`${s.name}: ya existía`) : ok(`${s.name}: creado`)}`);
