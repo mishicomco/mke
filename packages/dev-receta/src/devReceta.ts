@@ -282,8 +282,14 @@ const PULL_SH = `#!/bin/sh
 set -eu
 cd /workspace/repo
 RAMA_ACTIVA=$(cat /workspace/.dev/rama 2>/dev/null || echo main)
+LOCK_ANTES=$(md5sum package-lock.json 2>/dev/null | cut -d' ' -f1 || echo "")
 git fetch origin --prune
 git reset --hard "origin/$RAMA_ACTIVA"
+LOCK_DESPUES=$(md5sum package-lock.json 2>/dev/null | cut -d' ' -f1 || echo "")
+if [ "$LOCK_ANTES" != "$LOCK_DESPUES" ]; then
+  echo "[dev] lockfile cambió → npm install"
+  npm install --no-audit --no-fund
+fi
 sh /mke/build-packages.sh
 echo "[dev] al día: $RAMA_ACTIVA @ $(git rev-parse --short HEAD)"
 `;
@@ -658,6 +664,7 @@ export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
       "cargar-dev-env.sh": CARGAR_DEV_ENV_SH,
       "boot-preview.sh": BOOT_PREVIEW_SH,
       "rama.sh": RAMA_SH,
+      "reset-db.sh": RESET_DB_SH,
       "pull.sh": PULL_SH,
       "poll.sh": POLL_SH,
       ...(forma.frontend ? { "vite.dev.mke.config.ts": viteDevConfig(DEV_VITE_PORT, liveBase) } : {}),

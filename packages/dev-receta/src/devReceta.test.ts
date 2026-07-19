@@ -255,6 +255,22 @@ test("manifiestosPreview: rutas extra → handle_path ANTES del catch-all, prefi
   assert.ok(caddy.indexOf("handle_path /vnc/") < caddy.indexOf("handle {"), "la ruta extra va antes del catch-all");
 });
 
+test("manifiestosPreview: pull.sh reinstala si el lockfile cambió (patrón md5 antes/después)", () => {
+  const ms = manifiestosPreview({ app: "x", rama: "m", repoUrl: "u", leaseId: "l" });
+  const pull = (porKind(ms, "ConfigMap") as any).data["pull.sh"] as string;
+  assert.match(pull, /md5sum package-lock\.json/, "compara el md5 del lockfile");
+  assert.match(pull, /LOCK_ANTES.*LOCK_DESPUES|LOCK_ANTES.*!=.*LOCK_DESPUES/s, "compara antes vs después");
+  assert.match(pull, /npm install --no-audit --no-fund/, "reinstala si cambió (ERR_MODULE_NOT_FOUND al agregar un workspace)");
+});
+
+test("manifiestosPreview: reset-db.sh está en el ConfigMap (rama.sh lo invoca con sh /mke/reset-db.sh)", () => {
+  const ms = manifiestosPreview({ app: "x", rama: "m", repoUrl: "u", leaseId: "l" });
+  const cm = (porKind(ms, "ConfigMap") as any).data;
+  assert.ok("reset-db.sh" in cm, "reset-db.sh presente en el ConfigMap");
+  assert.match(cm["rama.sh"] as string, /sh \/mke\/reset-db\.sh/, "rama.sh referencia reset-db.sh");
+  assert.match(cm["reset-db.sh"] as string, /DROP SCHEMA IF EXISTS public/, "reset-db.sh dropea el schema");
+});
+
 test("manifiestosPreview: boot-preview.sh supervisa el hook k8s/preview-boot.sh si existe", () => {
   const ms = manifiestosPreview({ app: "x", rama: "m", repoUrl: "u", leaseId: "l" });
   const boot = (porKind(ms, "ConfigMap") as any).data["boot-preview.sh"] as string;
