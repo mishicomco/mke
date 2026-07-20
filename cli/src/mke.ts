@@ -10,6 +10,7 @@ import { publish } from "./publish.js";
 import { rollout } from "./rollout.js";
 import { dbProvision } from "./dbProvision.js";
 import { appInit } from "./appInit.js";
+import { appNacer } from "./appNacer.js";
 import { ensureStaticHostPaso } from "./staticHost.js";
 import { ls } from "./ls.js";
 import { previewUp, previewPull, previewEstado, previewLs, previewMerge, previewDown, previewLimpiar } from "./preview.js";
@@ -46,6 +47,9 @@ const HELP = `mke — CLI de plataforma MKE
         opciones: --deploy <nombre-deployment>
   mke db provision <app> <env>                   crea BD+rol de la app en postgres-mishi (idempotente; imprime DATABASE_URL)
         opciones: --password <pw>   (prod → ns databases · stage/local → databases-dev)
+  mke app nacer <app> --subdominio <sub>         NACIMIENTO GREENFIELD COMPLETO (idempotente, corre en el laptop):
+                                                  cascarón (create-mishi-app) → repo en git-mishi + push + mirror a GitHub → app init → registro en Studio
+        opciones: --env stage|prod  --dir <ruta>  --sin-cascaron  --sin-plataforma  --sin-registro  --dry-run
   mke app init <app>                             nacimiento de plataforma para una app nueva, EN UN COMANDO (idempotente):
                                                   BD+rol → mishi-secret → namespace+Secret k8s (DATABASE_URL+SESSION_SECRET) → DNS → host static-mishi
         opciones: --env stage|prod (default stage)  --subdominio <name>  --dry-run
@@ -147,8 +151,20 @@ async function main() {
     }
     case "app": {
       const [action, app] = positional;
-      if (action !== "init" || !app) return fail("uso: mke app init <app> [--env stage|prod] [--subdominio nombre] [--dry-run]");
       const env = typeof flags.env === "string" ? flags.env : "stage";
+      if (action === "nacer" && app) {
+        await appNacer(app, {
+          subdominio: typeof flags.subdominio === "string" ? flags.subdominio : undefined,
+          env,
+          dir: typeof flags.dir === "string" ? flags.dir : undefined,
+          sinCascaron: flags["sin-cascaron"] === true,
+          sinPlataforma: flags["sin-plataforma"] === true,
+          sinRegistro: flags["sin-registro"] === true,
+          dryRun: flags["dry-run"] === true,
+        });
+        break;
+      }
+      if (action !== "init" || !app) return fail("uso: mke app nacer <app> --subdominio <sub>  |  mke app init <app> [--env stage|prod] [--subdominio nombre] [--dry-run]");
       await appInit(app, env, {
         subdominio: typeof flags.subdominio === "string" ? flags.subdominio : undefined,
         dryRun: flags["dry-run"] === true,

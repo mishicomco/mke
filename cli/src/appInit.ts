@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { appsRoot, envOrThrow, hostFor } from "./mkeConfig.js";
 import { EXEC_CONTEXT, POD, nsForEnv, toSnake } from "./dbProvision.js";
 import { ensureDns } from "./dns.js";
+import { ensureForgeRepo, ensureGithubMirror, forgeCloneUrl } from "./forgeRepo.js";
 import { run, ok, bad, info, warn, dim } from "./sh.js";
 import { ensureStaticHostPaso, planStaticHosts } from "./staticHost.js";
 
@@ -54,6 +55,7 @@ export async function appInit(app: string, env: string, opts: AppInitOpts): Prom
 
   if (opts.dryRun) {
     console.log(info("DRY RUN — no se toca nada. Plan:"));
+    console.log(`  0. repo \`mishicomco/${app}\` en git-mishi (${forgeCloneUrl(app)}) + push-mirror a GitHub`);
     console.log(`  1. BD+rol \`${appSnake}\` en postgres-mishi (${dbNs}, ${EXEC_CONTEXT}/${POD})`);
     console.log(`     - CREATE ROLE/DATABASE si no existen, password aleatorio (openssl rand -base64 32)`);
     console.log(`     - ALTER SCHEMA public OWNER TO ${appSnake}; ALTER DEFAULT PRIVILEGES → GRANT ALL a ${appSnake}`);
@@ -69,6 +71,19 @@ export async function appInit(app: string, env: string, opts: AppInitOpts): Prom
   }
 
   const steps: Step[] = [];
+
+  // 0) repo en git-mishi (el forge es LA casa de los repos; GitHub = mirror de
+  //    backup). Idempotente. Best-effort: si el forge/token no está, warning y se
+  //    sigue con la plataforma (el repo se puede crear después re-corriendo).
+  try {
+    const repo = await ensureForgeRepo(app);
+    steps.push({ name: `repo git-mishi \`mishicomco/${app}\``, already: repo.already });
+    console.log(ok(repo.already ? `repo \`mishicomco/${app}\` ya existía en el forge` : `repo \`mishicomco/${app}\` creado en el forge (${repo.cloneUrl})`));
+    const mirror = await ensureGithubMirror(app);
+    console.log(dim(`     ${mirror}`));
+  } catch (e) {
+    console.log(warn(`repo en el forge no quedó (sigo con la plataforma): ${(e as Error).message.split("\n")[0]}`));
+  }
 
   // 1) BD + rol, con fix de ownership (schema public + default privileges).
   const pw = randomBytes(24).toString("base64url");
