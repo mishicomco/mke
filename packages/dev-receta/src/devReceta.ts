@@ -681,6 +681,9 @@ export function manifiestosPreview(inp: PreviewRecetaInput): K8sManifest[] {
     { name: "RAMA", value: rama },
     { name: "PREVIEW", value: "true" },
     { name: "PREVIEW_MODE", value: "true" },
+    // Contrato "rama encendida" de create-mishi-app: secretos efimeros + rutas
+    // /dev/{entrar-como,salir,estado} de escena-preview (fail-closed sin la bandera).
+    { name: "RAMA_ENCENDIDA", value: "true" },
     { name: "NODE_ENV", value: "development" },
     { name: "PORT", value: String(DEV_BACKEND_PORT) },
     { name: "BACKEND_PORT", value: String(DEV_BACKEND_PORT) },

@@ -38,6 +38,7 @@ import { deleteRecordsByName, tunnelTarget, upsertCname } from "./cf.js";
 import { previewTunnelUuid } from "./dns.js";
 import { leerTablasSensibles, truncarSidecar, restaurarEspejo } from "./previewEspejo.js";
 import { parsePreviewManifest, manifiestoVacio, type PreviewManifest } from "./previewManifest.js";
+import { forgeRepoUrl, forgeRepoExists } from "./forgeRepo.js";
 import { crearLease, revocarLease, renovarLease, type VaultClienteOpts } from "./vaultLease.js";
 import { run, ok, bad, warn, info, dim } from "./sh.js";
 import { paso, pasoStreamCmd, esperarConLogs } from "./progresoVivo.js";
@@ -132,11 +133,28 @@ async function borrarWorktreeSiExiste(appDir: string, ramaSlug: string, opts: { 
 
 async function resolveRepoUrl(app: string, override: string | undefined, dryRun: boolean): Promise<string> {
   if (override) return override;
-  const base = `https://github.com/mishicomco/${app}.git`;
+  // El forge (git-mishi) es la casa PRIMARIA de los repos; GitHub es solo mirror
+  // de backup y puede ir atrasado (o ni existir aún para apps recién nacidas).
+  // Por eso el pod clona del forge si el repo vive ahí, y GitHub queda de fallback
+  // para repos viejos aún no migrados.
+  const base = forgeRepoUrl(app);
   if (dryRun) return base;
+  try {
+    const api = await run("mishi-secret", ["get", "git-mishi-api-token"]);
+    if (api.code === 0 && api.stdout.trim() && (await forgeRepoExists(app, api.stdout.trim()))) {
+      const t = await run("mishi-secret", ["get", "git-mishi-token"]);
+      const token = t.stdout.trim();
+      // Forgejo/Gitea aceptan el token como username en la URL HTTPS.
+      if (t.code === 0 && token) return `https://${token}@${base.replace(/^https:\/\//, "")}`;
+      return base;
+    }
+  } catch {
+    // forge caído → seguimos al fallback GitHub
+  }
+  const gh = `https://github.com/mishicomco/${app}.git`;
   const t = await run("mishi-secret", ["get", "mishi-studio-gh-read-pat"]);
   if (t.code === 0 && t.stdout.trim()) return `https://x-access-token:${t.stdout.trim()}@github.com/mishicomco/${app}.git`;
-  return base;
+  return gh;
 }
 
 async function resolveNpmToken(dryRun: boolean): Promise<string | undefined> {

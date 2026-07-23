@@ -150,6 +150,7 @@ test("manifiestosPreview: recursos esperados, ns preview, SIDECAR postgres + DAT
   const val = (n: string) => dev.env.find((e: any) => e.name === n)?.value;
   assert.equal(val("PREVIEW"), "true");
   assert.equal(val("PREVIEW_MODE"), "true");
+  assert.equal(val("RAMA_ENCENDIDA"), "true", "contrato rama encendida de create-mishi-app (escena /dev/*)");
   assert.equal(val("DATABASE_URL"), "postgres://dev:dev@127.0.0.1:5432/dev", "DATABASE_URL al sidecar loopback");
 });
 
