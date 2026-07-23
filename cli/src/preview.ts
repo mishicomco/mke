@@ -141,9 +141,14 @@ async function resolveRepoUrl(app: string, override: string | undefined, dryRun:
 
 async function resolveNpmToken(dryRun: boolean): Promise<string | undefined> {
   if (dryRun) return undefined;
-  const t = await run("mishi-secret", ["get", "mishi-gh-read-packages-pat"]);
-  const token = t.stdout.trim();
-  return t.code === 0 && token ? token : undefined;
+  // las apps consumen @mishicomco/* del forge (git-mishi): ese token manda.
+  // El PAT de GitHub Packages queda de fallback para apps aún no migradas.
+  for (const nombre of ["git-mishi-npm-token", "mishi-gh-read-packages-pat"]) {
+    const t = await run("mishi-secret", ["get", nombre]);
+    const token = t.stdout.trim();
+    if (t.code === 0 && token) return token;
+  }
+  return undefined;
 }
 
 /** token de la identidad EMISORA del vault. DEGRADA (null) si no está: en el
