@@ -11,6 +11,7 @@
 //   - git-mishi-api-token   → API del forge (crear repo, configurar mirror)
 //   - github-mirror-pat     → PAT de GitHub con write, credencial del push-mirror
 
+import { lookup } from "node:dns/promises";
 import { run } from "./sh.js";
 
 export const FORGE = {
@@ -40,6 +41,22 @@ interface ForgeCall {
   body: string;
 }
 
+/** Base para llamadas DESDE ESTA MÁQUINA. En el pc gamer, /etc/hosts resuelve
+ * git.mishi.com.co a 127.0.0.1 con SOLO :80 servido (camino LAN de los
+ * forgejo-runners): ahí la API va por http. Las URLs que consume el POD
+ * (forgeRepoUrl) siguen https — el pod sí viaja por el túnel. Cacheado. */
+let baseLocal: string | null = null;
+export async function forgeBaseLocal(): Promise<string> {
+  if (baseLocal) return baseLocal;
+  try {
+    const { address } = await lookup(new URL(FORGE.base).hostname);
+    baseLocal = address === "127.0.0.1" ? FORGE.base.replace("https://", "http://") : FORGE.base;
+  } catch {
+    baseLocal = FORGE.base;
+  }
+  return baseLocal;
+}
+
 /** Llamada a la API del forge con el token de API. `path` es relativo a /api/v1. */
 async function forgeApi(
   token: string,
@@ -47,7 +64,7 @@ async function forgeApi(
   path: string,
   body?: unknown,
 ): Promise<ForgeCall> {
-  const res = await fetch(`${FORGE.base}/api/v1${path}`, {
+  const res = await fetch(`${await forgeBaseLocal()}/api/v1${path}`, {
     method,
     headers: {
       Authorization: `token ${token}`,

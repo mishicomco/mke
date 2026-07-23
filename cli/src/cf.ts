@@ -44,10 +44,25 @@ async function cf(path: string, init?: RequestInit): Promise<any> {
   return body.result;
 }
 
-/** records DNS que coinciden EXACTO con `name` (fqdn) en la zona mishi.com.co. */
+/** Resuelve el zoneId de Cloudflare para un fqdn: lista las zonas de la cuenta
+ * (cacheado) y elige la de sufijo más largo que calce (multi-dominio:
+ * mishi.com.co, llego.com.co, travelhabit.co, …). Fallback: la zona mishi. */
+let zonasCache: Array<{ id: string; name: string }> | null = null;
+export async function zoneIdParaHost(fqdn: string): Promise<string> {
+  if (!zonasCache) {
+    zonasCache = (await cf(`/zones?per_page=50`)) as Array<{ id: string; name: string }>;
+  }
+  const zona = zonasCache
+    .filter((z) => fqdn === z.name || fqdn.endsWith(`.${z.name}`))
+    .sort((a, b) => b.name.length - a.name.length)[0];
+  return zona?.id ?? PREVIEW.zoneId;
+}
+
+/** records DNS que coinciden EXACTO con `name` (fqdn), en SU zona. */
 export async function findRecords(name: string): Promise<CfRecord[]> {
+  const zone = await zoneIdParaHost(name);
   const result = (await cf(
-    `/zones/${PREVIEW.zoneId}/dns_records?name=${encodeURIComponent(name)}`,
+    `/zones/${zone}/dns_records?name=${encodeURIComponent(name)}`,
   )) as CfRecord[];
   return result;
 }
@@ -66,18 +81,19 @@ export function tunnelTarget(uuid: string): string {
  * Devuelve qué hizo, para narrar.
  */
 export async function upsertCname(name: string, target: string): Promise<"ok" | "creado" | "repuntado"> {
+  const zone = await zoneIdParaHost(name);
   const records = await findRecords(name);
   const body = JSON.stringify({ type: "CNAME", name, content: target, proxied: true, ttl: 1 });
   for (const extra of records.slice(1)) {
-    await cf(`/zones/${PREVIEW.zoneId}/dns_records/${extra.id}`, { method: "DELETE" });
+    await cf(`/zones/${zone}/dns_records/${extra.id}`, { method: "DELETE" });
   }
   const rec = records[0];
   if (!rec) {
-    await cf(`/zones/${PREVIEW.zoneId}/dns_records`, { method: "POST", body });
+    await cf(`/zones/${zone}/dns_records`, { method: "POST", body });
     return "creado";
   }
   if (rec.type === "CNAME" && rec.content === target) return "ok";
-  await cf(`/zones/${PREVIEW.zoneId}/dns_records/${rec.id}`, { method: "PATCH", body });
+  await cf(`/zones/${zone}/dns_records/${rec.id}`, { method: "PATCH", body });
   return "repuntado";
 }
 
@@ -105,9 +121,10 @@ export async function deleteRecordsByName(
   if (!SUFIJOS_EFIMEROS.some((s) => name.endsWith(s)) && !esPreviewExacto) {
     throw new Error(`rechazo borrar DNS de '${name}': solo hosts efímeros ${SUFIJOS_EFIMEROS.join(" / ")} o el host EXACTO de un preview-pod (app+rama)`);
   }
+  const zone = await zoneIdParaHost(name);
   const records = await findRecords(name);
   for (const rec of records) {
-    await cf(`/zones/${PREVIEW.zoneId}/dns_records/${rec.id}`, { method: "DELETE" });
+    await cf(`/zones/${zone}/dns_records/${rec.id}`, { method: "DELETE" });
   }
   return records.length;
 }

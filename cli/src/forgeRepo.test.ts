@@ -1,6 +1,6 @@
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { forgeCreateRepo, forgePushMirrorExists, forgeRepoUrl, FORGE } from "./forgeRepo.js";
+import { forgeBaseLocal, forgeCreateRepo, forgePushMirrorExists, forgeRepoUrl, FORGE } from "./forgeRepo.js";
 
 // Protege el SEAM de red del nacimiento contra el contrato de la API Forgejo:
 //   1. IDEMPOTENCIA — re-correr `mke app nacer` sobre un repo existente NO debe
@@ -52,7 +52,9 @@ test("forgeCreateRepo: repo nuevo → POST /orgs/<org>/repos privado en main", a
   assert.equal(r.creado, true);
   const post = calls.find((c) => c.init?.method === "POST");
   assert.ok(post, "debe postear");
-  assert.equal(post!.url, `${FORGE.base}/api/v1/orgs/${FORGE.org}/repos`);
+  // La base local depende de la máquina (http en el pc gamer por el /etc/hosts
+  // de los runners; https en cualquier otra): se compara contra la resuelta.
+  assert.equal(post!.url, `${await forgeBaseLocal()}/api/v1/orgs/${FORGE.org}/repos`);
   assert.equal((post!.init!.headers as Record<string, string>).Authorization, "token tok");
   assert.deepEqual(JSON.parse(post!.init!.body as string), {
     name: "nueva-app",
