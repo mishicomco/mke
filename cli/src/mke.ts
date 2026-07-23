@@ -10,6 +10,7 @@ import { publish } from "./publish.js";
 import { rollout } from "./rollout.js";
 import { dbProvision } from "./dbProvision.js";
 import { appInit } from "./appInit.js";
+import { appNacer } from "./appNacer.js";
 import { ensureStaticHostPaso } from "./staticHost.js";
 import { ls } from "./ls.js";
 import { previewUp, previewPull, previewEstado, previewLs, previewMerge, previewDown, previewLimpiar } from "./preview.js";
@@ -46,8 +47,12 @@ const HELP = `mke — CLI de plataforma MKE
         opciones: --deploy <nombre-deployment>
   mke db provision <app> <env>                   crea BD+rol de la app en postgres-mishi (idempotente; imprime DATABASE_URL)
         opciones: --password <pw>   (prod → ns databases · stage/local → databases-dev)
-  mke app init <app>                             nacimiento de plataforma para una app nueva, EN UN COMANDO (idempotente):
-                                                  BD+rol → mishi-secret → namespace+Secret k8s (DATABASE_URL+SESSION_SECRET) → DNS → host static-mishi
+  mke app nacer <nombre>                         NACIMIENTO COMPLETO de una app nueva, EN UN COMANDO (el verbo \`nacer\` vive acá, no en Studio):
+                                                  cascarón (create-mishi-app) → repo PRIMARIO en git-mishi (git.mishi.com.co/mishicomco/<app>, +push-mirror a GitHub backup)
+                                                  → git init/commit/push a origin=forge (dispara CI) → \`mke app init\` (plataforma) → registro en Studio
+        opciones: --subdominio <sub>  --env stage|prod (default stage)  --dir <ruta>  --sin-cascaron  --sin-plataforma  --sin-registro  --dry-run
+  mke app init <app>                             nacimiento de PLATAFORMA de una app (paso 4 de \`nacer\`, suelto; idempotente):
+                                                  BD+rol → mishi-secret → namespace+Secret k8s (DATABASE_URL+SESSION_SECRET) → DNS → host static-mishi → grant vault
         opciones: --env stage|prod (default stage)  --subdominio <name>  --dry-run
   mke static agregar <sub>                      agrega el host de <sub> al ingress de static-mishi (stage+prod), idempotente
                                                   (paso suelto de \`mke app init\`; útil si el nacimiento ya pasó sin este paso)
@@ -147,7 +152,20 @@ async function main() {
     }
     case "app": {
       const [action, app] = positional;
-      if (action !== "init" || !app) return fail("uso: mke app init <app> [--env stage|prod] [--subdominio nombre] [--dry-run]");
+      if (action === "nacer") {
+        if (!app) return fail("uso: mke app nacer <nombre> [--subdominio sub] [--env stage|prod] [--dir ruta] [--sin-cascaron] [--sin-plataforma] [--sin-registro] [--dry-run]");
+        await appNacer(app, {
+          subdominio: typeof flags.subdominio === "string" ? flags.subdominio : undefined,
+          env: typeof flags.env === "string" ? flags.env : undefined,
+          dir: typeof flags.dir === "string" ? flags.dir : undefined,
+          sinCascaron: flags["sin-cascaron"] === true,
+          sinPlataforma: flags["sin-plataforma"] === true,
+          sinRegistro: flags["sin-registro"] === true,
+          dryRun: flags["dry-run"] === true,
+        });
+        break;
+      }
+      if (action !== "init" || !app) return fail("uso: mke app init <app> [--env stage|prod] [--subdominio nombre] [--dry-run]  |  mke app nacer <nombre>");
       const env = typeof flags.env === "string" ? flags.env : "stage";
       await appInit(app, env, {
         subdominio: typeof flags.subdominio === "string" ? flags.subdominio : undefined,
