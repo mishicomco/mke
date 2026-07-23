@@ -38,7 +38,7 @@ import { deleteRecordsByName, tunnelTarget, upsertCname } from "./cf.js";
 import { previewTunnelUuid } from "./dns.js";
 import { leerTablasSensibles, truncarSidecar, restaurarEspejo } from "./previewEspejo.js";
 import { parsePreviewManifest, manifiestoVacio, type PreviewManifest } from "./previewManifest.js";
-import { forgeCloneUrl, forgeRepoExists } from "./forgeRepo.js";
+import { forgeRepoUrl, forgeRepoExists } from "./forgeRepo.js";
 import { crearLease, revocarLease, renovarLease, type VaultClienteOpts } from "./vaultLease.js";
 import { run, ok, bad, warn, info, dim } from "./sh.js";
 import { paso, pasoStreamCmd, esperarConLogs } from "./progresoVivo.js";
@@ -137,10 +137,11 @@ async function resolveRepoUrl(app: string, override: string | undefined, dryRun:
   // de backup y puede ir atrasado (o ni existir aún para apps recién nacidas).
   // Por eso el pod clona del forge si el repo vive ahí, y GitHub queda de fallback
   // para repos viejos aún no migrados.
-  const base = forgeCloneUrl(app);
+  const base = forgeRepoUrl(app);
   if (dryRun) return base;
   try {
-    if (await forgeRepoExists(app)) {
+    const api = await run("mishi-secret", ["get", "git-mishi-api-token"]);
+    if (api.code === 0 && api.stdout.trim() && (await forgeRepoExists(app, api.stdout.trim()))) {
       const t = await run("mishi-secret", ["get", "git-mishi-token"]);
       const token = t.stdout.trim();
       // Forgejo/Gitea aceptan el token como username en la URL HTTPS.
