@@ -48,7 +48,7 @@ const HELP = `mke — CLI de plataforma MKE
   mke ci runs <app> [n]                         últimos runs del repo en el forge (id/estado/rama)
   mke ci logs <app> [runId]                     baja el ZIP de logs del run (último FALLIDO por default) y muestra las líneas de error
   mke ci deploy <app> <env>                     dispara el workflow ci-cd.yml con el input "environment" VALIDADO (stage|prod)
-        opciones: --ref <rama|tag>  (default main)
+        opciones: --ref <rama|tag>   stage: default main · prod: OBLIGATORIO y tiene que ser un tag v* (ej: --ref v0.1.2)
   mke publish <front> <env>                      front estático: build imagen contenido → Job al PVC de static-mishi → doctor
         opciones: --tag <t>  --dir <repo>  --host <fqdn>   (env = stage | prod)
   mke rollout <app> <env>                        rollout restart + status (sin rebuild; tag mutable / reciclar pods)
@@ -145,7 +145,7 @@ async function main() {
       } else if (action === "logs") {
         await ciLogs(app, tercero ? Number(tercero) : undefined);
       } else if (action === "deploy") {
-        if (!tercero) return fail("uso: mke ci deploy <app> <stage|prod> [--ref r]");
+        if (!tercero) return fail("uso: mke ci deploy <app> <stage|prod> [--ref r]  (prod exige --ref <tag v*>)");
         await ciDeploy(app, tercero, typeof flags.ref === "string" ? flags.ref : undefined);
       } else {
         return fail("uso: mke ci runs|logs|deploy <app> …");

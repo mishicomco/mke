@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { ENVS_CI, lineasDeError, parsearRuns, runFallido } from "./ci.js";
+import { ENVS_CI, lineasDeError, parsearRuns, runFallido, validarDispatch } from "./ci.js";
 
 test("parsearRuns acepta {workflow_runs:[…]} y también un array pelado", () => {
   const uno = parsearRuns(JSON.stringify({ workflow_runs: [{ id: 7, status: "done", conclusion: "success", head_branch: "main" }] }));
@@ -51,4 +51,21 @@ test("lineasDeError filtra las líneas sospechosas y cae al log entero si no hay
 
 test("los únicos environments válidos del dispatch son stage y prod", () => {
   assert.deepEqual([...ENVS_CI], ["stage", "prod"]);
+  assert.ok("error" in validarDispatch("produccion"));
+});
+
+test("stage: ref default main, y se puede pasar cualquier rama", () => {
+  assert.deepEqual(validarDispatch("stage"), { ref: "main" });
+  assert.deepEqual(validarDispatch("stage", "feature-x"), { ref: "feature-x" });
+});
+
+test("prod EXIGE --ref explícito y que sea un tag v*", () => {
+  // sin --ref: no se despliega prod por accidente desde main.
+  const sinRef = validarDispatch("prod");
+  assert.ok("error" in sinRef && /--ref EXPLÍCITO/.test(sinRef.error));
+  // con una rama en vez de un tag: también se rechaza.
+  const conRama = validarDispatch("prod", "main");
+  assert.ok("error" in conRama && /tag `v\*`/.test(conRama.error));
+  // con el tag correcto: pasa.
+  assert.deepEqual(validarDispatch("prod", "v0.1.2"), { ref: "v0.1.2" });
 });

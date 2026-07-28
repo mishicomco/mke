@@ -196,15 +196,48 @@ export async function ciLogs(app: string, runId?: number): Promise<void> {
 }
 
 /**
- * Dispara el workflow estándar con el input `environment` VALIDADO. Un input
- * desconocido caía en silencio a stage con run VERDE — acá se rechaza antes.
+ * Valida environment + ref ANTES de disparar nada. PURA (es lo que hay que
+ * testear; el dispatch en sí es una llamada HTTP).
+ *
+ * Reglas (decisión de Santi 2026-07-27):
+ *   - `environment` solo stage|prod. Un input desconocido caía en SILENCIO a
+ *     stage y el run salía VERDE.
+ *   - stage: `ref` default `main` (el contrato normal es push a main).
+ *   - prod: `--ref` EXPLÍCITO y tiene que ser un tag `v*`. El contrato de prod
+ *     es un tag versionado; deployar prod desde `main` a dedo es justo el
+ *     accidente que este verbo no debe permitir.
  */
-export async function ciDeploy(app: string, env: string, ref = "main"): Promise<void> {
+export function validarDispatch(env: string, ref?: string): { ref: string } | { error: string } {
   if (!(ENVS_CI as readonly string[]).includes(env)) {
-    console.log(bad(`environment inválido: "${env}" — usá ${ENVS_CI.join(" | ")} (un input desconocido cae en silencio a stage)`));
+    return { error: `environment inválido: "${env}" — usá ${ENVS_CI.join(" | ")} (un input desconocido cae en silencio a stage)` };
+  }
+  if (env !== "prod") return { ref: ref ?? "main" };
+
+  if (!ref) {
+    return {
+      error:
+        "prod exige --ref EXPLÍCITO con un tag de versión (ej: --ref v0.1.2). " +
+        "El contrato de prod es un tag `v*`, no `main`.",
+    };
+  }
+  if (!/^v\d/.test(ref)) {
+    return { error: `--ref "${ref}" no es un tag de versión — prod solo se despliega desde un tag \`v*\` (ej: v0.1.2)` };
+  }
+  return { ref };
+}
+
+/**
+ * Dispara el workflow estándar con el input `environment` (y el `ref` de prod)
+ * VALIDADOS — ver `validarDispatch`.
+ */
+export async function ciDeploy(app: string, env: string, refPedido?: string): Promise<void> {
+  const validado = validarDispatch(env, refPedido);
+  if ("error" in validado) {
+    console.log(bad(validado.error));
     process.exitCode = 1;
     return;
   }
+  const ref = validado.ref;
   const res = await fetch(
     `${await forgeBaseLocal()}/api/v1/repos/${FORGE.org}/${encodeURIComponent(app)}/actions/workflows/${WORKFLOW}/dispatches`,
     {
