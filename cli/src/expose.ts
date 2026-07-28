@@ -45,6 +45,26 @@ export async function expose(app: string, env: string, opts: ExposeOpts): Promis
     svcPort = Number(p);
   }
 
+  // GUARDARRAÍL (post-mortem 2026-07-28): `apply` de un Ingress con el nombre de
+  // uno existente lo REEMPLAZA entero — un expose de static-mishi con un solo
+  // host tumbó TODOS los fronts de prod ~2h. Si ya existe un Ingress `<app>` con
+  // hosts que este expose no incluye, abortar: ese ingress es dueño de su repo
+  // (apply -k del overlay), no de este verbo.
+  const vivo = await run("kubectl", [
+    "--context", spec.context, "-n", spec.namespace,
+    "get", "ingress", app, "-o", "jsonpath={range .spec.rules[*]}{.host}{\"\\n\"}{end}",
+  ]);
+  if (vivo.code === 0) {
+    const hostsVivos = vivo.stdout.split("\n").map((h) => h.trim()).filter(Boolean);
+    const perderia = hostsVivos.filter((h) => h !== host);
+    if (perderia.length > 0) {
+      console.log(bad(`el Ingress ${app} (${spec.namespace}) ya existe con ${hostsVivos.length} host(s) y este expose lo REEMPLAZARÍA perdiendo: ${perderia.join(", ")}`));
+      console.log(info("  ese ingress lo gobierna su repo (kubectl apply -k del overlay / mke deploy) — agrega el host ahí"));
+      process.exitCode = 1;
+      return;
+    }
+  }
+
   docs.push(yamlIngress(app, host, spec.namespace, svcName, svcPort, path));
   const manifest = docs.join("\n---\n");
 
