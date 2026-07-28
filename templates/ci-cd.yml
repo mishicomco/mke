@@ -21,12 +21,12 @@
 #   1. Copiá este archivo a `<app>/.github/workflows/ci-cd.yml`.
 #   2. Ajustá `APP` (id interno del app) y, si el subdominio difiere, pasá
 #      `--host <fqdn>` al comando.
-#   3. Elegí el/los comando(s) según el tipo de app (ver el job `deploy`):
-#        - backend/pod                -> `mke deploy <app> <env>`
-#        - front estático (static-mishi) -> `mke publish <front> <env>`
-#        - app con front+back juntos  -> ambos (publish del front + deploy del back).
-#   4. Build-args públicos (client id, pixels) = repo Variables (`gh variable set`),
-#      no secretos. Pasalos al Dockerfile vía `--build-arg` si el CLI lo necesita.
+#   3. Nada más. `mke deploy <app> <env>` cubre backend, frontend (lo publica al
+#      PVC de static-mishi) y todas las compuertas; la FORMA de la app la deriva
+#      el CLI del árbol del repo + `.mishi-app.json`. Un front estático PURO
+#      (sin backend) sigue siendo `mke publish <front> <env>`.
+#   4. El workflow NO pasa secretos ni build-args: el CLI lee el token npm del
+#      forge de `mishi-secret` y hornea `VITE_IDENTITY_URL` según el entorno.
 
 name: ci-cd <APP> (MKE)
 
@@ -85,6 +85,12 @@ jobs:
           else
             ENV="stage"
           fi
+          # Cicatriz 2026-07-27: un dispatch con un input desconocido cayó en
+          # SILENCIO a stage y el run salió VERDE. Acá se muere ruidoso.
+          case "$ENV" in
+            stage|prod) ;;
+            *) echo "::error::entorno destino inválido: '$ENV' (esperado stage|prod)"; exit 1 ;;
+          esac
           echo "env=$ENV" >> "$GITHUB_OUTPUT"
           echo "Destino => $ENV"
 
@@ -93,10 +99,10 @@ jobs:
           export PATH="$PATH:/usr/local/bin:$HOME/.local/bin"
           ENV="${{ steps.tgt.outputs.env }}"
           # --dir apunta el CLI al checkout de CI (no a <appsRoot>/<app>).
-          # Si el subdominio difiere del id interno, agregá: --host <app>-$ENV.mishi.com.co
-          #
-          # Backend / app que corre como pod:
+          # TODO lo demás lo hace el CLI: lint de migraciones, preflight
+          # convergente (BD+Secret+DNS+host vivo en static-mishi), build del
+          # backend Y del frontend, import, apply, dump, Job de migrar,
+          # drift-check, rollout, publicación del front al PVC, catálogo y
+          # doctor. El workflow NO pasa secretos ni build-args: el CLI lee el
+          # token npm del forge de mishi-secret y hornea VITE_IDENTITY_URL.
           mke deploy "$APP" "$ENV" --dir "$GITHUB_WORKSPACE"
-          #
-          # Front estático servido por static-mishi (descomentá si aplica):
-          # mke publish "$APP" "$ENV" --dir "$GITHUB_WORKSPACE"

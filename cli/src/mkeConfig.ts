@@ -64,6 +64,24 @@ export const ENVS: Record<string, EnvSpec> = {
 export const DOMAIN = "mishi.com.co";
 
 /**
+ * Build-args PÚBLICOS que el `docker build` del frontend necesita y que antes
+ * cada `ci-cd.yml` repetía a mano. NO son secretos (van horneados en el bundle):
+ * el origen del IdP identity-mishi por entorno. Vive acá para que el workflow
+ * delgado no tenga que saberlo.
+ */
+export function identityOrigin(env: string): string {
+  return env === "prod" ? "https://identity.mishi.com.co" : "https://identity-stage.mishi.com.co";
+}
+
+/**
+ * Secreto (mishi-secret) con el token del registry npm del forge, que autentica
+ * el `npm ci` de los Dockerfiles contra `@mishicomco/*`. El CLI lo obtiene ÉL
+ * MISMO en el pc gamer; el workflow ya no lo pasa. NUNCA se imprime.
+ * Fallback: la env `NODE_AUTH_TOKEN` si ya viene puesta.
+ */
+export const NPM_TOKEN_SECRET = "git-mishi-npm-token";
+
+/**
  * Clúster de PREVIEWS (Studio v2 + `mke preview`). Cluster k3d SEPARADO del de
  * prod (nunca se toca mke-prod). Namespace `preview`; nombre/host de cada pod
  * los deriva `@mishicomco/dev-receta` (`previewPodName`/`previewPodHost`).

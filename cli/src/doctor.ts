@@ -11,8 +11,20 @@ import { run, ok, bad, warn, info, dim } from "./sh.js";
  *   - 404               → llegó a Traefik pero NO hay ingress para el host → `mke expose`.
  *   - 200/401/403/302    → backend alcanzable (sano).
  *   - 000               → timeout / inalcanzable.
+ *
+ * Devuelve el veredicto además de imprimirlo: `mke deploy` lo usa como
+ * POSTFLIGHT — un deploy cuya cadena pública no responde NO es verde.
  */
-export async function doctor(host: string, healthPath = "/health"): Promise<void> {
+export interface DiagnosticoHost {
+  host: string;
+  /** DNS resuelve + HTTP alcanzable con código sano. */
+  sano: boolean;
+  /** código HTTP observado ("" si no se llegó a pedir). */
+  codigo: string;
+  motivo: string;
+}
+
+export async function doctor(host: string, healthPath = "/health"): Promise<DiagnosticoHost> {
   console.log(`\n  diagnóstico de ${host}\n`);
 
   // 1) DNS
@@ -23,7 +35,7 @@ export async function doctor(host: string, healthPath = "/health"): Promise<void
   } else {
     console.log(bad("DNS no resuelve — no existe el record CNAME"));
     console.log(info("  fix: mke expose <app> <env> ...  (crea DNS + ingress)"));
-    return;
+    return { host, sano: false, codigo: "", motivo: "DNS no resuelve" };
   }
 
   // 2) HTTP a través de la cadena
@@ -42,17 +54,25 @@ export async function doctor(host: string, healthPath = "/health"): Promise<void
   const body = await run("curl", ["-s", "-m", "15", url]);
   const is1033 = /1033|argo tunnel|error code: 1033/i.test(body.stdout);
 
+  let sano = false;
+  let motivo: string;
   if (code === "000") {
+    motivo = "inalcanzable (timeout)";
     console.log(bad(`${url} inalcanzable (timeout)`));
   } else if (is1033 || code === "530") {
+    motivo = `tunnel sin ruta (1033/${code})`;
     console.log(bad(`tunnel sin ruta al host (1033/${code}) — CNAME apunta a un tunnel que no sirve ${host}`));
     console.log(info("  fix: mke dns <host> <env>  (re-apunta al tunnel correcto del entorno)"));
   } else if (code === "404") {
+    motivo = "404 — Traefik sin ingress para el host";
     console.log(warn(`404 — llegó a Traefik pero NO hay ingress para ${host}`));
     console.log(info("  fix: mke expose <app> <env> --host-port N | --svc name:port"));
   } else if (/^(200|201|301|302|401|403)$/.test(code)) {
+    motivo = `backend alcanzable (HTTP ${code})`;
+    sano = true;
     console.log(ok(`backend alcanzable (HTTP ${code})`));
   } else {
+    motivo = `HTTP ${code} inesperado`;
     console.log(warn(`HTTP ${code} — respuesta inesperada`));
   }
 
@@ -79,4 +99,5 @@ export async function doctor(host: string, healthPath = "/health"): Promise<void
     console.log(warn("ningún ingress declara este host en local/stage/prod"));
   }
   console.log("");
+  return { host, sano, codigo: code, motivo };
 }
