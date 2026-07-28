@@ -63,10 +63,16 @@ export async function doctor(host: string, healthPath = "/health"): Promise<Diag
     motivo = `tunnel sin ruta (1033/${code})`;
     console.log(bad(`tunnel sin ruta al host (1033/${code}) — CNAME apunta a un tunnel que no sirve ${host}`));
     console.log(info("  fix: mke dns <host> <env>  (re-apunta al tunnel correcto del entorno)"));
-  } else if (code === "404") {
+  } else if (code === "404" && /^404 page not found/i.test(body.stdout.trimStart())) {
+    // La firma de Traefik es el 404 en TEXTO PLANO; un 404 JSON/HTML viene de
+    // la app (cadena entera, ruta inexistente) — misma semántica que status-mishi.
     motivo = "404 — Traefik sin ingress para el host";
     console.log(warn(`404 — llegó a Traefik pero NO hay ingress para ${host}`));
     console.log(info("  fix: mke expose <app> <env> --host-port N | --svc name:port"));
+  } else if (code === "404") {
+    motivo = "la app respondió 404 (la cadena está entera; la ruta no existe en el backend)";
+    sano = true;
+    console.log(ok(`backend alcanzable (404 de la app, no de Traefik) ${dim(url)}`));
   } else if (/^(200|201|301|302|401|403)$/.test(code)) {
     motivo = `backend alcanzable (HTTP ${code})`;
     sano = true;

@@ -59,9 +59,14 @@ async function nodeAuthToken(): Promise<string | null> {
   return delEntorno ? delEntorno : null;
 }
 
-/** Path de salud del postflight: el que declare el ingress base, o /health. */
+/**
+ * Path de salud del postflight. Convención del template: apps CON frontend
+ * sirven la salud en /api/health (el /salud del ingress es de apps
+ * solo-backend). Derivar del ingress solo aplica al caso solo-backend.
+ */
 function healthPath(spec: AppSpec, override?: string): string {
   if (override) return override;
+  if (spec.tieneFrontend) return "/api/health";
   const base = join(spec.dir, "k8s", "base", "ingress.yaml");
   try {
     const texto = readFileSync(base, "utf8");
