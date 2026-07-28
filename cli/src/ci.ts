@@ -11,7 +11,7 @@
 //     va en `status` y la rama en `prettyref`;
 //   - el forge se alcanza por LAN desde el pc gamer (http://git.mishi.com.co —
 //     /etc/hosts lo manda a 127.0.0.1, solo :80). `forgeBaseLocal()` ya lo resuelve.
-//   - el token vive en `mishi-secret get git-mishi-api-token` y NUNCA se imprime.
+//   - el token vive en `vault-mishi get git-mishi-api-token` y NUNCA se imprime.
 //
 // Y el otro incidente: un `workflow_dispatch` con un input desconocido cayó en
 // silencio a stage y el run salió VERDE. Por eso `mke ci deploy` VALIDA el
@@ -50,7 +50,7 @@ const TERMINALES = ["success", "failure", "cancelled", "skipped", "error"];
 async function token(): Promise<string> {
   const t = await secretGet(FORGE.apiTokenSecret);
   if (!t) {
-    throw new Error(`no pude leer el token del forge (mishi-secret get ${FORGE.apiTokenSecret})`);
+    throw new Error(`no pude leer el token del forge (vault-mishi get ${FORGE.apiTokenSecret})`);
   }
   return t;
 }

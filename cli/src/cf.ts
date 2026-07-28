@@ -1,6 +1,6 @@
 // Helper mínimo de la API de Cloudflare para el ciclo de vida del DNS de MKE.
 //
-// TODO el DNS va por la API REST (token `cloudflare-dns-api` en mishi-secret,
+// TODO el DNS va por la API REST (token `cloudflare-dns-api` en vault-mishi,
 // GPG — nunca se imprime ni se pasa por argv). `cloudflared tunnel route dns`
 // quedó descartado: enruta al túnel equivocado, no sabe REPUNTAR un record
 // existente a otro túnel ni borrarlo. El upsert de acá sí hace las tres cosas.
@@ -13,7 +13,7 @@ let cachedToken: string | null = null;
 
 async function token(): Promise<string> {
   if (cachedToken) return cachedToken;
-  const r = await run("mishi-secret", ["get", "cloudflare-dns-api"]);
+  const r = await run("vault-mishi", ["get", "cloudflare-dns-api"]);
   if (r.code !== 0 || !r.stdout) {
     throw new Error(`no pude leer el secreto cloudflare-dns-api: ${r.stderr || "vacío"}`);
   }

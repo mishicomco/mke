@@ -15,7 +15,7 @@
 //   5. registro   → `mishi-studio app crear --nombre <app> --repo mishicomco/<app>`
 //   6. resumen    → qué quedó pendiente de humano (secretos reales, etc.)
 //
-// Secretos SIEMPRE por mishi-secret, jamás impresos.
+// Secretos SIEMPRE por vault-mishi, jamás impresos.
 
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -120,7 +120,7 @@ export async function appNacer(app: string, opts: AppNacerOpts): Promise<void> {
   // ── 2) repo primario en el forge (git-mishi) ───────────────────────────────
   const apiToken = await secretGet(FORGE.apiTokenSecret);
   if (!apiToken) {
-    return cortar("repo forge", `no hay credencial del forge: mishi-secret get ${FORGE.apiTokenSecret} vino vacío. Sin token de API no se puede crear el repo — BLOQUEANTE.`);
+    return cortar("repo forge", `no hay credencial del forge: vault-mishi get ${FORGE.apiTokenSecret} vino vacío. Sin token de API no se puede crear el repo — BLOQUEANTE.`);
   }
   console.log(info(`repo forge: ${remoto} en ${FORGE.base}`));
   let repoCreado = false;
@@ -181,7 +181,7 @@ export async function appNacer(app: string, opts: AppNacerOpts): Promise<void> {
       await gitC(["remote", "set-url", "origin", originUrl]);
     }
     // push por HTTPS: el credential helper global del host git.mishi.com.co lee
-    // el token de mishi-secret al vuelo (git-mishi/AI_REPO_STATE.md). GITHUB_TOKEN
+    // el token de vault-mishi al vuelo (git-mishi/AI_REPO_STATE.md). GITHUB_TOKEN
     // se limpia por el gotcha de ../CLAUDE.md (no aplica al forge, pero inocuo).
     console.log(info(`git push → ${originUrl} (dispara CI del forge → deploy ${env})`));
     const push = await run("env", ["-u", "GITHUB_TOKEN", "git", "-C", dir, "push", "-u", "origin", "main"]);

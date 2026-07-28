@@ -74,7 +74,7 @@ export function identityOrigin(env: string): string {
 }
 
 /**
- * Secreto (mishi-secret) con el token del registry npm del forge, que autentica
+ * Secreto (vault-mishi) con el token del registry npm del forge, que autentica
  * el `npm ci` de los Dockerfiles contra `@mishicomco/*`. El CLI lo obtiene ÉL
  * MISMO en el pc gamer; el workflow ya no lo pasa. NUNCA se imprime.
  * Fallback: la env `NODE_AUTH_TOKEN` si ya viene puesta.
@@ -101,18 +101,30 @@ export const PREVIEW = {
 } as const;
 
 /**
- * vault-mishi: emisor de LEASES efímeros app×rama para `mke preview` (Contrato 1).
- * URL horneada como los demás EnvSpec; override con `VAULT_URL`. El token de la
- * identidad EMISORA (DEDICADA, no root) se lee de `mishi-secret get
- * vault-mishi-emisor-token` en tiempo de uso — nunca acá. DEGRADACIÓN interina:
- * mientras el escenario 4 del vault no esté desplegado, `mke preview up` arranca
- * SIN lease (warning) y el pod corre igual para probar pod+DB+HMR.
+ * vault-mishi — DUEÑO ÚNICO de la verdad de secretos del ecosistema. `mke` lo usa
+ * en dos papeles:
+ *
+ *  1. **Emisor de LEASES** efímeros app×rama para `mke preview` (Contrato 1). El
+ *     token de la identidad EMISORA (DEDICADA, no root) se lee de `vault-mishi
+ *     get vault-mishi-emisor-token` en tiempo de uso — nunca acá. DEGRADACIÓN
+ *     interina: si el vault no responde, `mke preview up` arranca SIN lease.
+ *  2. **Fuente del Secret k8s `<app>-secrets`** (fase MATERIALIZAR de `mke
+ *     deploy`, `secretosDelVault.ts`). Identidad propia `mke-runner-deploy`
+ *     (tipo `ci`), token en un archivo 0600 fuera del repo — crearla con
+ *     `scripts/crear-identidad-vault-mke.sh`.
+ *
+ * URL horneada como los demás EnvSpec; override con `VAULT_URL`.
  */
 export const VAULT = {
   // el CLI corre en el laptop o en el runner (fuera del cluster del vault):
   // default = el host público de stage; dentro de un cluster, override VAULT_URL.
   url: process.env.VAULT_URL ?? "https://vault-stage.mishi.com.co",
   emisorTokenSecret: "vault-mishi-emisor-token",
+  /** identidad del runner que MATERIALIZA los Secrets k8s (lee ns de apps; escribe solo DATABASE_URL__*). */
+  deployIdentidad: "mke-runner-deploy",
+  /** archivo 0600 con el token de esa identidad. NUNCA en el repo ni en logs. */
+  deployTokenFile:
+    process.env.VAULT_DEPLOY_TOKEN_FILE ?? join(homedir(), ".config", "mishi", "vault-mke.token"),
 } as const;
 
 /** host público por convención; el id interno del app puede diferir del subdominio. */

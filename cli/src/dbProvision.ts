@@ -66,6 +66,6 @@ export async function dbProvision(app: string, env: string, opts: DbProvisionOpt
   console.log(ok(`BD \`${appSnake}\` y rol listos en ${ns}`));
   console.log(info("DATABASE_URL (interno al cluster):"));
   console.log("  " + url);
-  console.log(dim("  El password se muestra UNA sola vez. Guardalo ya con `mishi-secret`"));
+  console.log(dim("  El password se muestra UNA sola vez. Guardalo ya con `vault-mishi`"));
   console.log(dim("  y/o ponelo en el Secret de la app. No quedará recuperable desde aquí."));
 }

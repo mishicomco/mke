@@ -13,9 +13,22 @@
 // es OK, no error. Si algo no se puede converger, el preflight devuelve false y
 // el deploy NO construye ni despliega nada.
 
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { appsRoot, envOrThrow } from "./mkeConfig.js";
+import { VAULT, appsRoot, envOrThrow } from "./mkeConfig.js";
+import { manifiestoVacio, parsePreviewManifest } from "./previewManifest.js";
+import {
+  accesoDeploy,
+  clavesDelEntorno,
+  clavesEnCluster,
+  compararDeclaracion,
+  leerValor,
+  listarNombres,
+  mergearSecretK8s,
+  planMaterializacion,
+  sufijoEnv,
+} from "./secretosDelVault.js";
 import type { AppSpec } from "./appSpec.js";
 import { nsForEnv, toSnake } from "./dbProvision.js";
 import { ensureDns } from "./dns.js";
@@ -108,12 +121,12 @@ async function convergerBd(spec: AppSpec): Promise<boolean> {
       return true;
     }
     // BD viva pero sin Secret k8s: el password NO es recuperable de postgres —
-    // se rescata de mishi-secret; si tampoco está, se re-provisiona (el SQL
+    // se rescata de vault-mishi; si tampoco está, se re-provisiona (el SQL
     // re-asegura el password sin borrar datos).
     const guardado = await leerSecretoDb(spec.app, spec.env);
     if (guardado) {
       await aplicarSecretK8s(spec.app, spec.env, guardado);
-      console.log(ok(`Secret ${dim(spec.secretK8s)} recreado desde mishi-secret (BD ya existía)`));
+      console.log(ok(`Secret ${dim(spec.secretK8s)} recreado desde vault-mishi (BD ya existía)`));
       return true;
     }
     const { databaseUrl } = await provisionarBd(spec.app, appSnake, spec.env);
@@ -128,6 +141,98 @@ async function convergerBd(spec: AppSpec): Promise<boolean> {
 }
 
 /**
+ * Declaración `secretos:` del `mke.preview.yaml` de la app. `null` = la app NO
+ * declara (archivo ausente): se materializa igual, con WARN.
+ */
+async function declaracionSecretos(spec: AppSpec): Promise<string[] | null> {
+  try {
+    const texto = await readFile(join(spec.dir, "mke.preview.yaml"), "utf8");
+    return parsePreviewManifest(texto, spec.app).secretos;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    // manifiesto ilegible: no es razón para tumbar el deploy de plataforma, pero
+    // tampoco se puede comparar contra él.
+    console.log(warn(`mke.preview.yaml ilegible (${e instanceof Error ? e.message : String(e)}) — sin compuerta de declaración`));
+    return manifiestoVacio(spec.app).secretos.length ? [] : null;
+  }
+}
+
+/**
+ * FASE MATERIALIZAR — el Secret k8s `<app>-secrets` es DERIVADO del vault.
+ *
+ * Lee del vault los nombres `*__<env>` del ns de la app, trae sus valores y los
+ * MERGEA al Secret (patch merge; jamás replace). El vault MANDA sobre el
+ * cluster; lo que el vault no conoce se conserva y se avisa como huérfano.
+ * Compuerta de DECLARACIÓN contra `mke.preview.yaml` (ver `compararDeclaracion`).
+ *
+ * Devuelve false SOLO si la declaración exige un secreto que el vault no tiene:
+ * cualquier otro problema (vault caído, sin token, sin grant) degrada con WARN —
+ * el vault es un SPOF asumido y el cluster ya tiene lo materializado antes.
+ */
+async function materializarSecretos(spec: AppSpec): Promise<boolean> {
+  if (!sufijoEnv(spec.env)) {
+    console.log(dim(`  entorno ${spec.env} fuera del vault (solo stage|prod) — sin materializar.`));
+    return true;
+  }
+
+  const acc = await accesoDeploy();
+  if (!acc) {
+    console.log(warn(`sin token de la identidad ${VAULT.deployIdentidad} (${VAULT.deployTokenFile}) — Secret NO materializado; corré scripts/crear-identidad-vault-mke.sh`));
+    return true;
+  }
+
+  let nombres: string[];
+  try {
+    nombres = await listarNombres(acc, spec.app);
+  } catch (e) {
+    console.log(warn(`el vault no respondió (${e instanceof Error ? e.message : String(e)}) — sigo con lo ya materializado en el cluster`));
+    return true;
+  }
+
+  const delVault = clavesDelEntorno(nombres, spec.env);
+  const enCluster = (await clavesEnCluster(spec.app, spec.env)) ?? [];
+  const plan = planMaterializacion(delVault, enCluster);
+
+  // Compuerta de declaración (ver la nota de transición en compararDeclaracion).
+  const declarados = await declaracionSecretos(spec);
+  if (declarados === null) {
+    console.log(warn(`${spec.app} no tiene mke.preview.yaml — sin declaración de secretos (solo materializo)`));
+  } else {
+    const cmp = compararDeclaracion(declarados, delVault.map((c) => c.clave));
+    if (cmp.faltantes.length) {
+      console.log(bad(`declarados en mke.preview.yaml y AUSENTES del vault para ${spec.env}: ${cmp.faltantes.join(", ")} — falta el VALOR (guardalo: vault-mishi set ${spec.app}/<CLAVE>__${spec.env})`));
+      return false;
+    }
+    if (cmp.noDeclarados.length) {
+      console.log(warn(`en el vault y NO declarados en mke.preview.yaml: ${cmp.noDeclarados.join(", ")} (transición; se materializan igual)`));
+    }
+  }
+
+  if (plan.huerfanas.length) {
+    console.log(warn(`clave huérfana no rescatada (vive solo en el cluster, el vault no la conoce): ${plan.huerfanas.join(", ")}`));
+  }
+  if (!plan.aMaterializar.length) {
+    console.log(ok(`el vault no tiene secretos de ${spec.app} para ${spec.env} — nada que materializar`));
+    return true;
+  }
+
+  const valores: Record<string, string> = {};
+  try {
+    for (const { clave, nombre } of plan.aMaterializar) {
+      valores[clave] = await leerValor(acc, spec.app, nombre); // el valor NUNCA se imprime
+    }
+    await mergearSecretK8s(spec.app, spec.env, valores);
+  } catch (e) {
+    console.log(warn(`materialización incompleta (${e instanceof Error ? e.message : String(e)}) — sigo con lo ya materializado`));
+    return true;
+  } finally {
+    for (const k of Object.keys(valores)) valores[k] = "";
+  }
+  console.log(ok(`Secret ${dim(spec.secretK8s)} materializado del vault: ${plan.aMaterializar.length} clave(s)`));
+  return true;
+}
+
+/**
  * Preflight completo. true = se puede seguir a la compuerta de migraciones.
  * Idempotente end-to-end; `--dry-run` solo imprime el plan.
  */
@@ -138,8 +243,9 @@ export async function preflightDeploy(spec: AppSpec, opts: PreflightOpts = {}): 
   if (opts.dryRun) {
     console.log(`  1. namespace \`${env.namespace}\` (${env.context})`);
     console.log(`  2. BD/rol \`${spec.db}\` en ${nsForEnv(spec.env)} + Secret k8s \`${spec.secretK8s}\``);
-    console.log(`  3. DNS ${spec.host} → tunnel ${env.tunnelUuid}`);
-    console.log(`  4. ${spec.tieneFrontend && !opts.sinStatic ? `host ${spec.host} en el ingress VIVO de static-mishi (subPath \`${spec.front}\`)` : "sin front estático — no se toca static-mishi"}`);
+    console.log(`  3. MATERIALIZAR \`${spec.secretK8s}\` desde el vault (${sufijoEnv(spec.env) ? `${VAULT.url} ns \`${spec.app}\`, nombres \`*__${spec.env}\`` : `${spec.env} fuera del vault — no aplica`}) + compuerta de declaración de mke.preview.yaml`);
+    console.log(`  4. DNS ${spec.host} → tunnel ${env.tunnelUuid}`);
+    console.log(`  5. ${spec.tieneFrontend && !opts.sinStatic ? `host ${spec.host} en el ingress VIVO de static-mishi (subPath \`${spec.front}\`)` : "sin front estático — no se toca static-mishi"}`);
     return true;
   }
 
@@ -159,6 +265,11 @@ export async function preflightDeploy(spec: AppSpec, opts: PreflightOpts = {}): 
   } else {
     console.log(ok("sin drizzle/ en el repo — BD y Secret de plataforma no aplican"));
   }
+
+  // MATERIALIZAR: el Secret k8s es DERIVADO del vault (dueño de la verdad).
+  // Va DESPUÉS de la BD (que escribe DATABASE_URL al vault) y ANTES del build,
+  // para que el rollout levante pods con el Secret ya al día.
+  if (!(await materializarSecretos(spec))) return false;
 
   // DNS: el CNAME se REPUNTA al túnel vivo del entorno aunque ya exista (el
   // post-mortem #1 fue un CNAME a un túnel muerto que nadie detectó).

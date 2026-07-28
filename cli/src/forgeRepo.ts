@@ -7,7 +7,7 @@
 // NO en GitHub; GitHub baja a mirror de respaldo. Este módulo NO toca disco ni
 // git local — solo la API del forge. El `git init/commit/push` lo hace appNacer.
 //
-// Tokens SIEMPRE por mishi-secret, NUNCA impresos:
+// Tokens SIEMPRE por vault-mishi, NUNCA impresos:
 //   - git-mishi-api-token   → API del forge (crear repo, configurar mirror)
 //   - github-mirror-pat     → PAT de GitHub con write, credencial del push-mirror
 
@@ -27,9 +27,9 @@ export function forgeRepoUrl(app: string): string {
   return `${FORGE.base}/${FORGE.org}/${app}.git`;
 }
 
-/** Lee un secreto por mishi-secret. Devuelve null si no existe/vacío. Nunca lo imprime. */
+/** Lee un secreto por vault-mishi. Devuelve null si no existe/vacío. Nunca lo imprime. */
 export async function secretGet(name: string): Promise<string | null> {
-  const r = await run("mishi-secret", ["get", name]);
+  const r = await run("vault-mishi", ["get", name]);
   if (r.code !== 0) return null;
   const v = r.stdout.trim();
   return v.length > 0 ? v : null;
