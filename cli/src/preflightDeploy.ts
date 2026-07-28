@@ -151,7 +151,14 @@ export async function preflightDeploy(spec: AppSpec, opts: PreflightOpts = {}): 
     return false;
   }
 
-  if (!(await convergerBd(spec))) return false;
+  // BD/Secret solo si la app tiene migraciones (forma derivada del árbol):
+  // una app sin drizzle no usa la BD de plataforma — provisionarla sería
+  // crear una BD vacía sin dueño real (caso travelhabitco).
+  if (spec.tieneDrizzle) {
+    if (!(await convergerBd(spec))) return false;
+  } else {
+    console.log(ok("sin drizzle/ en el repo — BD y Secret de plataforma no aplican"));
+  }
 
   // DNS: el CNAME se REPUNTA al túnel vivo del entorno aunque ya exista (el
   // post-mortem #1 fue un CNAME a un túnel muerto que nadie detectó).
