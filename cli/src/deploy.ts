@@ -156,13 +156,23 @@ export async function deploy(app: string, env: string, opts: DeployOpts = {}): P
     }
   }
 
+  // Dos deploys en paralelo (dos runners) comparten el tools-container de k3d
+  // y el import puede morir con "No such exec instance" — transitorio, se
+  // reintenta (post-mortem 2026-07-28: mishi-bank e identity-mishi a la vez).
   const imagenes = spec.tieneFrontend ? [imagen, imagenFront] : [imagen];
-  const imp = await paso(
-    `k3d image import ${dim(imagenes.join(" + "))} → ${envSpec.cluster}`,
-    () => run("k3d", ["image", "import", ...imagenes, "-c", envSpec.cluster]),
-  );
+  let imp = { code: 1, stdout: "", stderr: "" };
+  for (let intento = 1; intento <= 3 && imp.code !== 0; intento++) {
+    if (intento > 1) {
+      console.log(warn(`k3d image import falló (intento ${intento - 1}/3) — reintentando en 10s`));
+      await new Promise((r) => setTimeout(r, 10_000));
+    }
+    imp = await paso(
+      `k3d image import ${dim(imagenes.join(" + "))} → ${envSpec.cluster}`,
+      () => run("k3d", ["image", "import", ...imagenes, "-c", envSpec.cluster]),
+    );
+  }
   if (imp.code !== 0) {
-    console.log(bad(`k3d image import falló: ${imp.stderr || imp.stdout}`));
+    console.log(bad(`k3d image import falló tras 3 intentos: ${imp.stderr || imp.stdout}`));
     process.exitCode = 1;
     return;
   }

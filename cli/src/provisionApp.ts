@@ -132,10 +132,15 @@ export async function secretK8sExiste(app: string, env: string): Promise<boolean
 }
 
 /**
- * Aplica el Secret k8s `<app>-secrets` (DATABASE_URL + SESSION_SECRET).
- * Devuelve true si ya existía. `sessionSecret` se genera si no se pasa — OJO:
- * re-aplicar rota SESSION_SECRET, así que quien ya lo tiene debe pasarlo o
- * saltarse este paso (ver `asegurarSecretK8s`).
+ * Asegura el Secret k8s `<app>-secrets` SIN destruir claves ajenas.
+ *
+ * LEY (post-mortem 2026-07-28): el Secret de una app acumula claves que mke NO
+ * conoce (llaves ES256 del IdP, allowlists, API keys de integraciones). Un
+ * `kubectl apply` del Secret entero las BORRA — así se perdieron las
+ * SESSION_*_KEY de identity-mishi en stage. Por eso acá:
+ *   - Secret inexistente → se crea con DATABASE_URL + SESSION_SECRET.
+ *   - Secret existente   → PATCH merge SOLO de DATABASE_URL; SESSION_SECRET
+ *     solo se agrega si falta (rotarlo invalidaría sesiones vivas).
  */
 export async function aplicarSecretK8s(
   app: string,
@@ -146,17 +151,34 @@ export async function aplicarSecretK8s(
   const spec = envOrThrow(env);
   const nombre = `${app}-secrets`;
   const already = await secretK8sExiste(app, env);
-  const generado = await run("kubectl", [
+
+  if (!already) {
+    const create = await run("kubectl", [
+      "--context", spec.context, "-n", spec.namespace,
+      "create", "secret", "generic", nombre,
+      `--from-literal=DATABASE_URL=${databaseUrl}`,
+      `--from-literal=SESSION_SECRET=${sessionSecret ?? randomBytes(32).toString("hex")}`,
+    ]);
+    if (create.code !== 0) throw new Error(`crear Secret k8s falló: ${create.stderr || create.stdout}`);
+    return false;
+  }
+
+  const vivo = await run("kubectl", [
     "--context", spec.context, "-n", spec.namespace,
-    "create", "secret", "generic", nombre,
-    `--from-literal=DATABASE_URL=${databaseUrl}`,
-    `--from-literal=SESSION_SECRET=${sessionSecret ?? randomBytes(32).toString("hex")}`,
-    "--dry-run=client", "-o", "yaml",
+    "get", "secret", nombre, "-o", "jsonpath={.data.SESSION_SECRET}",
   ]);
-  if (generado.code !== 0) throw new Error(`generar Secret k8s falló: ${generado.stderr || generado.stdout}`);
-  const archivo = join(tmpdir(), `mke-secret-${app}-${env}.yaml`);
-  writeFileSync(archivo, generado.stdout);
-  const apply = await run("kubectl", ["--context", spec.context, "apply", "-f", archivo]);
-  if (apply.code !== 0) throw new Error(`apply del Secret falló: ${apply.stderr || apply.stdout}`);
-  return already;
+  const data: Record<string, string> = {
+    DATABASE_URL: Buffer.from(databaseUrl).toString("base64"),
+  };
+  if (!vivo.stdout.trim()) {
+    data.SESSION_SECRET = Buffer.from(sessionSecret ?? randomBytes(32).toString("hex")).toString("base64");
+  }
+  const archivo = join(tmpdir(), `mke-secret-${app}-${env}.json`);
+  writeFileSync(archivo, JSON.stringify({ data }));
+  const patch = await run("kubectl", [
+    "--context", spec.context, "-n", spec.namespace,
+    "patch", "secret", nombre, "--type", "merge", "--patch-file", archivo,
+  ]);
+  if (patch.code !== 0) throw new Error(`patch del Secret falló: ${patch.stderr || patch.stdout}`);
+  return true;
 }
