@@ -72,6 +72,11 @@ function healthPath(spec: AppSpec, override?: string): string {
     const texto = readFileSync(base, "utf8");
     if (/path:\s*\/salud\b/.test(texto)) return "/salud";
     if (/path:\s*\/health\b/.test(texto)) return "/health";
+    // Sin ruta de salud declarada: sondear el PRIMER path que el ingress sí
+    // reclama (un 404 texto de Traefik ahí significaría cadena rota de verdad;
+    // un 404 JSON de la app cuenta como viva — lo distingue el doctor).
+    const primero = texto.match(/path:\s*(\/\S*)/);
+    if (primero) return primero[1];
   } catch {
     /* sin ingress base legible: default */
   }
