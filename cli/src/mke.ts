@@ -1,8 +1,9 @@
 #!/usr/bin/env -S node --import tsx
 // CLI `mke` — operaciones deterministas de la plataforma MKE.
-// deploy · publish · expose · rollout · dns · doctor · ls · db provision
+// deploy · ci · publish · expose · rollout · dns · doctor · ls · db provision
 
 import { expose } from "./expose.js";
+import { ciRuns, ciLogs, ciDeploy } from "./ci.js";
 import { ensureDns } from "./dns.js";
 import { doctor } from "./doctor.js";
 import { deploy } from "./deploy.js";
@@ -39,8 +40,15 @@ function parseFlags(args: string[]): { positional: string[]; flags: Record<strin
 
 const HELP = `mke — CLI de plataforma MKE
 
-  mke deploy <app> <env>                        build → k3d import → apply -k overlays/<env> → rollout → doctor
-        opciones: --tag <t>  --dir <repo>  --deploy <nombre-deployment>  --host <fqdn>
+  mke deploy <app> <env>                        EL pipeline completo (lo que antes vivía duplicado en el ci-cd.yml de cada app):
+                                                  lint de migraciones → preflight convergente (ns+BD+Secret+DNS+host vivo en static-mishi)
+                                                  → build backend(+front) → k3d import → apply -k (+re-pin) → dump → Job de migrar → drift-check
+                                                  → set image :sha → rollout → publicar front al PVC → catálogo → doctor (postflight)
+        opciones: --tag <t>  --dir <repo>  --deploy <nombre-deployment>  --host <fqdn>  --health <path>  --sin-preflight  --dry-run
+  mke ci runs <app> [n]                         últimos runs del repo en el forge (id/estado/rama)
+  mke ci logs <app> [runId]                     baja el ZIP de logs del run (último FALLIDO por default) y muestra las líneas de error
+  mke ci deploy <app> <env>                     dispara el workflow ci-cd.yml con el input "environment" VALIDADO (stage|prod)
+        opciones: --ref <rama|tag>   stage: default main · prod: OBLIGATORIO y tiene que ser un tag v* (ej: --ref v0.1.2)
   mke publish <front> <env>                      front estático: build imagen contenido → Job al PVC de static-mishi → doctor
         opciones: --tag <t>  --dir <repo>  --host <fqdn>   (env = stage | prod)
   mke rollout <app> <env>                        rollout restart + status (sin rebuild; tag mutable / reciclar pods)
@@ -117,13 +125,31 @@ async function main() {
   switch (cmd) {
     case "deploy": {
       const [app, env] = positional;
-      if (!app || !env) return fail("uso: mke deploy <app> <env> [--tag t] [--dir repo] [--deploy name]");
+      if (!app || !env) return fail("uso: mke deploy <app> <env> [--tag t] [--dir repo] [--deploy name] [--host fqdn] [--health path] [--sin-preflight] [--dry-run]");
       await deploy(app, env, {
         tag: typeof flags.tag === "string" ? flags.tag : undefined,
         dir: typeof flags.dir === "string" ? flags.dir : undefined,
         deploy: typeof flags.deploy === "string" ? flags.deploy : undefined,
         host: typeof flags.host === "string" ? flags.host : undefined,
+        health: typeof flags.health === "string" ? flags.health : undefined,
+        sinPreflight: flags["sin-preflight"] === true,
+        dryRun: flags["dry-run"] === true,
       });
+      break;
+    }
+    case "ci": {
+      const [action, app, tercero] = positional;
+      if (!action || !app) return fail("uso: mke ci runs <app> [n] | mke ci logs <app> [runId] | mke ci deploy <app> <env> [--ref r]");
+      if (action === "runs") {
+        await ciRuns(app, tercero ? Number(tercero) : undefined);
+      } else if (action === "logs") {
+        await ciLogs(app, tercero ? Number(tercero) : undefined);
+      } else if (action === "deploy") {
+        if (!tercero) return fail("uso: mke ci deploy <app> <stage|prod> [--ref r]  (prod exige --ref <tag v*>)");
+        await ciDeploy(app, tercero, typeof flags.ref === "string" ? flags.ref : undefined);
+      } else {
+        return fail("uso: mke ci runs|logs|deploy <app> …");
+      }
       break;
     }
     case "publish": {

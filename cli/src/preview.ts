@@ -26,6 +26,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { appsRoot, PREVIEW, VAULT } from "./mkeConfig.js";
+import { lintMigracionesRepo } from "./lintMigraciones.js";
 import {
   manifiestosPreview,
   previewPodName,
@@ -634,6 +635,11 @@ export async function previewDown(app: string, rama: string, opts: PreviewDownOp
  * worktree + rama local + rama REMOTA. Borrar la rama remota dispara el workflow
  * `on: delete` de la app → limpieza del cluster (no la esperamos acá). Aborta si
  * el worktree tiene cambios sin commit (no querés mergear a medias).
+ *
+ * COMPUERTA (2026-07-27): antes de mergear corre el MISMO lint de migraciones
+ * que `mke deploy` (`lintMigraciones.ts`). Razón: el ecosistema no usa PRs, así
+ * que este merge ES la puerta a main — y main dispara el deploy a stage. Un SQL
+ * destructivo sin `-- contract:` debe morir acá, no dentro del deploy a prod.
  */
 export async function previewMerge(app: string, rama: string, opts: PreviewMergeOpts = {}): Promise<void> {
   const ramaSlug = slugDev(rama);
@@ -648,6 +654,16 @@ export async function previewMerge(app: string, rama: string, opts: PreviewMerge
     if (st.stdout.trim()) {
       throw new Error(`el worktree ${wt} tiene cambios sin commit — commiteá o descartá antes de mergear:\n${st.stdout}`);
     }
+  }
+
+  // 1.5) COMPUERTA: lint de migraciones sobre el código QUE SE VA A MERGEAR
+  //      (el worktree de la rama si existe; si no, el checkout principal).
+  const dirLint = existsSync(wt) ? wt : appDir;
+  if (!lintMigracionesRepo(dirLint)) {
+    throw new Error(
+      `merge ABORTADO: el lint de migraciones falló en ${dirLint}. ` +
+        `Arreglá el SQL (o agregá el escape hatch \`-- contract:\` / \`-- espejo: ok\`) y volvé a intentar.`,
+    );
   }
 
   // 2) merge a main en el repo principal + push.

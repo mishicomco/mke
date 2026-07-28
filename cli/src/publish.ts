@@ -59,6 +59,24 @@ export async function publish(front: string, env: string, opts: PublishOpts): Pr
   console.log(ok("imagen importada"));
 
   // 3) Job que copia /dist → PVC static-www (subPath=<front>)
+  if (!(await publicarFrontAlPvc(front, env, image))) return;
+
+  // 4) verificá la cadena pública
+  await doctor(opts.host ?? hostFor(front, env));
+}
+
+/**
+ * Job que copia el `/dist` de una imagen de contenido al PVC compartido
+ * `static-www` bajo `subPath=<front>`. Extraído para que `mke deploy` publique
+ * el frontend de una app con backend SIN duplicar el manifiesto (era el paso
+ * "Publicar frontend al PVC" del ci-cd.yml de cada app).
+ *
+ * OJO (footgun de plataforma): `front` = el SUBDOMINIO público, no el id
+ * interno del app — nginx deduce el root del host.
+ */
+export async function publicarFrontAlPvc(front: string, env: string, image: string): Promise<boolean> {
+  const spec = envOrThrow(env);
+  const ns = spec.namespace;
   const runId = Date.now().toString(36);
   const jobName = `publish-${front}-${runId}`;
   const job = {
@@ -92,6 +110,12 @@ export async function publish(front: string, env: string, opts: PublishOpts): Pr
     },
   };
 
+  // Jobs viejos del mismo front estorban el `wait` por label: se limpian antes.
+  await run("kubectl", [
+    "--context", spec.context, "-n", ns,
+    "delete", "job", "-l", `static-mishi/front=${front}`, "--ignore-not-found",
+  ]);
+
   const tmpFile = join(tmpdir(), `mke-publish-${jobName}.json`);
   try {
     writeFileSync(tmpFile, JSON.stringify(job));
@@ -100,21 +124,21 @@ export async function publish(front: string, env: string, opts: PublishOpts): Pr
     const apply = await run("kubectl", ["--context", spec.context, "apply", "-f", tmpFile]);
     if (apply.code !== 0) {
       console.log(bad(`apply del Job falló: ${apply.stderr || apply.stdout}`));
-      return;
+      return false;
     }
     console.log(ok(apply.stdout.split("\n").join(" · ")));
 
-    // 4) esperá a que el Job copie y termine
-    console.log(info(`esperando job/${jobName} (timeout 120s)`));
+    console.log(info(`esperando job/${jobName} (timeout 180s)`));
     const wait = await run("kubectl", [
       "--context", spec.context, "-n", ns,
-      "wait", "--for=condition=complete", `job/${jobName}`, "--timeout=120s",
+      "wait", "--for=condition=complete", `job/${jobName}`, "--timeout=180s",
     ]);
     if (wait.code !== 0) {
       console.log(bad(`el Job no completó: ${wait.stderr || wait.stdout}`));
-      return;
+      return false;
     }
     console.log(ok(`front publicado al PVC static-www (subPath=${front})`));
+    return true;
   } finally {
     try {
       unlinkSync(tmpFile);
@@ -122,7 +146,4 @@ export async function publish(front: string, env: string, opts: PublishOpts): Pr
       /* tmp ya no existe */
     }
   }
-
-  // 5) verificá la cadena pública
-  await doctor(opts.host ?? hostFor(front, env));
 }

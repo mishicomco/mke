@@ -11,17 +11,20 @@
 // nada, reporta "ya existía" y sigue. El password NUNCA se imprime — vive
 // solo en mishi-secret y en el Secret de k8s.
 
-import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
-import { writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
-import { appsRoot, envOrThrow, hostFor } from "./mkeConfig.js";
+import { envOrThrow, hostFor } from "./mkeConfig.js";
 import { EXEC_CONTEXT, POD, nsForEnv, toSnake } from "./dbProvision.js";
 import { ensureDns } from "./dns.js";
 import { run, ok, bad, info, warn, dim } from "./sh.js";
 import { ensureStaticHostPaso, planStaticHosts } from "./staticHost.js";
+import { regenerarCatalogos } from "./catalogo.js";
+import {
+  aplicarSecretK8s,
+  asegurarNamespace,
+  guardarSecretoDb,
+  nombreSecretoDb,
+  provisionarBd,
+  roleExists,
+} from "./provisionApp.js";
 
 export interface AppInitOpts {
   /** dominio público si difiere del id interno del app (default: mismo nombre). */
@@ -46,7 +49,7 @@ export async function appInit(app: string, env: string, opts: AppInitOpts): Prom
   const appSnake = toSnake(app);
   const subdominio = opts.subdominio ?? app;
   const host = hostFor(subdominio, env);
-  const secretNameDb = `mke/${app}/${env}/database-url`;
+  const secretNameDb = nombreSecretoDb(app, env);
   const k8sSecretName = `${app}-secrets`;
   const dnsSuffix = spec.hostSuffix;
 
@@ -71,93 +74,43 @@ export async function appInit(app: string, env: string, opts: AppInitOpts): Prom
   const steps: Step[] = [];
 
   // 1) BD + rol, con fix de ownership (schema public + default privileges).
-  const pw = randomBytes(24).toString("base64url");
-  const already = await roleExists(appSnake, dbNs);
-  const sqlPath = join(appsRoot(), "postgres-mishi", "bootstrap", "provision-app-db.sql");
-  if (!existsSync(sqlPath)) {
-    console.log(bad(`no encuentro el SQL de bootstrap: ${sqlPath}`));
-    return;
-  }
-  const baseSql = readFileSync(sqlPath, "utf8");
-  const ownerFixSql = `
--- fix de ownership (gotcha: DDL corrida como postgres deja tablas del rol postgres).
-\\connect :app
-ALTER SCHEMA public OWNER TO :app;
-GRANT ALL ON SCHEMA public TO :app;
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT ALL PRIVILEGES ON TABLES TO :app;
-ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT ALL PRIVILEGES ON SEQUENCES TO :app;
-`;
-  const sql = baseSql + ownerFixSql;
-
+  //    La mecánica vive en `provisionApp.ts` — la comparte `mke deploy`, que
+  //    converge lo que falte en SU entorno (cicatriz: la BD de prod no existía).
   console.log(info(`BD/rol \`${appSnake}\` en ${dbNs} (${EXEC_CONTEXT}/${POD})`));
-  const r = await run(
-    "kubectl",
-    [
-      "--context", EXEC_CONTEXT, "-n", dbNs,
-      "exec", "-i", POD, "--",
-      "psql", "-U", "postgres",
-      "-v", `app=${appSnake}`,
-      "-v", `pw=${pw}`,
-    ],
-    sql,
-  );
-  if (r.code !== 0) {
-    console.log(bad(`provision de BD falló: ${r.stderr || r.stdout}`));
+  let databaseUrl: string;
+  try {
+    const r = await provisionarBd(app, appSnake, env);
+    databaseUrl = r.databaseUrl;
+    steps.push({ name: `BD/rol \`${appSnake}\``, already: r.already });
+    console.log(ok(r.already ? `BD/rol \`${appSnake}\` ya existía (password re-asegurado)` : `BD/rol \`${appSnake}\` creado`));
+  } catch (e) {
+    console.log(bad(e instanceof Error ? e.message : String(e)));
     return;
   }
-  steps.push({ name: `BD/rol \`${appSnake}\``, already });
-  console.log(ok(already ? `BD/rol \`${appSnake}\` ya existía (password re-asegurado)` : `BD/rol \`${appSnake}\` creado`));
-
-  const databaseUrl = `postgres://${appSnake}:${pw}@postgres.${dbNs}.svc.cluster.local:5432/${appSnake}`;
 
   // 2) password en mishi-secret (nunca por stdout).
-  const secretAlready = await mishiSecretExists(secretNameDb);
-  const set = await run("mishi-secret", ["set", secretNameDb], databaseUrl);
-  if (set.code !== 0) {
-    console.log(bad(`mishi-secret set falló: ${set.stderr || set.stdout}`));
+  try {
+    const secretAlready = await guardarSecretoDb(app, env, databaseUrl);
+    steps.push({ name: `secreto ${secretNameDb}`, already: secretAlready });
+    console.log(ok(secretAlready ? `secreto ${secretNameDb} ya existía (actualizado)` : `secreto ${secretNameDb} guardado`));
+  } catch (e) {
+    console.log(bad(e instanceof Error ? e.message : String(e)));
     return;
   }
-  steps.push({ name: `secreto ${secretNameDb}`, already: secretAlready });
-  console.log(ok(secretAlready ? `secreto ${secretNameDb} ya existía (actualizado)` : `secreto ${secretNameDb} guardado`));
 
   // 3) namespace + Secret k8s.
-  const nsGet = await run("kubectl", ["--context", spec.context, "get", "namespace", spec.namespace]);
-  const nsAlready = nsGet.code === 0;
-  if (!nsAlready) {
-    const nsCreate = await run("kubectl", ["--context", spec.context, "create", "namespace", spec.namespace]);
-    if (nsCreate.code !== 0) {
-      console.log(bad(`crear namespace falló: ${nsCreate.stderr || nsCreate.stdout}`));
-      return;
-    }
-  }
-  steps.push({ name: `namespace ${spec.namespace}`, already: nsAlready });
-  console.log(ok(nsAlready ? `namespace ${spec.namespace} ya existía` : `namespace ${spec.namespace} creado`));
+  try {
+    const nsAlready = await asegurarNamespace(env);
+    steps.push({ name: `namespace ${spec.namespace}`, already: nsAlready });
+    console.log(ok(nsAlready ? `namespace ${spec.namespace} ya existía` : `namespace ${spec.namespace} creado`));
 
-  const sessionSecret = randomBytes(32).toString("hex");
-  const secretGet = await run("kubectl", [
-    "--context", spec.context, "-n", spec.namespace, "get", "secret", k8sSecretName,
-  ]);
-  const k8sSecretAlready = secretGet.code === 0;
-  const applySecret = await run("kubectl", [
-    "--context", spec.context, "-n", spec.namespace,
-    "create", "secret", "generic", k8sSecretName,
-    `--from-literal=DATABASE_URL=${databaseUrl}`,
-    `--from-literal=SESSION_SECRET=${sessionSecret}`,
-    "--dry-run=client", "-o", "yaml",
-  ]);
-  if (applySecret.code !== 0) {
-    console.log(bad(`generar Secret k8s falló: ${applySecret.stderr || applySecret.stdout}`));
+    const k8sSecretAlready = await aplicarSecretK8s(app, env, databaseUrl);
+    steps.push({ name: `Secret k8s ${k8sSecretName}`, already: k8sSecretAlready });
+    console.log(ok(k8sSecretAlready ? `Secret ${k8sSecretName} ya existía (re-aplicado)` : `Secret ${k8sSecretName} creado`));
+  } catch (e) {
+    console.log(bad(e instanceof Error ? e.message : String(e)));
     return;
   }
-  const secretFile = join(tmpdir(), `mke-app-init-${app}-${env}-secret.yaml`);
-  writeFileSync(secretFile, applySecret.stdout);
-  const applyR = await run("kubectl", ["--context", spec.context, "apply", "-f", secretFile]);
-  if (applyR.code !== 0) {
-    console.log(bad(`apply del Secret falló: ${applyR.stderr || applyR.stdout}`));
-    return;
-  }
-  steps.push({ name: `Secret k8s ${k8sSecretName}`, already: k8sSecretAlready });
-  console.log(ok(k8sSecretAlready ? `Secret ${k8sSecretName} ya existía (re-aplicado)` : `Secret ${k8sSecretName} creado`));
 
   // 4) DNS — reusa ensureDns (mismo mecanismo que `mke dns`/`mke expose`).
   const dnsOk = await ensureDns(host, env);
@@ -188,7 +141,11 @@ ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT ALL PRIVILEGES
     console.log(warn(`grant del vault falló (sigo; re-corre con: kubectl -n stage exec deploy/vault-mishi -- node /app/dist/scripts/grantEmisor.js mke-runner ${app}): ${(grant.stderr || grant.stdout).split("\n")[0]}`));
   }
 
-  // 7) resumen.
+  // 7) catálogo derivado: el ConfigMap `mke-catalogo` (stage+prod) se regenera
+  //    de los ingress VIVOS. Best-effort, nunca fatal.
+  await regenerarCatalogos();
+
+  // 8) resumen.
   console.log(`\n  ${info("resumen")}`);
   for (const s of steps) {
     console.log(`    ${s.already ? warn(`${s.name}: ya existía`) : ok(`${s.name}: creado`)}`);
@@ -197,18 +154,5 @@ ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public GRANT ALL PRIVILEGES
   console.log("");
 }
 
-/** true si el rol ya existe en el postgres-mishi del namespace dado. */
-async function roleExists(appSnake: string, dbNs: string): Promise<boolean> {
-  const r = await run("kubectl", [
-    "--context", EXEC_CONTEXT, "-n", dbNs,
-    "exec", "-i", POD, "--",
-    "psql", "-U", "postgres", "-tAc",
-    `SELECT 1 FROM pg_roles WHERE rolname = '${appSnake}'`,
-  ]);
-  return r.code === 0 && r.stdout.trim() === "1";
-}
-
-async function mishiSecretExists(name: string): Promise<boolean> {
-  const r = await run("mishi-secret", ["get", name]);
-  return r.code === 0 && r.stdout.trim().length > 0;
-}
+// roleExists / el guardado del secreto / el Secret k8s viven en `provisionApp.ts`
+// (los comparte `mke deploy` para converger la plataforma en cada despliegue).
