@@ -141,6 +141,23 @@ export async function appInit(app: string, env: string, opts: AppInitOpts): Prom
     console.log(warn(`grant del vault falló (sigo; re-corre con: kubectl -n stage exec deploy/vault-mishi -- node /app/dist/scripts/grantEmisor.js mke-runner ${app}): ${(grant.stderr || grant.stdout).split("\n")[0]}`));
   }
 
+  // 6b) grants de DEPLOY (decisión Santi 2026-07-28, "cablear al nacer"): la
+  //     identidad `mke-runner-deploy` materializa el Secret k8s desde el vault
+  //     en cada deploy — necesita leer el ns de la app y escribir SOLO
+  //     `DATABASE_URL__*` (grant acotado por patrón). Sin esto, una app nueva
+  //     degrada con WARN en la fase MATERIALIZAR. Idempotente y best-effort.
+  const grantDeploy = await run("kubectl", [
+    "--context", EXEC_CONTEXT, "-n", "stage",
+    "exec", "deploy/vault-mishi", "--",
+    "node", "/app/dist/scripts/grantDeploy.js", "mke-runner-deploy", app,
+  ]);
+  if (grantDeploy.code === 0) {
+    steps.push({ name: `grant vault (deploy mke-runner-deploy → ${app})`, already: false });
+    console.log(ok(`grants de deploy del vault asegurados para ${app} (leer + escribir DATABASE_URL__*)`));
+  } else {
+    console.log(warn(`grant de deploy del vault falló (sigo; re-corre con: kubectl -n stage exec deploy/vault-mishi -- node /app/dist/scripts/grantDeploy.js mke-runner-deploy ${app}): ${(grantDeploy.stderr || grantDeploy.stdout).split("\n")[0]}`));
+  }
+
   // 7) catálogo derivado: el ConfigMap `mke-catalogo` (stage+prod) se regenera
   //    de los ingress VIVOS. Best-effort, nunca fatal.
   await regenerarCatalogos();
