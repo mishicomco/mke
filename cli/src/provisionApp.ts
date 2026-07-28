@@ -6,21 +6,36 @@
 // existía y el deploy a prod se enteró tarde y a mano. La regla nueva: cada
 // deploy converge lo que falte en SU entorno, sin error si ya estaba.
 //
-// El password NUNCA se imprime: vive en mishi-secret y en el Secret de k8s.
+// El password NUNCA se imprime: vive en el vault-mishi y en el Secret de k8s.
 
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { appsRoot, envOrThrow } from "./mkeConfig.js";
 import { EXEC_CONTEXT, POD, nsForEnv } from "./dbProvision.js";
+import { accesoDeploy, escribirValor, leerValor, nombreDatabaseUrl } from "./secretosDelVault.js";
 import { run } from "./sh.js";
 
-/** nombre del secreto en mishi-secret con el DATABASE_URL de la app×entorno. */
-export function nombreSecretoDb(app: string, env: string): string {
+/**
+ * Nombre LEGADO del secreto en el almacén GPG offline (`mke/<app>/<env>/database-url`).
+ * Ya NO se escribe: desde 2026-07-28 el DATABASE_URL vive en el vault
+ * (`<app>/DATABASE_URL__<env>`). Se conserva solo como último recurso de lectura
+ * para apps provisionadas antes del corte (esos nombres llevan `/`, que el
+ * esquema del vault no admite, así que jamás se migraron).
+ */
+export function nombreSecretoDbLegado(app: string, env: string): string {
   return `mke/${app}/${env}/database-url`;
 }
+
+/** Ruta legible del secreto de BD en el vault: `<app>/DATABASE_URL__<env>`. */
+export function nombreDbEnVault(app: string, env: string): string {
+  return `${app}/${nombreDatabaseUrl(env)}`;
+}
+
+/** CLI del almacén GPG offline (ruta explícita — NO el shim muerto del PATH). */
+const GPG_CLI_LEGADO = join(homedir(), "mishicomco", "secrets-mishi", "bin", "mishi-secret");
 
 /** true si el rol ya existe en el postgres-mishi del namespace dado. */
 export async function roleExists(appSnake: string, dbNs: string): Promise<boolean> {
@@ -96,19 +111,49 @@ export async function provisionarBd(app: string, appSnake: string, env: string):
   };
 }
 
-/** Guarda el DATABASE_URL en mishi-secret. Devuelve true si el secreto ya existía. */
+/**
+ * Guarda el DATABASE_URL en el VAULT (`<app>/DATABASE_URL__<env>`, PUT versionado
+ * con la identidad `mke-runner-deploy`). Devuelve true si ya había una versión
+ * (fue rotación, no creación).
+ *
+ * `mke` es dueño de ESTE secreto y solo de este: él provisiona la BD, él conoce
+ * el password. Murió la escritura al almacén GPG (`mke/<app>/<env>/database-url`).
+ *
+ * Si el vault no responde NO se tumba el provisioning: el mismo valor va acto
+ * seguido al Secret k8s (`aplicarSecretK8s`), así que la BD queda usable; se
+ * avisa fuerte para que alguien lo guarde. Degradar, no caer.
+ */
 export async function guardarSecretoDb(app: string, env: string, databaseUrl: string): Promise<boolean> {
-  const nombre = nombreSecretoDb(app, env);
-  const previo = await run("mishi-secret", ["get", nombre]);
-  const already = previo.code === 0 && previo.stdout.trim().length > 0;
-  const set = await run("mishi-secret", ["set", nombre], databaseUrl);
-  if (set.code !== 0) throw new Error(`mishi-secret set falló: ${set.stderr || set.stdout}`);
-  return already;
+  const acc = await accesoDeploy();
+  if (!acc) {
+    console.log(`WARN sin token de mke-runner-deploy: el DATABASE_URL de ${app}/${env} NO quedó en el vault`);
+    return false;
+  }
+  try {
+    const r = await escribirValor(acc, app, nombreDatabaseUrl(env), databaseUrl, `DATABASE_URL de ${app} en ${env} (lo escribe mke al provisionar la BD)`);
+    return r.rotado;
+  } catch (e) {
+    console.log(`WARN no pude guardar el DATABASE_URL de ${app}/${env} en el vault (${e instanceof Error ? e.message : String(e)})`);
+    return false;
+  }
 }
 
-/** Lee el DATABASE_URL guardado en mishi-secret (null si no hay). Nunca lo imprime. */
+/**
+ * Lee el DATABASE_URL guardado (null si no hay). Nunca lo imprime.
+ * Orden: VAULT primero (dueño de la verdad) → almacén GPG legado como ÚLTIMO
+ * recurso, para apps provisionadas antes del corte del 2026-07-28.
+ */
 export async function leerSecretoDb(app: string, env: string): Promise<string | null> {
-  const r = await run("mishi-secret", ["get", nombreSecretoDb(app, env)]);
+  const acc = await accesoDeploy();
+  if (acc) {
+    try {
+      const v = (await leerValor(acc, app, nombreDatabaseUrl(env))).trim();
+      if (v) return v;
+    } catch {
+      /* no está en el vault (404) o el vault no responde: se intenta el legado */
+    }
+  }
+  const r = await run(GPG_CLI_LEGADO, ["get", nombreSecretoDbLegado(app, env)]);
   if (r.code !== 0) return null;
   const v = r.stdout.trim();
   return v.length > 0 ? v : null;

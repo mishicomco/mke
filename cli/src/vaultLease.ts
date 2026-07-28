@@ -3,7 +3,7 @@
 // secretos que la rama declara en `mke.preview.yaml` (fail-closed: el token solo
 // puede leer esos; lista vacía = ninguno). Su token es lo único que `mke preview
 // up` inyecta al pod (nunca los secretos en claro — eso lo materializa el vault).
-// El token EMISOR viene de `mishi-secret get vault-mishi-emisor-token` (identidad
+// El token EMISOR viene de `vault-mishi get vault-mishi-emisor-token` (identidad
 // emisora DEDICADA, no root). PURO en el sentido de "sin globals": el `fetch` es
 // inyectable para unit-testear la composición del request sin red (el vault puede
 // NO estar arriba mientras se codea esto — la integración en vivo es posterior).

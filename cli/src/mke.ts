@@ -41,7 +41,7 @@ function parseFlags(args: string[]): { positional: string[]; flags: Record<strin
 const HELP = `mke — CLI de plataforma MKE
 
   mke deploy <app> <env>                        EL pipeline completo (lo que antes vivía duplicado en el ci-cd.yml de cada app):
-                                                  lint de migraciones → preflight convergente (ns+BD+Secret+DNS+host vivo en static-mishi)
+                                                  lint de migraciones → preflight convergente (ns+BD+MATERIALIZAR el Secret desde el vault+DNS+host vivo en static-mishi)
                                                   → build backend(+front) → k3d import → apply -k (+re-pin) → dump → Job de migrar → drift-check
                                                   → set image :sha → rollout → publicar front al PVC → catálogo → doctor (postflight)
         opciones: --tag <t>  --dir <repo>  --deploy <nombre-deployment>  --host <fqdn>  --health <path>  --sin-preflight  --dry-run
@@ -60,7 +60,7 @@ const HELP = `mke — CLI de plataforma MKE
                                                   → git init/commit/push a origin=forge (dispara CI) → \`mke app init\` (plataforma) → registro en Studio
         opciones: --subdominio <sub>  --env stage|prod (default stage)  --dir <ruta>  --sin-cascaron  --sin-plataforma  --sin-registro  --dry-run
   mke app init <app>                             nacimiento de PLATAFORMA de una app (paso 4 de \`nacer\`, suelto; idempotente):
-                                                  BD+rol → mishi-secret → namespace+Secret k8s (DATABASE_URL+SESSION_SECRET) → DNS → host static-mishi → grant vault
+                                                  BD+rol → vault-mishi → namespace+Secret k8s (DATABASE_URL+SESSION_SECRET) → DNS → host static-mishi → grant vault
         opciones: --env stage|prod (default stage)  --subdominio <name>  --dry-run
   mke static agregar <sub>                      agrega el host de <sub> al ingress de static-mishi (stage+prod), idempotente
                                                   (paso suelto de \`mke app init\`; útil si el nacimiento ya pasó sin este paso)

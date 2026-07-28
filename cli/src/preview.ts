@@ -141,9 +141,9 @@ async function resolveRepoUrl(app: string, override: string | undefined, dryRun:
   const base = forgeRepoUrl(app);
   if (dryRun) return base;
   try {
-    const api = await run("mishi-secret", ["get", "git-mishi-api-token"]);
+    const api = await run("vault-mishi", ["get", "git-mishi-api-token"]);
     if (api.code === 0 && api.stdout.trim() && (await forgeRepoExists(app, api.stdout.trim()))) {
-      const t = await run("mishi-secret", ["get", "git-mishi-token"]);
+      const t = await run("vault-mishi", ["get", "git-mishi-token"]);
       const token = t.stdout.trim();
       // Forgejo/Gitea aceptan el token como username en la URL HTTPS.
       if (t.code === 0 && token) return `https://${token}@${base.replace(/^https:\/\//, "")}`;
@@ -153,7 +153,7 @@ async function resolveRepoUrl(app: string, override: string | undefined, dryRun:
     // forge caído → seguimos al fallback GitHub
   }
   const gh = `https://github.com/mishicomco/${app}.git`;
-  const t = await run("mishi-secret", ["get", "mishi-studio-gh-read-pat"]);
+  const t = await run("vault-mishi", ["get", "mishi-studio-gh-read-pat"]);
   if (t.code === 0 && t.stdout.trim()) return `https://x-access-token:${t.stdout.trim()}@github.com/mishicomco/${app}.git`;
   return gh;
 }
@@ -163,7 +163,7 @@ async function resolveNpmToken(dryRun: boolean): Promise<string | undefined> {
   // las apps consumen @mishicomco/* del forge (git-mishi): ese token manda.
   // El PAT de GitHub Packages queda de fallback para apps aún no migradas.
   for (const nombre of ["git-mishi-npm-token", "mishi-gh-read-packages-pat"]) {
-    const t = await run("mishi-secret", ["get", nombre]);
+    const t = await run("vault-mishi", ["get", nombre]);
     const token = t.stdout.trim();
     if (t.code === 0 && token) return token;
   }
@@ -173,7 +173,7 @@ async function resolveNpmToken(dryRun: boolean): Promise<string | undefined> {
 /** token de la identidad EMISORA del vault. DEGRADA (null) si no está: en el
  * interino el vault puede no tener el escenario 4 desplegado. */
 async function resolveEmisorTokenSuave(): Promise<string | null> {
-  const t = await run("mishi-secret", ["get", VAULT.emisorTokenSecret]);
+  const t = await run("vault-mishi", ["get", VAULT.emisorTokenSecret]);
   const token = t.stdout.trim();
   return t.code === 0 && token ? token : null;
 }

@@ -18,7 +18,7 @@ export async function previewTunnelUuid(): Promise<string> {
 
 /**
  * Crea/repara el CNAME del host hacia el tunnel correcto del entorno, vía la
- * API de Cloudflare (token `cloudflare-dns-api` en mishi-secret). Acepta
+ * API de Cloudflare (token `cloudflare-dns-api` en vault-mishi). Acepta
  * también `preview` como entorno (túnel mke-preview, para previews y ramas).
  * NO se usa `cloudflared tunnel route dns`: enruta mal y no repunta records.
  */
@@ -31,7 +31,7 @@ export async function ensureDns(host: string, env: string): Promise<boolean> {
     return true;
   } catch (e) {
     console.log(bad(`Cloudflare API: ${e instanceof Error ? e.message : String(e)}`));
-    console.log(dim("  (¿existe el secreto cloudflare-dns-api? mishi-secret get cloudflare-dns-api)"));
+    console.log(dim("  (¿existe el secreto cloudflare-dns-api? vault-mishi get cloudflare-dns-api)"));
     return false;
   }
 }

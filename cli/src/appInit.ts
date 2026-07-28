@@ -1,5 +1,5 @@
 // `mke app init <app>` — nacimiento de plataforma para una app nueva, en UN
-// comando idempotente: BD+rol en postgres-mishi, password en mishi-secret,
+// comando idempotente: BD+rol en postgres-mishi, DATABASE_URL al vault-mishi,
 // namespace + Secret k8s con DATABASE_URL/SESSION_SECRET, DNS del host.
 //
 // Reusa lo horneado: nsForEnv/toSnake/EXEC_CONTEXT/POD de dbProvision.ts (el
@@ -9,7 +9,7 @@
 //
 // Cada paso es check-before-create: correr el comando dos veces no duplica
 // nada, reporta "ya existía" y sigue. El password NUNCA se imprime — vive
-// solo en mishi-secret y en el Secret de k8s.
+// solo en el vault-mishi y en el Secret de k8s.
 
 import { envOrThrow, hostFor } from "./mkeConfig.js";
 import { EXEC_CONTEXT, POD, nsForEnv, toSnake } from "./dbProvision.js";
@@ -21,7 +21,7 @@ import {
   aplicarSecretK8s,
   asegurarNamespace,
   guardarSecretoDb,
-  nombreSecretoDb,
+  nombreDbEnVault,
   provisionarBd,
   roleExists,
 } from "./provisionApp.js";
@@ -49,7 +49,7 @@ export async function appInit(app: string, env: string, opts: AppInitOpts): Prom
   const appSnake = toSnake(app);
   const subdominio = opts.subdominio ?? app;
   const host = hostFor(subdominio, env);
-  const secretNameDb = nombreSecretoDb(app, env);
+  const secretNameDb = nombreDbEnVault(app, env);
   const k8sSecretName = `${app}-secrets`;
   const dnsSuffix = spec.hostSuffix;
 
@@ -60,7 +60,7 @@ export async function appInit(app: string, env: string, opts: AppInitOpts): Prom
     console.log(`  1. BD+rol \`${appSnake}\` en postgres-mishi (${dbNs}, ${EXEC_CONTEXT}/${POD})`);
     console.log(`     - CREATE ROLE/DATABASE si no existen, password aleatorio (openssl rand -base64 32)`);
     console.log(`     - ALTER SCHEMA public OWNER TO ${appSnake}; ALTER DEFAULT PRIVILEGES → GRANT ALL a ${appSnake}`);
-    console.log(`  2. mishi-secret set ${secretNameDb}  (guarda DATABASE_URL cifrado, nunca se imprime)`);
+    console.log(`  2. vault-mishi set ${secretNameDb}  (PUT versionado al vault, nunca se imprime)`);
     console.log(`  3. namespace \`${spec.namespace}\` (${spec.context}) — crear si no existe`);
     console.log(`     Secret k8s \`${k8sSecretName}\` con DATABASE_URL + SESSION_SECRET (aleatorio)`);
     console.log(`  4. DNS: ${host} → tunnel ${spec.tunnelUuid} (mismo mecanismo que \`mke expose\`/\`mke dns\`)`);
@@ -88,7 +88,7 @@ export async function appInit(app: string, env: string, opts: AppInitOpts): Prom
     return;
   }
 
-  // 2) password en mishi-secret (nunca por stdout).
+  // 2) DATABASE_URL al vault (nunca por stdout).
   try {
     const secretAlready = await guardarSecretoDb(app, env, databaseUrl);
     steps.push({ name: `secreto ${secretNameDb}`, already: secretAlready });

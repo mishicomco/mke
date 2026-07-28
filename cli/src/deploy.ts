@@ -51,7 +51,7 @@ export interface DeployOpts {
   dryRun?: boolean;
 }
 
-/** Token npm del forge: mishi-secret primero, env como fallback. NUNCA se imprime. */
+/** Token npm del forge: vault-mishi primero, env como fallback. NUNCA se imprime. */
 async function nodeAuthToken(): Promise<string | null> {
   const delSecreto = await secretGet(NPM_TOKEN_SECRET);
   if (delSecreto) return delSecreto;
@@ -128,7 +128,7 @@ export async function deploy(app: string, env: string, opts: DeployOpts = {}): P
   // ── b) BUILD + IMPORT + APPLY (con re-pin) ───────────────────────────────
   const token = await nodeAuthToken();
   if (!token) {
-    console.log(warn(`sin token npm del forge (mishi-secret get ${NPM_TOKEN_SECRET}) — el build fallará si la app usa @mishicomco/*`));
+    console.log(warn(`sin token npm del forge (vault-mishi get ${NPM_TOKEN_SECRET}) — el build fallará si la app usa @mishicomco/*`));
   }
   const argsToken = token ? ["--build-arg", `NODE_AUTH_TOKEN=${token}`] : [];
 
