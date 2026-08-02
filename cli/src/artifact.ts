@@ -155,14 +155,124 @@ const CSP = [
   "frame-ancestors 'none'",
 ].join("; ");
 
+const GUARDIA = "artifact-guardia";
+const GUARDIA_IMG = `${GUARDIA}:dev`;
+const guardiaDir = () => join(appsRoot(), "mke", "platform", "artifacts", "guardia");
+
 /**
- * Middleware CSP + IngressRoute HostRegexp -> static-mishi, en el ns prod.
- * Traefik prioriza por longitud de regla: la futura regla /api de Fase 2 gana
- * sobre esta, y ningun host real del ecosistema termina en -artifact (sufijo
- * reservado en `mke app nacer`).
+ * La puerta de los artifacts (PRIVADOS por defecto): micro-servicio que valida
+ * `mishi_sesion` contra el JWKS del IdP (prod Y stage) y sin sesion redirige
+ * al login alojado. Se construye/deploya solo si falta; `mke artifact guardia`
+ * fuerza rebuild (p.ej. tras editar server.mjs).
+ */
+export async function guardiaDeploy(forzar = false): Promise<boolean> {
+  if (!forzar) {
+    const hay = await run("kubectl", [
+      "--context", SPEC.context, "-n", SPEC.namespace,
+      "get", "deploy", GUARDIA, "-o", "name",
+    ]);
+    if (hay.code === 0) return true;
+  }
+  console.log(info(`build ${dim(GUARDIA_IMG)} (la puerta de los artifacts)`));
+  const build = await run("docker", ["build", "-t", GUARDIA_IMG, guardiaDir()]);
+  if (build.code !== 0) {
+    console.log(bad(`docker build del guardia fallo: ${build.stderr || build.stdout}`));
+    return false;
+  }
+  const imp = await run("k3d", ["image", "import", GUARDIA_IMG, "-c", SPEC.cluster]);
+  if (imp.code !== 0) {
+    console.log(bad(`k3d image import del guardia fallo: ${imp.stderr || imp.stdout}`));
+    return false;
+  }
+  const manifiestos = [
+    {
+      apiVersion: "apps/v1",
+      kind: "Deployment",
+      metadata: {
+        name: GUARDIA,
+        namespace: SPEC.namespace,
+        labels: { "app.kubernetes.io/part-of": "mke" },
+      },
+      spec: {
+        replicas: 1,
+        selector: { matchLabels: { app: GUARDIA } },
+        template: {
+          metadata: { labels: { app: GUARDIA } },
+          spec: {
+            containers: [
+              {
+                name: GUARDIA,
+                image: GUARDIA_IMG,
+                imagePullPolicy: "IfNotPresent",
+                ports: [{ containerPort: 3000 }],
+                readinessProbe: { httpGet: { path: "/readyz", port: 3000 } },
+                resources: {
+                  requests: { cpu: "10m", memory: "32Mi" },
+                  limits: { cpu: "200m", memory: "128Mi" },
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+    {
+      apiVersion: "v1",
+      kind: "Service",
+      metadata: {
+        name: GUARDIA,
+        namespace: SPEC.namespace,
+        labels: { "app.kubernetes.io/part-of": "mke" },
+      },
+      spec: { selector: { app: GUARDIA }, ports: [{ port: 80, targetPort: 3000 }] },
+    },
+  ];
+  const tmp = join(tmpdir(), `mke-guardia-${Date.now().toString(36)}.json`);
+  try {
+    writeFileSync(tmp, manifiestos.map((m) => JSON.stringify(m)).join("\n"));
+    const r = await run("kubectl", ["--context", SPEC.context, "apply", "-f", tmp]);
+    if (r.code !== 0) {
+      console.log(bad(`apply del guardia fallo: ${r.stderr || r.stdout}`));
+      return false;
+    }
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+  if (forzar) {
+    await run("kubectl", ["--context", SPEC.context, "-n", SPEC.namespace, "rollout", "restart", `deploy/${GUARDIA}`]);
+  }
+  const listo = await run("kubectl", [
+    "--context", SPEC.context, "-n", SPEC.namespace,
+    "rollout", "status", `deploy/${GUARDIA}`, "--timeout=90s",
+  ]);
+  if (listo.code !== 0) {
+    console.log(bad(`el guardia no quedo Ready: ${listo.stderr || listo.stdout}`));
+    return false;
+  }
+  console.log(ok("artifact-guardia desplegado (la puerta de los artifacts)"));
+  return true;
+}
+
+/**
+ * Middleware CSP + ForwardAuth (guardia) + IngressRoute HostRegexp, en el ns
+ * prod. Dos reglas: /_mishi/* va al guardia SIN puerta (sesion/salir para la
+ * barra); todo lo demas pasa por la puerta y llega a static-mishi. Traefik
+ * prioriza por longitud de regla: /_mishi gana; la futura /api de Fase 2
+ * tambien ganara. Ningun host real termina en -artifact (sufijo reservado).
  */
 async function asegurarRouting(): Promise<boolean> {
+  const svcGuardia = `http://${GUARDIA}.${SPEC.namespace}.svc.cluster.local/guardia`;
   const manifiestos = [
+    {
+      apiVersion: "traefik.io/v1alpha1",
+      kind: "Middleware",
+      metadata: {
+        name: "artifact-auth",
+        namespace: SPEC.namespace,
+        labels: { "app.kubernetes.io/part-of": "mke" },
+      },
+      spec: { forwardAuth: { address: svcGuardia } },
+    },
     {
       apiVersion: "traefik.io/v1alpha1",
       kind: "Middleware",
@@ -184,9 +294,20 @@ async function asegurarRouting(): Promise<boolean> {
       spec: {
         routes: [
           {
+            // la barra pregunta quien esta adentro / cierra sesion: va al
+            // guardia DIRECTO (sin puerta — responder "no autenticado" es
+            // precisamente su trabajo). Regla mas larga: gana.
+            match: "HostRegexp(`^[a-z0-9-]+-artifact\\.mishi\\.com\\.co$`) && PathPrefix(`/_mishi`)",
+            kind: "Rule",
+            services: [{ name: GUARDIA, port: 80, namespace: SPEC.namespace }],
+          },
+          {
             match: "HostRegexp(`^[a-z0-9-]+-artifact\\.mishi\\.com\\.co$`)",
             kind: "Rule",
-            middlewares: [{ name: "artifact-csp", namespace: SPEC.namespace }],
+            middlewares: [
+              { name: "artifact-auth", namespace: SPEC.namespace },
+              { name: "artifact-csp", namespace: SPEC.namespace },
+            ],
             services: [{ name: "static-mishi", port: 80, namespace: SPEC.namespace }],
           },
         ],
@@ -283,7 +404,8 @@ export async function artifactPublicar(
     return false;
   }
 
-  // 3) routing + CSP (idempotente)
+  // 3) puerta (privados por defecto) + routing + CSP (idempotentes)
+  if (!(await guardiaDeploy())) return false;
   if (!(await asegurarRouting())) return false;
 
   // 4) contenido al PVC + runtime compartido

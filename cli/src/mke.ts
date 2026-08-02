@@ -14,7 +14,7 @@ import { appInit } from "./appInit.js";
 import { appNacer } from "./appNacer.js";
 import { ensureStaticHostPaso } from "./staticHost.js";
 import { ls } from "./ls.js";
-import { artifactPublicar, artifactLs, artifactVer, artifactRollback, artifactBorrar } from "./artifact.js";
+import { artifactPublicar, artifactLs, artifactVer, artifactRollback, artifactBorrar, guardiaDeploy } from "./artifact.js";
 import { previewUp, previewPull, previewEstado, previewLs, previewMerge, previewDown, previewLimpiar } from "./preview.js";
 import { hostFor } from "./mkeConfig.js";
 
@@ -219,8 +219,10 @@ async function main() {
       } else if (action === "borrar") {
         if (!nombre) return fail("uso: mke artifact borrar <nombre>");
         await artifactBorrar(nombre);
+      } else if (action === "guardia") {
+        await guardiaDeploy(true); // rebuild+redeploy de la puerta
       } else {
-        return fail("uso: mke artifact publicar|ls|ver|rollback|borrar …  (diseño: mke/AI_ARTIFACTS.md)");
+        return fail("uso: mke artifact publicar|ls|ver|rollback|borrar|guardia …  (diseño: mke/AI_ARTIFACTS.md)");
       }
       break;
     }

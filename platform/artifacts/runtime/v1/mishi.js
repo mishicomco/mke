@@ -1,6 +1,8 @@
-// Runtime v1 de artifacts — barra superior estandar + window.mishi.
-// CONTRATO ESTABLE (ver mishi.css). Fase 1: sesion/datos avisan que llegan en
-// Fase 2 (artifact-mishi); el prototipo usa localStorage.
+// Runtime v1 de artifacts — barra superior estandar + sesion del IdP +
+// window.mishi. CONTRATO ESTABLE (ver mishi.css). Los artifacts son PRIVADOS
+// por defecto: artifact-guardia ya dejo pasar a quien ve esta pagina; aca solo
+// se pregunta QUIEN es (/_mishi/sesion) y se ofrece salir (/_mishi/salir).
+// Fase 2: mishi.datos (artifact-mishi); el prototipo usa localStorage.
 (() => {
   const artifact = location.hostname.split(".")[0].replace(/-artifact$/, "");
 
@@ -12,8 +14,7 @@
 
   window.mishi = {
     artifact,
-    // Fase 2: sesion del IdP (cookie mishi_sesion validada por artifact-mishi).
-    sesion: null,
+    sesion: null, // se puebla al resolver /_mishi/sesion; escucha "mishi:sesion"
     datos: { guardar: sinDatos, leer: sinDatos, lista: sinDatos, borrar: sinDatos },
   };
 
@@ -31,5 +32,39 @@
     sello.title = "Prototipo sin repo propio ni BD. Graduar = mke artifact graduar.";
     barra.append(nombre, sello);
     document.body.prepend(barra);
+
+    fetch("/_mishi/sesion")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((s) => {
+        if (!s || !s.autenticado) return;
+        window.mishi.sesion = s.usuario;
+        const chip = document.createElement("span");
+        chip.className = "quien-chip";
+        const foto = document.createElement("span");
+        foto.className = "quien-foto quien-foto-vacia";
+        foto.textContent = (s.usuario.name || s.usuario.email || "?").slice(0, 1);
+        const datos = document.createElement("span");
+        datos.className = "quien-datos";
+        const quien = document.createElement("span");
+        quien.className = "quien-nombre";
+        quien.textContent = s.usuario.name || s.usuario.email;
+        datos.append(quien);
+        if (s.usuario.name) {
+          const email = document.createElement("span");
+          email.className = "quien-email";
+          email.textContent = s.usuario.email;
+          datos.append(email);
+        }
+        const salir = document.createElement("button");
+        salir.className = "salir-btn";
+        salir.textContent = "salir";
+        salir.addEventListener("click", () =>
+          fetch("/_mishi/salir", { method: "POST" }).then(() => location.reload()),
+        );
+        chip.append(foto, datos, salir);
+        barra.append(chip);
+        window.dispatchEvent(new CustomEvent("mishi:sesion", { detail: s.usuario }));
+      })
+      .catch(() => {});
   });
 })();

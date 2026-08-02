@@ -91,12 +91,36 @@ Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline';
   form-action 'self'; frame-ancestors 'none'
 ```
 
-Un artifact solo habla con su propio origen (su HTML, `/runtime`, su futuro
-`/api`). `unsafe-inline` es inevitable (el artifact ES un HTML inline); lo que
-importa es `connect-src/default-src 'self'`: sin exfiltracion ni scripts de
-terceros. **Necesitar un CDN o una API externa es señal de graduar.**
-Anotado y NO construido: claim `aud`/sesion degradada para origenes artifact —
-solo si algun dia publica alguien que no sea Santi.
+Un artifact solo habla con su propio origen (su HTML, `/runtime`, `/_mishi`,
+su futuro `/api`). `unsafe-inline` es inevitable (el artifact ES un HTML
+inline); lo que importa es `connect-src/default-src 'self'`: sin exfiltracion
+ni scripts de terceros. **Necesitar un CDN o una API externa es señal de
+graduar.** Anotado y NO construido: claim `aud`/sesion degradada para origenes
+artifact — solo si algun dia publica alguien que no sea Santi.
+
+## Privados por defecto (artifact-guardia)
+
+Un artifact es un prototipo del ecosistema, no una pagina publica: **TODO
+`*-artifact.*` exige sesion del IdP** antes de servir un solo byte (el dato
+embebido en el HTML tambien es dato). La puerta es `artifact-guardia`
+(`platform/artifacts/guardia/`, ~90 lineas, unica dependencia jose), pieza de
+plataforma de mke — identity-mishi NO se toco:
+
+- Traefik **ForwardAuth** en la ruta de artifacts → `GET /guardia`: valida la
+  cookie `mishi_sesion` (ES256, issuer `identity-mishi`) contra el JWKS de
+  **ambos** emisores vivos (prod y stage — la cookie es de dominio compartido y
+  la sesion de Santi puede venir de cualquiera); sin sesion → 302 al login
+  ALOJADO del IdP (`/entrar?volver=https://<artifact>/...`; siempre https: el
+  tunel habla http pero `volverPermitido` exige https).
+- Ruta `/_mishi/*` SIN puerta (regla mas larga, gana): `GET /_mishi/sesion`
+  (quien esta adentro, para la barra) y `POST /_mishi/salir` (borra la cookie
+  de dominio — el host del artifact esta bajo `.mishi.com.co` y puede).
+- `mishi.js` v1 pinta el chip de sesion (nombre/email + salir) en la barra y
+  publica `mishi.sesion` + evento `mishi:sesion`.
+- `guardiaDeploy()` es parte de `publicar` (se construye solo si falta);
+  `mke artifact guardia` fuerza rebuild tras editar `server.mjs`.
+- Un artifact PUBLICO no existe hoy: si un prototipo necesita publico, es señal
+  de graduar (o de un flag `--publico` futuro con caso real).
 
 ## Fase 1 — artifacts estaticos (construida; ver AI_REPO_STATE)
 
