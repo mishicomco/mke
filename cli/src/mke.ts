@@ -14,6 +14,7 @@ import { appInit } from "./appInit.js";
 import { appNacer } from "./appNacer.js";
 import { ensureStaticHostPaso } from "./staticHost.js";
 import { ls } from "./ls.js";
+import { artifactPublicar, artifactLs, artifactVer, artifactRollback, artifactBorrar } from "./artifact.js";
 import { previewUp, previewPull, previewEstado, previewLs, previewMerge, previewDown, previewLimpiar } from "./preview.js";
 import { hostFor } from "./mkeConfig.js";
 
@@ -49,6 +50,9 @@ const HELP = `mke — CLI de plataforma MKE
   mke ci logs <app> [runId]                     baja el ZIP de logs del run (último FALLIDO por default) y muestra las líneas de error
   mke ci deploy <app> <env>                     dispara el workflow ci-cd.yml con el input "environment" VALIDADO (stage|prod)
         opciones: --ref <rama|tag>   stage: default main · prod: OBLIGATORIO y tiene que ser un tag v* (ej: --ref v0.1.2)
+  mke artifact publicar <nombre> <html|carpeta>  ARTIFACT: frontend sin build ni ambientes en <nombre>-artifact.mishi.com.co —
+                                                  commit a artifacts-mishi (historia+backup) → CNAME → routing+CSP → cp al PVC (+runtime compartido) → doctor
+  mke artifact ls | ver <n> | rollback <n> | borrar <n>   listar · cadena pública · versión anterior · PVC+CNAME (la historia queda)  ·  diseño: mke/AI_ARTIFACTS.md
   mke publish <front> <env>                      front estático: build imagen contenido → Job al PVC de static-mishi → doctor
         opciones: --tag <t>  --dir <repo>  --host <fqdn>   (env = stage | prod)
   mke rollout <app> <env>                        rollout restart + status (sin rebuild; tag mutable / reciclar pods)
@@ -197,6 +201,27 @@ async function main() {
         subdominio: typeof flags.subdominio === "string" ? flags.subdominio : undefined,
         dryRun: flags["dry-run"] === true,
       });
+      break;
+    }
+    case "artifact": {
+      const [action, nombre, origen] = positional;
+      if (action === "publicar") {
+        if (!nombre || !origen) return fail("uso: mke artifact publicar <nombre> <archivo.html|carpeta>");
+        await artifactPublicar(nombre, origen);
+      } else if (action === "ls") {
+        await artifactLs();
+      } else if (action === "ver") {
+        if (!nombre) return fail("uso: mke artifact ver <nombre>");
+        await artifactVer(nombre);
+      } else if (action === "rollback") {
+        if (!nombre) return fail("uso: mke artifact rollback <nombre>");
+        await artifactRollback(nombre);
+      } else if (action === "borrar") {
+        if (!nombre) return fail("uso: mke artifact borrar <nombre>");
+        await artifactBorrar(nombre);
+      } else {
+        return fail("uso: mke artifact publicar|ls|ver|rollback|borrar …  (diseño: mke/AI_ARTIFACTS.md)");
+      }
       break;
     }
     case "static": {

@@ -1,0 +1,39 @@
+# Puerta S3 LAN-only a minio (storage-stage) — para que los pods PREVIEW puedan
+# subir media cruzando al cluster mke-prod por la puerta LAN (host:80 → Traefik),
+# sin exponer la API S3 a internet: el wildcard del túnel CF enruta cualquier
+# host a Traefik, así que el ipAllowList de rangos privados es el candado
+# (desde internet → 403; desde la LAN/gateway del host → pasa).
+# Aplicar: kubectl --context k3d-mke-prod apply -f ~/mishicomco/mke/s3-lan-stage.yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: s3-solo-lan
+  namespace: storage-stage
+spec:
+  ipAllowList:
+    sourceRange:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: s3-lan
+  namespace: storage-stage
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.middlewares: storage-stage-s3-solo-lan@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: s3-stage.mishi.com.co
+      http:
+        paths:
+          - backend:
+              service:
+                name: minio
+                port:
+                  number: 9000
+            path: /
+            pathType: Prefix

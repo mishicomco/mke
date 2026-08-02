@@ -76,6 +76,12 @@ const ultimas = (s: string, n = 20) => s.split("\n").slice(-n).join("\n").trim()
 export async function appNacer(app: string, opts: AppNacerOpts): Promise<void> {
   const env = opts.env ?? "stage";
   envOrThrow(env); // valida local|stage|prod
+  if (app.endsWith("-artifact") || (opts.subdominio ?? app).endsWith("-artifact")) {
+    // sufijo RESERVADO: los hosts <nombre>-artifact.* los rutea la IngressRoute
+    // regex de artifacts (mke artifact / AI_ARTIFACTS.md) — una app real con ese
+    // nombre colisionaria con esa regla y con el guardarraíl de borrado DNS.
+    throw new Error("el sufijo -artifact esta reservado para `mke artifact` (AI_ARTIFACTS.md)");
+  }
   const subdominio = opts.subdominio ?? app;
   const dir = opts.dir ?? join(appsRoot(), app);
   const remoto = `${FORGE.org}/${app}`;

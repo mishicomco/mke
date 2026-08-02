@@ -1,0 +1,402 @@
+// mke artifact — el tipo de app "artifact": un frontend estandar de Mishi sin
+// build y sin ambientes (diseño completo: ../../AI_ARTIFACTS.md).
+//
+// Idea rectora: un artifact es un REPO DE UN SOLO ARCHIVO con deploy de dos
+// segundos. El fuente y su historia viven en el repo `artifacts-mishi` del
+// forge (una carpeta por artifact); el HTML servido vive en el PVC de
+// static-mishi (`/srv/www/<nombre>-artifact/`), cuyo nginx ya mapea el host por
+// regex sin tocarse. El runtime compartido (`mishi.css`/`mishi.js`) se sirve
+// desde /srv/www/artifact-runtime via symlink por carpeta — se parcha en UN
+// lugar para todos los artifacts.
+//
+// Seguridad de origen (dia 1): Middleware CSP en Traefik para *-artifact.* —
+// un artifact solo habla con su propio origen (la cookie mishi_sesion es de
+// dominio .mishi.com.co; sin CSP, un XSS en un artifact seria una cabeza de
+// playa contra todo el ecosistema).
+
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join, basename } from "node:path";
+import { tmpdir } from "node:os";
+import { appsRoot, DOMAIN, ENVS } from "./mkeConfig.js";
+import { run, ok, bad, warn, info, dim } from "./sh.js";
+import { doctor } from "./doctor.js";
+import { tunnelTarget, upsertCname, deleteRecordsByName } from "./cf.js";
+import { FORGE, forgeCreateRepo, forgeRepoUrl, secretGet } from "./forgeRepo.js";
+
+const execFileAsync = promisify(execFile);
+
+const SUFIJO = "-artifact";
+const REPO = "artifacts-mishi";
+const RUNTIME_PVC = "/srv/www/artifact-runtime";
+const SPEC = ENVS.prod; // un artifact tiene UN solo lugar: ni stage ni prod
+
+const hostDe = (nombre: string) => `${nombre}${SUFIJO}.${DOMAIN}`;
+const carpetaPvc = (nombre: string) => `/srv/www/${nombre}${SUFIJO}`;
+const cloneDir = () => join(appsRoot(), REPO);
+const runtimeSrc = () => join(appsRoot(), "mke", "platform", "artifacts", "runtime");
+
+function validarNombre(nombre: string): string | null {
+  if (!/^[a-z0-9][a-z0-9-]{0,40}$/.test(nombre)) {
+    return "nombre invalido: [a-z0-9-], empieza alfanumerico, max 41 chars";
+  }
+  if (nombre.endsWith("-artifact")) return "no repitas el sufijo: el host ya lleva -artifact";
+  if (nombre.endsWith("-stage") || nombre.endsWith("-local")) {
+    return "sufijo reservado por la convencion de subdominios (-stage/-local)";
+  }
+  return null;
+}
+
+/** pod vivo de static-mishi en prod (monta el PVC static-www RW). */
+async function podStatic(): Promise<string | null> {
+  const r = await run("kubectl", [
+    "--context", SPEC.context, "-n", SPEC.namespace,
+    "get", "pod", "-l", "app=static-mishi",
+    "-o", "jsonpath={.items[0].metadata.name}",
+  ]);
+  return r.code === 0 && r.stdout ? r.stdout : null;
+}
+
+async function execEnPod(pod: string, sh: string): Promise<{ code: number; out: string }> {
+  const r = await run("kubectl", [
+    "--context", SPEC.context, "-n", SPEC.namespace,
+    "exec", pod, "--", "sh", "-c", sh,
+  ]);
+  return { code: r.code, out: r.stdout || r.stderr };
+}
+
+// ── git: historia + backup (el fuente NUNCA vive solo en el PVC) ──────────
+
+/** git en el clone local con credenciales del forge por env (nunca argv/logs). */
+async function gitForge(args: string[], token: string | null): Promise<{ code: number; out: string }> {
+  const base = ["-C", cloneDir()] as string[];
+  if (token) {
+    base.push("-c", "credential.helper=!f() { echo username=token; echo password=$MKE_FORGE_TOKEN; }; f");
+  }
+  try {
+    const { stdout, stderr } = await execFileAsync("git", [...base, ...args], {
+      env: { ...process.env, ...(token ? { MKE_FORGE_TOKEN: token } : {}) },
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    return { code: 0, out: (stdout + stderr).trim() };
+  } catch (err) {
+    const e = err as { code?: number; stdout?: string; stderr?: string; message?: string };
+    return {
+      code: typeof e.code === "number" ? e.code : 1,
+      out: (e.stderr ?? e.stdout ?? e.message ?? "").trim(),
+    };
+  }
+}
+
+/**
+ * Asegura el repo local `artifacts-mishi` (git init si falta) y, best-effort,
+ * su remoto primario en el forge. La historia LOCAL esta garantizada siempre;
+ * el push es resiliente (forge caido = WARN, no bloquea publicar).
+ */
+async function asegurarRepo(token: string | null): Promise<void> {
+  const dir = cloneDir();
+  if (!existsSync(join(dir, ".git"))) {
+    mkdirSync(dir, { recursive: true });
+    await gitForge(["init", "-b", "main"], null);
+    writeFileSync(
+      join(dir, "README.md"),
+      `# ${REPO}\n\nFuente e historia de los artifacts (\`mke artifact\`). Una carpeta por artifact.\nEl diseño vive en \`mke/AI_ARTIFACTS.md\`; esto NO es una app: no tiene CI ni deploy —\npublicar es \`mke artifact publicar\`, que commitea aca y copia al PVC de static-mishi.\n`,
+    );
+    await gitForge(["add", "-A"], null);
+    await gitForge(["commit", "-m", "nace artifacts-mishi"], null);
+  }
+  if (token) {
+    try {
+      await forgeCreateRepo(REPO, token); // idempotente
+    } catch (e) {
+      console.log(warn(`no pude asegurar el repo en el forge: ${(e as Error).message}`));
+    }
+    const remotos = await gitForge(["remote"], null);
+    if (!remotos.out.split("\n").includes("origin")) {
+      await gitForge(["remote", "add", "origin", forgeRepoUrl(REPO)], null);
+    }
+  }
+}
+
+/** commit de la carpeta del artifact + push best-effort. */
+async function archivar(nombre: string, mensaje: string): Promise<void> {
+  const token = await secretGet(FORGE.apiTokenSecret);
+  await asegurarRepo(token);
+  await gitForge(["add", "-A", nombre], null);
+  const commit = await gitForge(["commit", "-m", mensaje], null);
+  if (commit.code === 0) {
+    console.log(ok(`historia: ${dim(mensaje)} (${REPO})`));
+  } else if (/nothing to commit|nada para hacer commit/i.test(commit.out)) {
+    console.log(info("historia: sin cambios respecto a la ultima publicacion"));
+  } else {
+    console.log(warn(`commit fallo: ${commit.out}`));
+  }
+  if (token) {
+    const push = await gitForge(["push", "-u", "origin", "main"], token);
+    if (push.code === 0) console.log(ok("backup: push al forge"));
+    else console.log(warn(`push al forge fallo (la historia local queda): ${push.out.slice(0, 200)}`));
+  } else {
+    console.log(warn("sin token del forge (git-mishi-api-token): historia solo local"));
+  }
+}
+
+// ── routing de plataforma (idempotente, se aplica en cada publicar) ───────
+
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join("; ");
+
+/**
+ * Middleware CSP + IngressRoute HostRegexp -> static-mishi, en el ns prod.
+ * Traefik prioriza por longitud de regla: la futura regla /api de Fase 2 gana
+ * sobre esta, y ningun host real del ecosistema termina en -artifact (sufijo
+ * reservado en `mke app nacer`).
+ */
+async function asegurarRouting(): Promise<boolean> {
+  const manifiestos = [
+    {
+      apiVersion: "traefik.io/v1alpha1",
+      kind: "Middleware",
+      metadata: {
+        name: "artifact-csp",
+        namespace: SPEC.namespace,
+        labels: { "app.kubernetes.io/part-of": "mke" },
+      },
+      spec: { headers: { contentSecurityPolicy: CSP } },
+    },
+    {
+      apiVersion: "traefik.io/v1alpha1",
+      kind: "IngressRoute",
+      metadata: {
+        name: "artifacts",
+        namespace: SPEC.namespace,
+        labels: { "app.kubernetes.io/part-of": "mke" },
+      },
+      spec: {
+        routes: [
+          {
+            match: "HostRegexp(`^[a-z0-9-]+-artifact\\.mishi\\.com\\.co$`)",
+            kind: "Rule",
+            middlewares: [{ name: "artifact-csp", namespace: SPEC.namespace }],
+            services: [{ name: "static-mishi", port: 80, namespace: SPEC.namespace }],
+          },
+        ],
+      },
+    },
+  ];
+  const tmp = join(tmpdir(), `mke-artifact-routing-${Date.now().toString(36)}.json`);
+  try {
+    writeFileSync(tmp, manifiestos.map((m) => JSON.stringify(m)).join("\n"));
+    const r = await run("kubectl", ["--context", SPEC.context, "apply", "-f", tmp]);
+    if (r.code !== 0) {
+      console.log(bad(`routing (IngressRoute+CSP) fallo: ${r.stderr || r.stdout}`));
+      return false;
+    }
+    console.log(ok(`routing artifacts + CSP ${dim("(idempotente)")}`));
+    return true;
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+}
+
+/** sincroniza el runtime compartido (fuente: mke/platform/artifacts/runtime). */
+async function sincronizarRuntime(pod: string): Promise<boolean> {
+  const src = runtimeSrc();
+  if (!existsSync(src)) {
+    console.log(bad(`no encuentro el runtime en ${src}`));
+    return false;
+  }
+  await execEnPod(pod, `rm -rf ${RUNTIME_PVC} && mkdir -p ${RUNTIME_PVC}`);
+  const cp = await run("kubectl", [
+    "--context", SPEC.context, "-n", SPEC.namespace,
+    "cp", `${src}/.`, `${pod}:${RUNTIME_PVC}`,
+  ]);
+  if (cp.code !== 0) {
+    console.log(bad(`cp del runtime fallo: ${cp.stderr || cp.stdout}`));
+    return false;
+  }
+  console.log(ok(`runtime compartido sincronizado ${dim(RUNTIME_PVC)}`));
+  return true;
+}
+
+// ── verbos ────────────────────────────────────────────────────────────────
+
+export interface ArtifactPublicarOpts {
+  /** no commitear (lo usa rollback, que ya hizo su commit) */
+  sinArchivar?: boolean;
+}
+
+/**
+ * Publica un artifact: archiva el fuente (git), asegura CNAME + routing + CSP,
+ * copia al PVC con symlink al runtime compartido, y verifica la cadena publica.
+ * Idempotente: republicar = sobrescribir (con la version anterior en git).
+ */
+export async function artifactPublicar(
+  nombre: string,
+  origen: string,
+  opts: ArtifactPublicarOpts = {},
+): Promise<boolean> {
+  const invalido = validarNombre(nombre);
+  if (invalido) {
+    console.log(bad(invalido));
+    return false;
+  }
+  if (!existsSync(origen)) {
+    console.log(bad(`no existe: ${origen}`));
+    return false;
+  }
+  const esDir = !origen.endsWith(".html");
+  if (esDir && !existsSync(join(origen, "index.html"))) {
+    console.log(bad(`la carpeta no tiene index.html: ${origen}`));
+    return false;
+  }
+  const host = hostDe(nombre);
+  console.log(info(`publicando ${dim(nombre)} → https://${host}`));
+
+  // 1) fuente e historia (git) — el PVC nunca es el unico ejemplar
+  if (!opts.sinArchivar) {
+    const destRepo = join(cloneDir(), nombre);
+    const token = await secretGet(FORGE.apiTokenSecret);
+    await asegurarRepo(token);
+    rmSync(destRepo, { recursive: true, force: true });
+    mkdirSync(destRepo, { recursive: true });
+    if (esDir) cpSync(origen, destRepo, { recursive: true });
+    else cpSync(origen, join(destRepo, "index.html"));
+    await archivar(nombre, `publicar ${nombre} (${basename(origen)})`);
+  }
+
+  // 2) DNS (un CNAME por artifact; comodin descartado)
+  try {
+    const dns = await upsertCname(host, tunnelTarget(SPEC.tunnelUuid));
+    console.log(ok(`DNS ${dns}: ${host}`));
+  } catch (e) {
+    console.log(bad(`DNS fallo: ${(e as Error).message}`));
+    return false;
+  }
+
+  // 3) routing + CSP (idempotente)
+  if (!(await asegurarRouting())) return false;
+
+  // 4) contenido al PVC + runtime compartido
+  const pod = await podStatic();
+  if (!pod) {
+    console.log(bad("no encuentro el pod de static-mishi en prod"));
+    return false;
+  }
+  if (!(await sincronizarRuntime(pod))) return false;
+
+  const carpeta = carpetaPvc(nombre);
+  const fuente = opts.sinArchivar ? join(cloneDir(), nombre) : origen;
+  const staging = esDir || opts.sinArchivar ? fuente : mkdtempSync(join(tmpdir(), "mke-artifact-"));
+  if (!esDir && !opts.sinArchivar) cpSync(origen, join(staging, "index.html"));
+  try {
+    await execEnPod(pod, `rm -rf ${carpeta} && mkdir -p ${carpeta}`);
+    const cp = await run("kubectl", [
+      "--context", SPEC.context, "-n", SPEC.namespace,
+      "cp", `${staging}/.`, `${pod}:${carpeta}`,
+    ]);
+    if (cp.code !== 0) {
+      console.log(bad(`cp al PVC fallo: ${cp.stderr || cp.stdout}`));
+      return false;
+    }
+    // runtime compartido visible bajo el origen del artifact (/runtime/v1/…)
+    await execEnPod(pod, `ln -sfn ${RUNTIME_PVC} ${carpeta}/runtime`);
+    console.log(ok(`contenido en el PVC ${dim(carpeta)}`));
+  } finally {
+    if (!esDir && !opts.sinArchivar) rmSync(staging, { recursive: true, force: true });
+  }
+
+  // 5) cadena publica — sin esto el publicar NO es verde
+  await doctor(host);
+  return true;
+}
+
+/** lista los artifacts vivos: archivos, tamano, ultima publicacion. */
+export async function artifactLs(): Promise<void> {
+  const pod = await podStatic();
+  if (!pod) {
+    console.log(bad("no encuentro el pod de static-mishi en prod"));
+    return;
+  }
+  const r = await execEnPod(
+    pod,
+    `for d in /srv/www/*${SUFIJO}; do [ -d "$d" ] || continue; ` +
+      `n=$(find "$d" -type f | wc -l); s=$(du -sk "$d" | cut -f1); ` +
+      `t=$(date -r "$d" '+%Y-%m-%d %H:%M'); echo "$(basename "$d")|$n|$s|$t"; done`,
+  );
+  if (!r.out.trim()) {
+    console.log(info("no hay artifacts publicados"));
+    return;
+  }
+  console.log(`${"ARTIFACT".padEnd(28)} ${"ARCHIVOS".padStart(8)} ${"KB".padStart(8)}  PUBLICADO`);
+  for (const linea of r.out.trim().split("\n")) {
+    const [carpeta, n, kb, fecha] = linea.split("|");
+    const nombre = carpeta.replace(new RegExp(`${SUFIJO}$`), "");
+    console.log(`${nombre.padEnd(28)} ${n.padStart(8)} ${kb.padStart(8)}  ${fecha}  ${dim(`https://${hostDe(nombre)}`)}`);
+  }
+}
+
+/** URL + estado de la cadena publica. */
+export async function artifactVer(nombre: string): Promise<void> {
+  const host = hostDe(nombre);
+  console.log(info(`https://${host}`));
+  await doctor(host);
+}
+
+/**
+ * Vuelve a la version ANTERIOR del artifact (git) y republica. La historia
+ * completa vive en artifacts-mishi; esto cubre el "publique roto" inmediato.
+ */
+export async function artifactRollback(nombre: string): Promise<boolean> {
+  const dir = join(cloneDir(), nombre);
+  if (!existsSync(dir)) {
+    console.log(bad(`no hay historia de '${nombre}' en ${cloneDir()}`));
+    return false;
+  }
+  const log = await gitForge(["log", "--format=%H", "-n", "2", "--", nombre], null);
+  const hashes = log.out.split("\n").filter(Boolean);
+  if (hashes.length < 2) {
+    console.log(bad(`'${nombre}' tiene una sola version publicada: no hay a donde volver`));
+    return false;
+  }
+  const restore = await gitForge(["checkout", hashes[1], "--", nombre], null);
+  if (restore.code !== 0) {
+    console.log(bad(`git checkout fallo: ${restore.out}`));
+    return false;
+  }
+  await archivar(nombre, `rollback ${nombre} → ${hashes[1].slice(0, 8)}`);
+  return artifactPublicar(nombre, dir, { sinArchivar: true });
+}
+
+/** borra del PVC + CNAME. La historia queda en git (recuperable con publicar). */
+export async function artifactBorrar(nombre: string): Promise<void> {
+  const host = hostDe(nombre);
+  const pod = await podStatic();
+  if (pod) {
+    await execEnPod(pod, `rm -rf ${carpetaPvc(nombre)}`);
+    console.log(ok(`borrado del PVC ${dim(carpetaPvc(nombre))}`));
+  } else {
+    console.log(warn("no encuentro el pod de static-mishi; PVC sin tocar"));
+  }
+  try {
+    const n = await deleteRecordsByName(host);
+    console.log(ok(`DNS: ${n} record(s) borrados (${host})`));
+  } catch (e) {
+    console.log(warn(`DNS: ${(e as Error).message}`));
+  }
+  const dir = join(cloneDir(), nombre);
+  if (existsSync(dir)) {
+    rmSync(dir, { recursive: true, force: true });
+    await archivar(nombre, `borrar ${nombre} (la historia queda en git)`);
+  }
+  console.log(info("la historia queda en artifacts-mishi: `mke artifact publicar` lo revive"));
+}

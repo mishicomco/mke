@@ -109,7 +109,13 @@ export async function upsertCname(name: string, target: string): Promise<"ok" | 
  * host que `previewPodHost(previewApp, previewRama)` calcularía (que SIEMPRE
  * lleva la rama en el nombre — no puede colisionar con un host bare de prod).
  */
-const SUFIJOS_EFIMEROS = [`${PREVIEW.hostSuffix}.mishi.com.co`, "-feat.mishi.com.co"];
+const SUFIJOS_EFIMEROS = [
+  `${PREVIEW.hostSuffix}.mishi.com.co`,
+  "-feat.mishi.com.co",
+  // artifacts (`mke artifact borrar`): sufijo RESERVADO (mke app nacer lo
+  // rechaza como nombre de app), asi que nunca es un host de prod real.
+  "-artifact.mishi.com.co",
+];
 
 export async function deleteRecordsByName(
   name: string,
