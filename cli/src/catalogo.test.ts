@@ -67,3 +67,13 @@ test("parsearIngresses tolera JSON basura y aplana hosts+paths", () => {
     { name: "a", labels: { "app.kubernetes.io/part-of": "mke" }, hosts: ["a.mishi.com.co"], paths: ["/salud"] },
   ]);
 });
+
+test("entradaDeEnv separa por sufijo del host (contrato status-mishi)", async () => {
+  const { entradaDeEnv } = await import("./catalogo.js");
+  const stage = { app: "bank", host: "bank-stage.mishi.com.co", api: true, front: true, ruta: null };
+  const prod = { app: "bank", host: "bank.mishi.com.co", api: true, front: true, ruta: null };
+  assert.equal(entradaDeEnv(stage, "stage"), true);
+  assert.equal(entradaDeEnv(stage, "prod"), false);
+  assert.equal(entradaDeEnv(prod, "prod"), true);
+  assert.equal(entradaDeEnv(prod, "stage"), false);
+});

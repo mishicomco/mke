@@ -120,24 +120,73 @@ function ordenar(entradas: EntradaCatalogo[]): EntradaCatalogo[] {
 /** Lee los Ingress vivos de un entorno y devuelve su catálogo (null si no se pudo leer). */
 export async function catalogoDelEntorno(env: string): Promise<EntradaCatalogo[] | null> {
   const spec = envOrThrow(env);
+  // Un ns inexistente NO es "cero ingresses": kubectl responde lista vacía con
+  // exit 0 y el catálogo saldría MUDO sin ese ambiente (desde un nodo de la
+  // flota que no ve el otro cluster, p.ej. el laptop no ve stage). Ns ausente
+  // = entorno ilegible, para que el rescate de abajo conserve sus entradas.
+  const ns = await run("kubectl", ["--context", spec.context, "get", "namespace", spec.namespace, "-o", "name"]);
+  if (ns.code !== 0) return null;
   const r = await run("kubectl", ["--context", spec.context, "-n", spec.namespace, "get", "ingress", "-o", "json"]);
   if (r.code !== 0) return null;
   return derivarCatalogo(parsearIngresses(r.stdout), env);
 }
 
+/** ¿La entrada pertenece a este entorno? Mismo contrato que status-mishi: por sufijo del host. */
+export function entradaDeEnv(e: EntradaCatalogo, env: string): boolean {
+  const esStage = e.host.includes("-stage.");
+  return env === "stage" ? esStage : !esStage;
+}
+
+/** Lee el ConfigMap `mke-catalogo` ya publicado en un entorno (null si no hay). */
+async function catalogoPublicado(env: string): Promise<EntradaCatalogo[] | null> {
+  const spec = envOrThrow(env);
+  const r = await run("kubectl", [
+    "--context", spec.context, "-n", spec.namespace,
+    "get", "configmap", NOMBRE_CONFIGMAP, "-o", `jsonpath={.data.${CLAVE_DATA.replace(".", "\\.")}}`,
+  ]);
+  if (r.code !== 0 || !r.stdout.trim()) return null;
+  try {
+    return JSON.parse(r.stdout) as EntradaCatalogo[];
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Catálogo COMPLETO del cluster: stage + prod juntos (contrato con status-mishi).
- * Si un entorno no se puede leer, se omite con warning en vez de tumbar todo.
+ * Si un entorno no se puede leer (nodo de la flota que no ve ese cluster), sus
+ * entradas se RESCATAN del último catálogo publicado en los entornos legibles —
+ * viejas es mejor que borradas en silencio; el dueño de ese ambiente las
+ * refresca en su próximo deploy. Solo si no hay de dónde rescatar, se omite.
  */
 export async function catalogoCompleto(): Promise<EntradaCatalogo[]> {
   const todo: EntradaCatalogo[] = [];
+  const ilegibles: string[] = [];
+  const legibles: string[] = [];
   for (const env of ENVS_CATALOGO) {
     const parcial = await catalogoDelEntorno(env);
     if (parcial === null) {
-      console.log(warn(`catálogo: no pude leer los ingress de ${env} (queda fuera del catálogo)`));
+      ilegibles.push(env);
       continue;
     }
+    legibles.push(env);
     todo.push(...parcial);
+  }
+  for (const env of ilegibles) {
+    let rescatadas: EntradaCatalogo[] | null = null;
+    for (const fuente of legibles) {
+      const publicado = await catalogoPublicado(fuente);
+      if (publicado) {
+        rescatadas = publicado.filter((e) => entradaDeEnv(e, env));
+        break;
+      }
+    }
+    if (rescatadas && rescatadas.length > 0) {
+      console.log(warn(`catálogo: ${env} no es legible desde este nodo — conservo sus ${rescatadas.length} entrada(s) del catálogo publicado`));
+      todo.push(...rescatadas);
+    } else {
+      console.log(warn(`catálogo: no pude leer los ingress de ${env} ni rescatar su catálogo publicado (queda fuera)`));
+    }
   }
   return ordenar(todo);
 }
