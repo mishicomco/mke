@@ -32,6 +32,15 @@ export interface EnvSpec {
   hostSuffix: string;
   /** IP del gateway docker del cluster = el host, para servicios del host */
   hostGatewayIp: string;
+  /**
+   * Entorno que vive en OTRA máquina (migración prod→laptop 2026-08-06).
+   * El contexto kubectl llega por un túnel SSH persistente (unit de usuario
+   * `mke-prod-tunnel.service` en el pc gamer → API k3s del laptop), así que
+   * kubectl/apply/rollout funcionan igual; SOLO la carga de imágenes cambia:
+   * `docker save | ssh docker exec ctr images import` en vez de `k3d image
+   * import` (k3d solo ve clusters locales).
+   */
+  remote?: { ssh: string; sshKey: string; nodo: string };
 }
 
 export const ENVS: Record<string, EnvSpec> = {
@@ -52,12 +61,21 @@ export const ENVS: Record<string, EnvSpec> = {
     hostGatewayIp: "172.20.0.1",
   },
   prod: {
-    context: "k3d-mke-prod",
-    cluster: "mke-prod",
+    // PROD VIVE EN EL LAPTOP desde 2026-08-06 (migración; ver memoria
+    // handoff-migracion-prod-laptop). El contexto atraviesa el túnel SSH
+    // persistente; el ns prod del cluster del pc gamer quedó congelado a 0
+    // como rollback temporal — NO es prod.
+    context: "mke-prod-laptop",
+    cluster: "mke-prod", // nombre del cluster k3d EN el laptop (solo informativo aquí)
     namespace: "prod",
-    tunnelUuid: "dde2337f-7e0a-47b7-aec0-dfc9b10539af", // mke-prod
+    tunnelUuid: "421fe55c-649e-4df2-baec-7273bd8b7e17", // mke-prod-laptop
     hostSuffix: "",
-    hostGatewayIp: "172.20.0.1",
+    hostGatewayIp: "172.18.0.1",
+    remote: {
+      ssh: "mishi@10.0.0.4",
+      sshKey: "~/.ssh/acceso_laptop_key",
+      nodo: "k3d-mke-prod-server-0",
+    },
   },
 };
 

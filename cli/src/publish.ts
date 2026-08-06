@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { appsRoot, envOrThrow, hostFor } from "./mkeConfig.js";
 import { run, ok, bad, info, dim } from "./sh.js";
+import { cargarImagenes, describeCarga } from "./cargaImagenes.js";
 import { doctor } from "./doctor.js";
 
 export interface PublishOpts {
@@ -50,10 +51,10 @@ export async function publish(front: string, env: string, opts: PublishOpts): Pr
   console.log(ok("imagen construida"));
 
   // 2) import directo al cluster k3d (sin GHCR)
-  console.log(info(`k3d image import ${dim(image)} → ${spec.cluster}`));
-  const imp = await run("k3d", ["image", "import", image, "-c", spec.cluster]);
+  console.log(info(describeCarga(spec, [image])));
+  const imp = await cargarImagenes(spec, [image]);
   if (imp.code !== 0) {
-    console.log(bad(`k3d image import falló: ${imp.stderr || imp.stdout}`));
+    console.log(bad(`carga de imagen falló: ${imp.stderr || imp.stdout}`));
     return;
   }
   console.log(ok("imagen importada"));

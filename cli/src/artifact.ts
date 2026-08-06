@@ -21,6 +21,7 @@ import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { appsRoot, DOMAIN, ENVS } from "./mkeConfig.js";
 import { run, ok, bad, warn, info, dim } from "./sh.js";
+import { cargarImagenes } from "./cargaImagenes.js";
 import { doctor } from "./doctor.js";
 import { tunnelTarget, upsertCname, deleteRecordsByName } from "./cf.js";
 import { FORGE, forgeCreateRepo, forgeRepoUrl, secretGet } from "./forgeRepo.js";
@@ -179,9 +180,9 @@ export async function guardiaDeploy(forzar = false): Promise<boolean> {
     console.log(bad(`docker build del guardia fallo: ${build.stderr || build.stdout}`));
     return false;
   }
-  const imp = await run("k3d", ["image", "import", GUARDIA_IMG, "-c", SPEC.cluster]);
+  const imp = await cargarImagenes(SPEC, [GUARDIA_IMG]);
   if (imp.code !== 0) {
-    console.log(bad(`k3d image import del guardia fallo: ${imp.stderr || imp.stdout}`));
+    console.log(bad(`carga de imagen del guardia fallo: ${imp.stderr || imp.stdout}`));
     return false;
   }
   const manifiestos = [

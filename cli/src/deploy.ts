@@ -30,6 +30,7 @@ import { compuertaLint, compuertaMigracionesPostBuild } from "./compuertaMigraci
 import { publicarFrontAlPvc } from "./publish.js";
 import { regenerarCatalogos } from "./catalogo.js";
 import { run, ok, bad, warn, info, dim } from "./sh.js";
+import { cargarImagenes, describeCarga } from "./cargaImagenes.js";
 import { paso, pasoStreamCmd } from "./progresoVivo.js";
 import { doctor } from "./doctor.js";
 import { secretGet } from "./forgeRepo.js";
@@ -168,16 +169,13 @@ export async function deploy(app: string, env: string, opts: DeployOpts = {}): P
   let imp = { code: 1, stdout: "", stderr: "" };
   for (let intento = 1; intento <= 3 && imp.code !== 0; intento++) {
     if (intento > 1) {
-      console.log(warn(`k3d image import falló (intento ${intento - 1}/3) — reintentando en 10s`));
+      console.log(warn(`carga de imágenes falló (intento ${intento - 1}/3) — reintentando en 10s`));
       await new Promise((r) => setTimeout(r, 10_000));
     }
-    imp = await paso(
-      `k3d image import ${dim(imagenes.join(" + "))} → ${envSpec.cluster}`,
-      () => run("k3d", ["image", "import", ...imagenes, "-c", envSpec.cluster]),
-    );
+    imp = await paso(describeCarga(envSpec, imagenes), () => cargarImagenes(envSpec, imagenes));
   }
   if (imp.code !== 0) {
-    console.log(bad(`k3d image import falló tras 3 intentos: ${imp.stderr || imp.stdout}`));
+    console.log(bad(`carga de imágenes falló tras 3 intentos: ${imp.stderr || imp.stdout}`));
     process.exitCode = 1;
     return;
   }
