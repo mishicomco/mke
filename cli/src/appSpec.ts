@@ -94,10 +94,24 @@ export interface AppSpecOpts {
   deploy?: string;
 }
 
+/**
+ * Dir del código cuando corre bajo CI: el CHECKOUT del runner (GITHUB_WORKSPACE),
+ * que es exactamente el sha pusheado. Sin esto, el CI construía la copia de
+ * trabajo de `<appsRoot>/<app>` de la máquina del runner — una carrera si la
+ * copia local va detrás del push, e inviable en un nodo runner sin clones de
+ * las apps (laptop, flota). En terminal (sin GITHUB_WORKSPACE) todo sigue
+ * igual: `<appsRoot>/<app>` o `--dir`.
+ */
+export function dirDesdeCI(): string | null {
+  const ws = process.env.GITHUB_WORKSPACE;
+  if (ws && existsSync(join(ws, ".mishi-app.json"))) return ws;
+  return null;
+}
+
 /** Deriva la forma de la app leyendo su árbol. Lanza si el repo/overlay no existen. */
 export function derivarAppSpec(app: string, env: string, opts: AppSpecOpts = {}): AppSpec {
   envOrThrow(env);
-  const dir = opts.dir ?? join(appsRoot(), app);
+  const dir = opts.dir ?? dirDesdeCI() ?? join(appsRoot(), app);
   if (!existsSync(dir)) {
     throw new Error(`no existe el repo del app: ${dir} (pasá --dir o exportá MKE_APPS_ROOT)`);
   }
