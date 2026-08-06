@@ -18,6 +18,7 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 
 export interface EnvSpec {
   /** contexto kubectl */
@@ -43,7 +44,39 @@ export interface EnvSpec {
   remote?: { ssh: string; sshKey: string; nodo: string };
 }
 
-export const ENVS: Record<string, EnvSpec> = {
+/**
+ * Config POR NODO — el MISMO mkeConfig sirve en todas las máquinas de la flota
+ * (pc gamer, laptop, futuras). Un nodo declara en `~/.config/mishi/mke-nodo.json`
+ * qué entornos viven LOCALMENTE en él:
+ *
+ *   { "envsLocales": ["prod"] }        // el laptop, dueño de prod
+ *
+ * Para esos entornos se quita el `remote` (carga de imágenes vía k3d local) y
+ * el contexto kubectl pasa a ser el del cluster local (`k3d-<cluster>`), sin
+ * túnel SSH. Sin archivo, todo queda como está declarado en ENVS (el pc gamer
+ * no necesita ninguno). Override de ruta con MKE_NODO_FILE (tests).
+ * NUNCA duplicar este archivo de config por máquina — esa fue la alternativa
+ * descartada (dos verdades que driftean).
+ */
+export function aplicarNodo(envs: Record<string, EnvSpec>): Record<string, EnvSpec> {
+  const file = process.env.MKE_NODO_FILE ?? join(homedir(), ".config", "mishi", "mke-nodo.json");
+  if (!existsSync(file)) return envs;
+  let nodo: { envsLocales?: string[] };
+  try {
+    nodo = JSON.parse(readFileSync(file, "utf8"));
+  } catch (e) {
+    throw new Error(`mke-nodo.json ilegible (${file}): ${(e as Error).message}`);
+  }
+  for (const nombre of nodo.envsLocales ?? []) {
+    const spec = envs[nombre];
+    if (!spec) throw new Error(`mke-nodo.json declara env desconocido: ${nombre}`);
+    if (!spec.remote) continue; // ya es local acá; nada que hacer
+    envs[nombre] = { ...spec, context: `k3d-${spec.cluster}`, remote: undefined };
+  }
+  return envs;
+}
+
+export const ENVS: Record<string, EnvSpec> = aplicarNodo({
   local: {
     context: "k3d-mke-local",
     cluster: "mke-local",
@@ -77,7 +110,7 @@ export const ENVS: Record<string, EnvSpec> = {
       nodo: "k3d-mke-prod-server-0",
     },
   },
-};
+});
 
 export const DOMAIN = "mishi.com.co";
 
