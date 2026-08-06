@@ -36,7 +36,7 @@ test("hostDeOverlayTexto devuelve null si el overlay no parchea el host", () => 
   assert.equal(hostDeOverlayTexto("namespace: stage\nresources:\n  - ../../base\n"), null);
 });
 
-test("dirDesdeCI: usa GITHUB_WORKSPACE solo si tiene .mishi-app.json", async (t) => {
+test("dirDesdeCI: usa GITHUB_WORKSPACE solo si tiene el overlay del env", async (t) => {
   const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
@@ -50,11 +50,13 @@ test("dirDesdeCI: usa GITHUB_WORKSPACE solo si tiene .mishi-app.json", async (t)
   });
 
   delete process.env.GITHUB_WORKSPACE;
-  assert.equal(dirDesdeCI(), null);
+  assert.equal(dirDesdeCI("stage"), null);
 
   process.env.GITHUB_WORKSPACE = dir;
-  assert.equal(dirDesdeCI(), null); // sin .mishi-app.json no es un checkout de app
+  assert.equal(dirDesdeCI("stage"), null); // sin overlay del env no es un checkout de app
 
-  writeFileSync(join(dir, ".mishi-app.json"), "{}");
-  assert.equal(dirDesdeCI(), dir);
+  const { mkdirSync } = await import("node:fs");
+  mkdirSync(join(dir, "k8s", "overlays", "stage"), { recursive: true });
+  assert.equal(dirDesdeCI("stage"), dir);
+  assert.equal(dirDesdeCI("prod"), null); // el overlay es POR env
 });

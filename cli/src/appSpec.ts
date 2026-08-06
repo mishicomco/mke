@@ -102,16 +102,16 @@ export interface AppSpecOpts {
  * las apps (laptop, flota). En terminal (sin GITHUB_WORKSPACE) todo sigue
  * igual: `<appsRoot>/<app>` o `--dir`.
  */
-export function dirDesdeCI(): string | null {
+export function dirDesdeCI(env: string): string | null {
   const ws = process.env.GITHUB_WORKSPACE;
-  if (ws && existsSync(join(ws, ".mishi-app.json"))) return ws;
+  if (ws && existsSync(join(ws, "k8s", "overlays", env))) return ws;
   return null;
 }
 
 /** Deriva la forma de la app leyendo su árbol. Lanza si el repo/overlay no existen. */
 export function derivarAppSpec(app: string, env: string, opts: AppSpecOpts = {}): AppSpec {
   envOrThrow(env);
-  const dir = opts.dir ?? dirDesdeCI() ?? join(appsRoot(), app);
+  const dir = opts.dir ?? dirDesdeCI(env) ?? join(appsRoot(), app);
   if (!existsSync(dir)) {
     throw new Error(`no existe el repo del app: ${dir} (pasá --dir o exportá MKE_APPS_ROOT)`);
   }
