@@ -179,7 +179,7 @@ nombres terminados en `-artifact` (sufijo reservado).
 
 Con esto solo (sin backend) ya sirve para prototipos con `localStorage`.
 
-## Fase 2 — `artifact-mishi`, el servicio de datos (NO construida)
+## Fase 2 — `artifact-mishi`, el servicio de datos (CONSTRUIDA 2026-08-07; estado en el AI_REPO_STATE del repo artifact-mishi)
 
 **Una app estandar del ecosistema**, nacida con `mke app nacer`: repo propio,
 CI, migraciones normales. Lo especial: su BD es la capa de datos de TODOS los
