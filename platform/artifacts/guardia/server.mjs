@@ -62,13 +62,16 @@ function suscribir(host, res) {
   });
 }
 
-// keepalive: comentario SSE cada 25 s para que proxies (Cloudflare) no
-// cierren la conexion por inactividad
+// keepalive: 4 bytes (":ka") por conexion YA abierta — no es polling (sin
+// request, sin handshake; con cero pestañas no se escribe nada). Existe solo
+// porque los proxies (Cloudflare ~100 s) matan conexiones idle; sin latido el
+// navegador reconectaria cada ~100 s y CADA reconexion es una request
+// completa — mas cara que el latido. 45 s = margen bajo ese limite.
 setInterval(() => {
   for (const conjunto of canales.values()) {
     for (const res of conjunto) res.write(":ka\n\n");
   }
-}, 25_000).unref();
+}, 45_000).unref();
 
 const json = (res, code, body) => {
   res.writeHead(code, { "content-type": "application/json" });
