@@ -254,8 +254,16 @@ export async function deploy(app: string, env: string, opts: DeployOpts = {}): P
   await regenerarCatalogos();
 
   // ── g) POSTFLIGHT: sin cadena pública sana, el deploy NO es verde ────────
+  // Con replicas:1 hay una ventana de settle (endpoints/tunnel/DNS) justo tras
+  // el rollout en la que /salud aún no responde — tumbó runs sanos (links-mishi
+  // 2026-08-06 ×3). Reintento ACOTADO: el verde sigue exigiendo el 200 real.
   const salud = healthPath(spec, opts.health);
-  const diag = await doctor(spec.host, salud);
+  let diag = await doctor(spec.host, salud);
+  for (let intento = 2; !diag.sano && intento <= 3; intento++) {
+    console.log(dim(`  postflight no sano aún — reintento ${intento}/3 en 20 s (ventana de settle post-rollout)`));
+    await new Promise((r) => setTimeout(r, 20_000));
+    diag = await doctor(spec.host, salud);
+  }
   if (!diag.sano) {
     console.log(bad(`postflight FALLÓ: https://${spec.host}${salud} no responde sano — el deploy NO es verde`));
     process.exitCode = 1;
