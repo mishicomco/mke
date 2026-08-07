@@ -489,6 +489,19 @@ export async function artifactPublicar(
     await execEnPod(pod, `ln -sfn ${RUNTIME_PVC} ${carpeta}/runtime`);
     console.log(ok(`contenido en el PVC ${dim(carpeta)}`));
 
+    // cache-bust automático: Cloudflare (Browser Cache TTL de zona) reescribe
+    // el Cache-Control del origen y los navegadores retienen .js/.css 4 h —
+    // iterar serviría módulos viejos. Se estampa ?v=<versión de esta
+    // publicación> en los refs del index SERVIDO (el fuente en git queda
+    // limpio). Refs que ya traen ?query se respetan.
+    const version = Date.now().toString(36);
+    await execEnPod(
+      pod,
+      `sed -i -E 's|(src="[^"?]+\\.js)"|\\1?v=${version}"|g; s|(href="[^"?]+\\.css)"|\\1?v=${version}"|g' ${carpeta}/index.html; ` +
+        // imports relativos entre módulos ES (convención del cascarón)
+        `find ${carpeta} -name '*.js' -exec sed -i -E 's|(from "\\./[^"?]+\\.js)"|\\1?v=${version}"|g' {} +`,
+    );
+
     // manifiesto (Fase 2): si el index declara <script type="application/
     // mishi-esquema">, se registra en artifact-mishi (contrato-como-dato).
     // Best-effort: sin backend desplegado, WARN y sigue (Nivel 0).
