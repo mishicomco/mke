@@ -19,7 +19,7 @@ set -uo pipefail
 
 IDENTIDAD="${1:?uso: crear-identidad-vault-nodo.sh <identidad> <archivo-token>}"
 TOKEN_FILE="${2:?uso: crear-identidad-vault-nodo.sh <identidad> <archivo-token>}"
-VAULT_URL="${VAULT_URL:-https://vault-stage.mishi.com.co}"
+VAULT_URL="${VAULT_URL:-https://vault.mishi.com.co}"
 GPG_CLI="$HOME/mishicomco/secrets-mishi/bin/mishi-secret"
 
 NAMESPACES="barrio-mishi block-mishi chrome-mishi content-factory dropshipping-mishi

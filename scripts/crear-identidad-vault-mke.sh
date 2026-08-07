@@ -21,7 +21,7 @@
 
 set -uo pipefail
 
-VAULT_URL="${VAULT_URL:-https://vault-stage.mishi.com.co}"
+VAULT_URL="${VAULT_URL:-https://vault.mishi.com.co}"
 TOKEN_FILE="${VAULT_DEPLOY_TOKEN_FILE:-$HOME/.config/mishi/vault-mke.token}"
 IDENTIDAD="mke-runner-deploy"
 # CLI del almacen GPG offline (raiz de confianza: el token root NO vive en el

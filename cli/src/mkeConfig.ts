@@ -169,7 +169,7 @@ export const PREVIEW = {
 export const VAULT = {
   // el CLI corre en el laptop o en el runner (fuera del cluster del vault):
   // default = el host público de stage; dentro de un cluster, override VAULT_URL.
-  url: process.env.VAULT_URL ?? "https://vault-stage.mishi.com.co",
+  url: process.env.VAULT_URL ?? "https://vault.mishi.com.co",
   emisorTokenSecret: "vault-mishi-emisor-token",
   /** identidad del runner que MATERIALIZA los Secrets k8s (lee ns de apps; escribe solo DATABASE_URL__*). */
   deployIdentidad: "mke-runner-deploy",
