@@ -158,6 +158,10 @@ const CSP = [
 
 const GUARDIA = "artifact-guardia";
 const GUARDIA_IMG = `${GUARDIA}:dev`;
+// Autorizacion de los artifacts (fail-closed en la guardia): los artifacts son
+// PRIVADOS DE SANTI por defecto — el IdP es permisivo (solo firma), asi que la
+// allowlist vive aqui, en la puerta.
+const GUARDIA_PERMITIDOS = ["santiramirezc@gmail.com"];
 const guardiaDir = () => join(appsRoot(), "mke", "platform", "artifacts", "guardia");
 
 /**
@@ -205,6 +209,7 @@ export async function guardiaDeploy(forzar = false): Promise<boolean> {
                 name: GUARDIA,
                 image: GUARDIA_IMG,
                 imagePullPolicy: "IfNotPresent",
+                env: [{ name: "ALLOWED_EMAILS", value: GUARDIA_PERMITIDOS.join(",") }],
                 ports: [{ containerPort: 3000 }],
                 readinessProbe: { httpGet: { path: "/readyz", port: 3000 } },
                 resources: {

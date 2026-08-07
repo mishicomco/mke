@@ -20,6 +20,14 @@ const IDPS = (process.env.IDPS ?? "https://identity.mishi.com.co,https://identit
 const ENTRAR = process.env.ENTRAR_URL ?? "https://identity.mishi.com.co/entrar";
 const EMISOR = "identity-mishi";
 const COOKIE = "mishi_sesion";
+// AUTORIZACION propia (ley rbac-por-app: el IdP es permisivo y SOLO firma; la
+// puerta real es de cada app). Fail-closed: lista vacia = nadie entra.
+const PERMITIDOS = (process.env.ALLOWED_EMAILS ?? "")
+  .split(",")
+  .map((e) => e.trim().toLowerCase())
+  .filter(Boolean);
+const autorizado = (usuario) =>
+  PERMITIDOS.includes((usuario?.email ?? "").toLowerCase());
 
 const jwksSets = IDPS.map((u) => createRemoteJWKSet(new URL(`${u}/v1/llaves`)));
 
@@ -52,8 +60,14 @@ createServer(async (req, res) => {
   if (ruta === "/guardia") {
     const usuario = await usuarioDe(req.headers.cookie);
     if (usuario) {
-      res.writeHead(204);
-      return res.end();
+      if (autorizado(usuario)) {
+        res.writeHead(204);
+        return res.end();
+      }
+      // autenticado pero NO autorizado: 403 plano (redirigir al login seria
+      // un loop — ya tiene sesion valida, solo que no es de la lista)
+      res.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
+      return res.end("403 — esta cuenta no tiene acceso a los artifacts");
     }
     // SIEMPRE https: el TLS termina en Cloudflare y el tunel habla http, asi
     // que X-Forwarded-Proto llega "http" — pero el `volverPermitido` del IdP
@@ -67,7 +81,9 @@ createServer(async (req, res) => {
 
   if (ruta === "/sesion") {
     const usuario = await usuarioDe(req.headers.cookie);
-    return json(res, 200, usuario ? { autenticado: true, usuario } : { autenticado: false });
+    return json(res, 200, usuario
+      ? { autenticado: true, autorizado: autorizado(usuario), usuario }
+      : { autenticado: false });
   }
 
   if (ruta === "/salir" && req.method === "POST") {
