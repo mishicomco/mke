@@ -6,16 +6,37 @@
 (() => {
   const artifact = location.hostname.split(".")[0].replace(/-artifact$/, "");
 
-  const sinDatos = () => {
-    throw new Error(
-      "mishi.datos llega en Fase 2 (artifact-mishi). Por ahora usa localStorage.",
-    );
+  // mishi.datos (Fase 2, artifact-mishi): documentos por colección×clave en la
+  // capa de datos de plataforma. Mismo origen (/api pasa la CSP); el artifact
+  // se deduce del Host en el backend — NUNCA se manda como parámetro.
+  const api = async (ruta, opts) => {
+    const r = await fetch(`/api/datos/${ruta}`, opts);
+    if (r.status === 404) return null;
+    const cuerpo = await r.json().catch(() => null);
+    if (!r.ok) {
+      const detalle = cuerpo?.detalle ? `: ${[].concat(cuerpo.detalle).join(", ")}` : "";
+      throw new Error(`${cuerpo?.error ?? `HTTP ${r.status}`}${detalle}`);
+    }
+    return cuerpo;
   };
+  const seg = encodeURIComponent;
 
   window.mishi = {
     artifact,
     sesion: null, // se puebla al resolver /_mishi/sesion; escucha "mishi:sesion"
-    datos: { guardar: sinDatos, leer: sinDatos, lista: sinDatos, borrar: sinDatos },
+    datos: {
+      guardar: (coleccion, clave, valor) =>
+        api(`${seg(coleccion)}/${seg(clave)}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ valor }),
+        }),
+      leer: (coleccion, clave) =>
+        api(`${seg(coleccion)}/${seg(clave)}`).then((d) => (d ? d.valor : null)),
+      lista: (coleccion) => api(seg(coleccion)).then((d) => d?.documentos ?? []),
+      borrar: (coleccion, clave) =>
+        api(`${seg(coleccion)}/${seg(clave)}`, { method: "DELETE" }).then((d) => d !== null),
+    },
   };
 
   // Recarga en vivo: la pestaña escucha a la guardia por SSE (cero polling);

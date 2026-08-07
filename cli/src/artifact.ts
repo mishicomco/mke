@@ -16,7 +16,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { appsRoot, DOMAIN, ENVS } from "./mkeConfig.js";
@@ -319,6 +319,15 @@ async function asegurarRouting(): Promise<boolean> {
             services: [{ name: GUARDIA, port: 80, namespace: SPEC.namespace }],
           },
           {
+            // Fase 2: /api de todo artifact va a artifact-mishi (la capa de
+            // datos de plataforma). Regla mas larga que la general: gana.
+            // Pasa por la puerta igual que el contenido (privados por defecto).
+            match: "HostRegexp(`^[a-z0-9-]+-artifact\\.mishi\\.com\\.co$`) && PathPrefix(`/api`)",
+            kind: "Rule",
+            middlewares: [{ name: "artifact-auth", namespace: SPEC.namespace }],
+            services: [{ name: "artifact-mishi", port: 80, namespace: SPEC.namespace }],
+          },
+          {
             match: "HostRegexp(`^[a-z0-9-]+-artifact\\.mishi\\.com\\.co$`)",
             kind: "Rule",
             middlewares: [
@@ -479,6 +488,30 @@ export async function artifactPublicar(
     // runtime compartido visible bajo el origen del artifact (/runtime/v1/…)
     await execEnPod(pod, `ln -sfn ${RUNTIME_PVC} ${carpeta}/runtime`);
     console.log(ok(`contenido en el PVC ${dim(carpeta)}`));
+
+    // manifiesto (Fase 2): si el index declara <script type="application/
+    // mishi-esquema">, se registra en artifact-mishi (contrato-como-dato).
+    // Best-effort: sin backend desplegado, WARN y sigue (Nivel 0).
+    const indexHtml = join(staging, "index.html");
+    if (existsSync(indexHtml)) {
+      const html = readFileSync(indexHtml, "utf8");
+      const esquema = /<script[^>]*type="application\/mishi-esquema"[^>]*>([\s\S]*?)<\/script>/.exec(html)?.[1];
+      if (esquema) {
+        try {
+          JSON.parse(esquema); // valida acá; el backend re-valida la forma
+          const cuerpo = JSON.stringify({ artifact: nombre, manifiesto: JSON.parse(esquema) }).replace(/'/g, "'\\''");
+          const reg = await execEnPod(
+            pod,
+            `curl -s -m 10 -X POST http://artifact-mishi.${SPEC.namespace}.svc.cluster.local/api/manifiesto ` +
+              `-H 'content-type: application/json' -d '${cuerpo}'`,
+          );
+          if (/"ok":true/.test(reg.out)) console.log(ok("manifiesto registrado en artifact-mishi"));
+          else console.log(warn(`manifiesto NO registrado: ${reg.out.slice(0, 160) || "artifact-mishi no responde"}`));
+        } catch {
+          console.log(warn("el mishi-esquema del index.html no es JSON válido — sin registrar"));
+        }
+      }
+    }
 
     // recarga en vivo: avisa a la guardia (interno) que hay nueva version;
     // las pestañas abiertas del artifact se recargan solas via SSE
