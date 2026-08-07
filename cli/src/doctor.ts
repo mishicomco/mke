@@ -83,6 +83,14 @@ export async function doctor(host: string, healthPath = "/health"): Promise<Diag
   }
 
   // 3) ¿existe el ingress en algún cluster/namespace conocido?
+  // Los artifacts NO usan Ingress: rutean por la IngressRoute regex de
+  // Traefik (mke artifact). Escanear ingress aquí daba un WARN falso en cada
+  // publicación (y 3 kubectl de costo).
+  if (/-artifact\./.test(host)) {
+    console.log(ok(`ruta por IngressRoute de artifacts ${dim("(no aplica ingress)")}`));
+    console.log("");
+    return { host, sano, codigo: code, motivo };
+  }
   const seen: string[] = [];
   for (const [env, spec] of Object.entries(ENVS)) {
     const r = await run("kubectl", [

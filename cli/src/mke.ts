@@ -14,7 +14,7 @@ import { appInit } from "./appInit.js";
 import { appNacer } from "./appNacer.js";
 import { ensureStaticHostPaso } from "./staticHost.js";
 import { ls } from "./ls.js";
-import { artifactPublicar, artifactLs, artifactVer, artifactRollback, artifactBorrar, guardiaDeploy } from "./artifact.js";
+import { artifactPublicar, artifactLs, artifactVer, artifactRollback, artifactBorrar, artifactNacer, guardiaDeploy } from "./artifact.js";
 import { previewUp, previewPull, previewEstado, previewLs, previewMerge, previewDown, previewLimpiar } from "./preview.js";
 import { hostFor } from "./mkeConfig.js";
 
@@ -50,8 +50,10 @@ const HELP = `mke — CLI de plataforma MKE
   mke ci logs <app> [runId]                     baja el ZIP de logs del run (último FALLIDO por default) y muestra las líneas de error
   mke ci deploy <app> <env>                     dispara el workflow ci-cd.yml con el input "environment" VALIDADO (stage|prod)
         opciones: --ref <rama|tag>   stage: default main · prod: OBLIGATORIO y tiene que ser un tag v* (ej: --ref v0.1.2)
-  mke artifact publicar <nombre> <html|carpeta>  ARTIFACT: frontend sin build ni ambientes en <nombre>-artifact.mishi.com.co —
-                                                  commit a artifacts-mishi (historia+backup) → CNAME → routing+CSP → cp al PVC (+runtime compartido) → doctor
+  mke artifact nacer <nombre>                    ARTIFACT: genera el cascarón modular estándar en ~/mishicomco/artifacts-mishi/<nombre>
+  mke artifact publicar <nombre> <html|carpeta>  frontend sin build ni ambientes en <nombre>-artifact.mishi.com.co —
+                                                  commit a artifacts-mishi (historia+backup) → CNAME → routing+CSP → cp al PVC (+runtime compartido)
+                                                  → aviso SSE (pestañas abiertas se recargan solas) → doctor    opciones: --mensaje "..."
   mke artifact ls | ver <n> | rollback <n> | borrar <n>   listar · cadena pública · versión anterior · PVC+CNAME (la historia queda)  ·  diseño: mke/AI_ARTIFACTS.md
   mke publish <front> <env>                      front estático: build imagen contenido → Job al PVC de static-mishi → doctor
         opciones: --tag <t>  --dir <repo>  --host <fqdn>   (env = stage | prod)
@@ -206,8 +208,13 @@ async function main() {
     case "artifact": {
       const [action, nombre, origen] = positional;
       if (action === "publicar") {
-        if (!nombre || !origen) return fail("uso: mke artifact publicar <nombre> <archivo.html|carpeta>");
-        await artifactPublicar(nombre, origen);
+        if (!nombre || !origen) return fail("uso: mke artifact publicar <nombre> <archivo.html|carpeta> [--mensaje \"...\"]");
+        await artifactPublicar(nombre, origen, {
+          mensaje: typeof flags.mensaje === "string" ? flags.mensaje : undefined,
+        });
+      } else if (action === "nacer") {
+        if (!nombre) return fail("uso: mke artifact nacer <nombre>");
+        await artifactNacer(nombre);
       } else if (action === "ls") {
         await artifactLs();
       } else if (action === "ver") {
@@ -222,7 +229,7 @@ async function main() {
       } else if (action === "guardia") {
         await guardiaDeploy(true); // rebuild+redeploy de la puerta
       } else {
-        return fail("uso: mke artifact publicar|ls|ver|rollback|borrar|guardia …  (diseño: mke/AI_ARTIFACTS.md)");
+        return fail("uso: mke artifact nacer|publicar|ls|ver|rollback|borrar|guardia …  (diseño: mke/AI_ARTIFACTS.md)");
       }
       break;
     }

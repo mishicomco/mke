@@ -290,7 +290,15 @@ async function asegurarRouting(): Promise<boolean> {
         namespace: SPEC.namespace,
         labels: { "app.kubernetes.io/part-of": "mke" },
       },
-      spec: { headers: { contentSecurityPolicy: CSP } },
+      spec: {
+        headers: {
+          contentSecurityPolicy: CSP,
+          // Cloudflare cachea .js/.css 4 h por defecto: iterar un artifact
+          // servia archivos VIEJOS desde el edge. no-cache (CF lo respeta)
+          // = sin cache de edge/navegador; nginx revalida por etag (304).
+          customResponseHeaders: { "Cache-Control": "no-cache" },
+        },
+      },
     },
     {
       apiVersion: "traefik.io/v1alpha1",
@@ -345,6 +353,14 @@ async function sincronizarRuntime(pod: string): Promise<boolean> {
     console.log(bad(`no encuentro el runtime en ${src}`));
     return false;
   }
+  // republicacion rapida: si el hash del runtime local == el del PVC, no hay
+  // nada que sincronizar
+  const hash = await hashRuntime();
+  const enPvc = await execEnPod(pod, `cat ${RUNTIME_PVC}/.hash 2>/dev/null || true`);
+  if (enPvc.out.trim() === hash) {
+    console.log(ok(`runtime compartido al dia ${dim(`(${hash})`)}`));
+    return true;
+  }
   await execEnPod(pod, `rm -rf ${RUNTIME_PVC} && mkdir -p ${RUNTIME_PVC}`);
   const cp = await run("kubectl", [
     "--context", SPEC.context, "-n", SPEC.namespace,
@@ -354,6 +370,7 @@ async function sincronizarRuntime(pod: string): Promise<boolean> {
     console.log(bad(`cp del runtime fallo: ${cp.stderr || cp.stdout}`));
     return false;
   }
+  await execEnPod(pod, `printf '%s' '${hash}' > ${RUNTIME_PVC}/.hash`);
   console.log(ok(`runtime compartido sincronizado ${dim(RUNTIME_PVC)}`));
   return true;
 }
@@ -363,6 +380,17 @@ async function sincronizarRuntime(pod: string): Promise<boolean> {
 export interface ArtifactPublicarOpts {
   /** no commitear (lo usa rollback, que ya hizo su commit) */
   sinArchivar?: boolean;
+  /** mensaje de commit (-m); default "publicar <nombre> (<origen>)" */
+  mensaje?: string;
+}
+
+/** hash del contenido del runtime local (para saltar el sync si no cambió). */
+async function hashRuntime(): Promise<string> {
+  const r = await run("sh", [
+    "-c",
+    `find ${runtimeSrc()} -type f | sort | xargs cat | sha256sum | cut -c1-16`,
+  ]);
+  return r.code === 0 ? r.stdout.trim() : Date.now().toString(36);
 }
 
 /**
@@ -401,16 +429,25 @@ export async function artifactPublicar(
     mkdirSync(destRepo, { recursive: true });
     if (esDir) cpSync(origen, destRepo, { recursive: true });
     else cpSync(origen, join(destRepo, "index.html"));
-    await archivar(nombre, `publicar ${nombre} (${basename(origen)})`);
+    await archivar(nombre, opts.mensaje ?? `publicar ${nombre} (${basename(origen)})`);
   }
 
-  // 2) DNS (un CNAME por artifact; comodin descartado)
-  try {
-    const dns = await upsertCname(host, tunnelTarget(SPEC.tunnelUuid));
-    console.log(ok(`DNS ${dns}: ${host}`));
-  } catch (e) {
-    console.log(bad(`DNS fallo: ${(e as Error).message}`));
-    return false;
+  // 2) DNS (un CNAME por artifact; comodin descartado). Si el host ya
+  // resuelve, el CNAME existe: se salta la API de Cloudflare (republicacion
+  // rapida; si apuntara mal, el doctor postflight lo delata).
+  let dnsRecienCreado = false;
+  const yaResuelve = (await run("getent", ["hosts", host])).code === 0;
+  if (yaResuelve) {
+    console.log(ok(`DNS ya resuelve: ${host} ${dim("(CNAME sin tocar)")}`));
+  } else {
+    try {
+      const dns = await upsertCname(host, tunnelTarget(SPEC.tunnelUuid));
+      dnsRecienCreado = dns === "creado";
+      console.log(ok(`DNS ${dns}: ${host}`));
+    } catch (e) {
+      console.log(bad(`DNS fallo: ${(e as Error).message}`));
+      return false;
+    }
   }
 
   // 3) puerta (privados por defecto) + routing + CSP (idempotentes)
@@ -442,13 +479,32 @@ export async function artifactPublicar(
     // runtime compartido visible bajo el origen del artifact (/runtime/v1/…)
     await execEnPod(pod, `ln -sfn ${RUNTIME_PVC} ${carpeta}/runtime`);
     console.log(ok(`contenido en el PVC ${dim(carpeta)}`));
+
+    // recarga en vivo: avisa a la guardia (interno) que hay nueva version;
+    // las pestañas abiertas del artifact se recargan solas via SSE
+    const aviso = await execEnPod(
+      pod,
+      `curl -s -X POST http://${GUARDIA}.${SPEC.namespace}.svc.cluster.local/avisar ` +
+        `-d '{"host":"${host}","version":"${Date.now().toString(36)}"}'`,
+    );
+    const avisadas = /"avisadas":(\d+)/.exec(aviso.out)?.[1];
+    if (avisadas && avisadas !== "0") {
+      console.log(ok(`recarga en vivo: ${avisadas} pestaña(s) avisada(s)`));
+    }
   } finally {
     if (!esDir && !opts.sinArchivar) rmSync(staging, { recursive: true, force: true });
   }
 
-  // 5) cadena publica — sin esto el publicar NO es verde
-  await doctor(host);
-  return true;
+  // 5) cadena publica — sin esto el publicar NO es verde. Con CNAME recien
+  // creado, Cloudflare tarda ~10-30 s en propagar: reintentar NO es un fallo
+  // (antes esto terminaba en un FAIL rojo mentiroso con fix equivocado).
+  let diag = await doctor(host);
+  for (let i = 0; dnsRecienCreado && !diag.sano && i < 4; i++) {
+    console.log(info(`CNAME recien creado, propagando DNS… reintento ${i + 1}/4 en 10 s`));
+    await new Promise((r) => setTimeout(r, 10_000));
+    diag = await doctor(host);
+  }
+  return diag.sano;
 }
 
 /** lista los artifacts vivos: archivos, tamano, ultima publicacion. */
@@ -462,7 +518,7 @@ export async function artifactLs(): Promise<void> {
     pod,
     `for d in /srv/www/*${SUFIJO}; do [ -d "$d" ] || continue; ` +
       `n=$(find "$d" -type f | wc -l); s=$(du -sk "$d" | cut -f1); ` +
-      `t=$(date -r "$d" '+%Y-%m-%d %H:%M'); echo "$(basename "$d")|$n|$s|$t"; done`,
+      `echo "$(basename "$d")|$n|$s"; done`,
   );
   if (!r.out.trim()) {
     console.log(info("no hay artifacts publicados"));
@@ -470,8 +526,15 @@ export async function artifactLs(): Promise<void> {
   }
   console.log(`${"ARTIFACT".padEnd(28)} ${"ARCHIVOS".padStart(8)} ${"KB".padStart(8)}  PUBLICADO`);
   for (const linea of r.out.trim().split("\n")) {
-    const [carpeta, n, kb, fecha] = linea.split("|");
+    const [carpeta, n, kb] = linea.split("|");
     const nombre = carpeta.replace(new RegExp(`${SUFIJO}$`), "");
+    // fecha de la ultima publicacion segun git (dueño de la verdad), no el
+    // mtime del PVC (que cambia con cada sync masivo)
+    const log = await gitForge(
+      ["log", "-1", "--format=%ad", "--date=format:%Y-%m-%d %H:%M", "--", nombre],
+      null,
+    );
+    const fecha = log.code === 0 && log.out ? log.out : "(sin historia)";
     console.log(`${nombre.padEnd(28)} ${n.padStart(8)} ${kb.padStart(8)}  ${fecha}  ${dim(`https://${hostDe(nombre)}`)}`);
   }
 }
@@ -506,6 +569,32 @@ export async function artifactRollback(nombre: string): Promise<boolean> {
   }
   await archivar(nombre, `rollback ${nombre} → ${hashes[1].slice(0, 8)}`);
   return artifactPublicar(nombre, dir, { sinArchivar: true });
+}
+
+/**
+ * Genera el cascarón modular estándar en el clone de artifacts-mishi, listo
+ * para editar y publicar. Un cpSync de platform/artifacts/plantilla — la
+ * plantilla ES la documentación del cascarón.
+ */
+export async function artifactNacer(nombre: string): Promise<boolean> {
+  const invalido = validarNombre(nombre);
+  if (invalido) {
+    console.log(bad(invalido));
+    return false;
+  }
+  const destino = join(cloneDir(), nombre);
+  if (existsSync(destino)) {
+    console.log(bad(`ya existe ${destino} — edítalo y publica, o elige otro nombre`));
+    return false;
+  }
+  const plantilla = join(appsRoot(), "mke", "platform", "artifacts", "plantilla");
+  await asegurarRepo(await secretGet(FORGE.apiTokenSecret));
+  cpSync(plantilla, destino, { recursive: true });
+  // NOMBRE → nombre real en los archivos de texto de la plantilla
+  await run("sh", ["-c", `grep -rl NOMBRE ${destino} | xargs -r sed -i 's/NOMBRE/${nombre}/g'`]);
+  console.log(ok(`cascarón en ${destino}`));
+  console.log(info(`edita y publica:  mke artifact publicar ${nombre} ${destino}`));
+  return true;
 }
 
 /** borra del PVC + CNAME. La historia queda en git (recuperable con publicar). */

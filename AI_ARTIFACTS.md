@@ -125,12 +125,53 @@ plataforma de mke — identity-mishi NO se toco:
 ## Fase 1 — artifacts estaticos (construida; ver AI_REPO_STATE)
 
 ```
-mke artifact publicar <nombre> <archivo.html|carpeta>   idempotente; commit+push, CNAME, cp, doctor
-mke artifact ls                                          nombre, archivos, tamano, ultima publicacion
+mke artifact nacer <nombre>                              cascaron modular estandar en ~/mishicomco/artifacts-mishi/<nombre>
+mke artifact publicar <nombre> <archivo.html|carpeta> [--mensaje "..."]
+                                                         idempotente; commit+push, CNAME, cp, aviso SSE, doctor
+mke artifact ls                                          nombre, archivos, tamano, ultima publicacion (fecha de git)
 mke artifact ver <nombre>                                URL + cadena publica
 mke artifact rollback <nombre>                           vuelve a la version anterior (git) y republica
 mke artifact borrar <nombre>                             PVC + CNAME (la historia queda en git)
 ```
+
+### Cascaron modular (2026-08-07) — la forma canonica
+
+Un artifact NO tiene que ser un solo archivo: `publicar` acepta carpetas y la
+CSP permite `script-src 'self'`, asi que **ES modules nativos** (imports
+relativos) y CSS aparte funcionan sin build. La forma canonica es la carpeta
+modular que genera `mke artifact nacer` (la plantilla vive en
+`platform/artifacts/plantilla/` y ES la documentacion del cascaron:
+`index.html` + `estilos.css` + `src/*.js`). El single-file queda para lo
+trivial. Escalón siguiente (anotado, no construido): `publicar` detecta
+`vite.config.ts` y corre `vite build` local publicando `dist/` — recupera
+TS/JSX/contract sin repo ni CI.
+
+### Recarga en vivo (2026-08-07) — el ciclo de iteracion
+
+No hay ambientes ni dev server (deliberado): se itera contra la URL real.
+Para que eso sea rapido, **toda pestaña abierta se recarga sola al publicar**:
+
+- `mishi.js` v1 abre `EventSource("/_mishi/eventos")` (SSE: cero polling, el
+  navegador reconecta solo; pasa la CSP por ser mismo origen).
+- La guardia mantiene el mapa host→pestañas en memoria (un pod, sin Redis) y
+  manda keepalive cada 25 s (los proxies no cierran la conexion).
+- `publicar`, tras el cp, hace POST `/avisar` a la guardia DESDE dentro del
+  cluster; la guardia lo rechaza si viene por Traefik (`X-Forwarded-Host`
+  presente = externo → 403): nadie puede recargar pestañas ajenas.
+
+Ademas la republicacion es rapida: se salta el CNAME si el host ya resuelve y
+el sync del runtime si su hash no cambio (`.hash` en el PVC); el doctor conoce
+los artifacts (no busca Ingress — rutean por IngressRoute) y con CNAME recien
+creado reintenta hasta 4 veces antes de declarar FAIL (propagacion ~10-30 s no
+es un fallo).
+
+### Cache (leccion 2026-08-07)
+
+Cloudflare cacheaba `.js/.css` 4 h en el edge: iterar servia archivos VIEJOS.
+El Middleware `artifact-csp` inyecta tambien `Cache-Control: no-cache` (CF lo
+respeta → no cachea; el navegador revalida por etag, 304 baratos). Si un
+artifact quedo envenenado de antes, referenciar el asset con `?v=x` bustea la
+key del edge.
 
 Reglas de nombre: `[a-z0-9-]`, sin sufijo `-artifact` ni `-stage` (colisiones
 con la regex y con la convencion de subdominios); `mke app nacer` rechaza

@@ -18,6 +18,13 @@
     datos: { guardar: sinDatos, leer: sinDatos, lista: sinDatos, borrar: sinDatos },
   };
 
+  // Recarga en vivo: la pestaña escucha a la guardia por SSE (cero polling);
+  // cuando `mke artifact publicar` termina, empuja "publicacion" y la pagina
+  // se recarga sola. EventSource reconecta solo si la guardia se reinicia.
+  new EventSource("/_mishi/eventos").addEventListener("publicacion", () =>
+    location.reload(),
+  );
+
   // Favicon estandar (Mishi neutro) si el artifact no trae el suyo: mata el
   // 404 de /favicon.ico en todos los artifacts sin republicar ninguno.
   if (!document.querySelector('link[rel~="icon"]')) {
