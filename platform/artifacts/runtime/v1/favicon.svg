@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Mishi neutro: cabeza de gato en una linea. Theme-aware via media query. -->
+  <style>
+    path { stroke: #111111; }
+    @media (prefers-color-scheme: dark) { path { stroke: #eaeaea; } }
+  </style>
+  <path d="M6 13 V5 l6 5 h8 l6 -5 v8 a13 13 0 0 1 -20 0 z"
+        fill="none" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

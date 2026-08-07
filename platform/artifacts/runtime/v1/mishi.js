@@ -18,6 +18,16 @@
     datos: { guardar: sinDatos, leer: sinDatos, lista: sinDatos, borrar: sinDatos },
   };
 
+  // Favicon estandar (Mishi neutro) si el artifact no trae el suyo: mata el
+  // 404 de /favicon.ico en todos los artifacts sin republicar ninguno.
+  if (!document.querySelector('link[rel~="icon"]')) {
+    const icono = document.createElement("link");
+    icono.rel = "icon";
+    icono.type = "image/svg+xml";
+    icono.href = "/runtime/v1/favicon.svg";
+    document.head.append(icono);
+  }
+
   // Barra superior estandar. Opt-out: <body data-sin-barra>.
   document.addEventListener("DOMContentLoaded", () => {
     if (document.body.hasAttribute("data-sin-barra")) return;

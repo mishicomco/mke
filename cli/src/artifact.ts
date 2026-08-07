@@ -161,7 +161,10 @@ const GUARDIA_IMG = `${GUARDIA}:dev`;
 // Autorizacion de los artifacts (fail-closed en la guardia): los artifacts son
 // PRIVADOS DE SANTI por defecto — el IdP es permisivo (solo firma), asi que la
 // allowlist vive aqui, en la puerta.
-const GUARDIA_PERMITIDOS = ["santiramirezc@gmail.com"];
+const GUARDIA_PERMITIDOS = [
+  "santiramirezc@gmail.com",
+  "q1.26.mateo@gmail.com", // cuenta IA dedicada: verifica lo que publica (OK Santi 2026-08-07)
+];
 const guardiaDir = () => join(appsRoot(), "mke", "platform", "artifacts", "guardia");
 
 /**
