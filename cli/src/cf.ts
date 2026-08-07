@@ -13,9 +13,18 @@ let cachedToken: string | null = null;
 
 async function token(): Promise<string> {
   if (cachedToken) return cachedToken;
+  // Fallback por env (mismo patrón que NODE_AUTH_TOKEN en deploy.ts): en un
+  // nodo runner cuya identidad CI del vault no lee el ns `santi` (laptop hasta
+  // tener identidad propia con ese grant), el token viaja en el EnvironmentFile
+  // 0600 del unit del runner. El vault sigue siendo el dueño de la verdad.
+  const delEntorno = process.env.CLOUDFLARE_DNS_API?.trim();
+  if (delEntorno) {
+    cachedToken = delEntorno;
+    return cachedToken;
+  }
   const r = await run("vault-mishi", ["get", "cloudflare-dns-api"]);
   if (r.code !== 0 || !r.stdout) {
-    throw new Error(`no pude leer el secreto cloudflare-dns-api: ${r.stderr || "vacío"}`);
+    throw new Error(`no pude leer el secreto cloudflare-dns-api: ${r.stderr || "vacío"} (fallback: env CLOUDFLARE_DNS_API)`);
   }
   cachedToken = r.stdout.trim();
   return cachedToken;
