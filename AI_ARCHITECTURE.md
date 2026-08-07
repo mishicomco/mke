@@ -2,6 +2,47 @@
 
 > Diseño y lecciones que no cambian seguido. El estado del día vive en `AI_REPO_STATE.md`; la historia en git.
 
+## Topología de la flota (desde 2026-08-07: prod autónomo en el laptop)
+
+```
+                                   INTERNET
+                                      │
+                              ┌───────┴────────┐
+                              │   Cloudflare   │  mishi.com.co · llego.com.co
+                              │  (DNS + edge)  │  travelhabit.co · status en Worker
+                              └───┬────────┬───┘
+             túnel mke-prod-laptop│        │túnel mke-prod (dde2337f)
+                  (421fe55c)      │        │
+══════════════════════════════════╪════════╪══════════════════════════════════
+   LAPTOP — PROD (24/7, autónomo) │        │   PC GAMER — STAGE (apagable)
+                                  │        │
+  ┌───────────────────────────────┴──┐   ┌─┴────────────────────────────────┐
+  │ k3d `mke-prod` (ns prod, git,    │   │ k3d `mke-prod` (ns stage)        │
+  │ storage, databases, cloudflare)  │   │  · apps *-stage                  │
+  │  · apps: 3d, bank, omni, llego…  │   │  · vault-stage (instancia DEV,   │
+  │  · postgres (16 BDs) · minio     │   │    datos congelados — NO es      │
+  │  · mesh-central · static-mishi   │   │    el vault)                     │
+  │  · identity (IdP prod)           │   │  · databases-dev · git-stage     │
+  │  · forgejo = git.mishi.com.co ◄──┼───┼── push / triggers CI            │
+  │  · VAULT (vault.mishi.com.co) ◄──┼───┼── vault-mishi CLI (vault.env)   │
+  │                                  │   │                                  │
+  │ runner `laptop-mke`              │   │ runners `pc-gamer-mke{,-2}`      │
+  │   [self-hosted, mke, mke-prod]   │   │   […, mke-stage, pc-gamer]       │
+  │   tag v* → mke deploy prod       │   │   push main → mke deploy stage   │
+  │   (build+k3d import LOCALES)     │   │   PRs quality (ubuntu-latest)    │
+  │                                  │   │                                  │
+  │ mke-nodo.json {envsLocales:prod} │   │ k3d `mke-preview` (Studio)       │
+  │ backup timer SCOPE=prod → Drive  │   │ backup timer SCOPE=stage → Drive │
+  └──────────────────────────────────┘   │ túnel SSH → laptop (operar prod  │
+                                         │ remoto: kubectl/doctor; opcional)│
+                                         └──────────────────────────────────┘
+```
+
+- Cada nodo corre el **runner de SU ambiente** (labels por ambiente `mke-stage`/`mke-prod`, no por máquina) y builds/imports jamás salen del nodo.
+- El mismo `mkeConfig` sirve en toda la flota: `~/.config/mishi/mke-nodo.json` declara qué envs son locales en cada nodo (`aplicarNodo()`).
+- **Apagar el gamer** ⇒ prod sigue sirviendo Y deployando; mueren stage/previews.
+- Raíz de confianza (KEK del vault, root token): SOLO GPG offline + Drive, jamás dentro del vault.
+
 ## Cadena de red
 
 ```
@@ -14,9 +55,9 @@ cloudflared corre **dentro** del clúster: conexión saliente a Cloudflare, sin 
 
 Entornos = overlays Kustomize. **No-prod lleva sufijo con guion; prod va pelado** (Cloudflare no permite sub-niveles de subdominio con wildcard):
 
-- `local` → `<app>-local.mishi.com.co` (k3d laptop)
-- `stage` → `<app>-stage.mishi.com.co` (ns `stage` en cluster único)
-- `prod`  → `<app>.mishi.com.co` (ns `prod`)
+- `local` → `<app>-local.mishi.com.co` (k3d de dev)
+- `stage` → `<app>-stage.mishi.com.co` (ns `stage`, cluster del pc gamer)
+- `prod`  → `<app>.mishi.com.co` (ns `prod`, cluster del laptop)
 
 ## DNS / túneles Cloudflare — gotchas
 
@@ -38,7 +79,7 @@ Una app que **hace su propio TLS o redirige a HTTPS/puerto canónico** entra en 
 
 ## Resiliencia y storage
 
-- Cluster único de un nodo; resiliencia = **backups off-site**, no HA en caliente (archivado).
+- Clusters de un solo nodo (uno por máquina de la flota); resiliencia = **backups off-site**, no HA en caliente (archivado).
 - `k3d cluster delete` borra los PVCs → DBs locales efímeras + `pg_dump`. Storage real (Longhorn/disco dedicado) es futuro multi-nodo.
 
 ## SSH remoto a home (`SantiGamer`)

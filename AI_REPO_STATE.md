@@ -8,7 +8,7 @@ MKE (Mishi Kubernetes Engine) = la plataforma que sirve `*.mishi.com.co`. Un mis
 
 ## Estado actual
 
-- **Cluster único `k3d-mke-prod`** en el PC gamer (`SantiGamer`, WSL2): stage y prod son **namespaces** (`stage` / `prod`) del mismo cluster, no clusters separados. `mke-stage` como cluster fue eliminado.
+- **DOS nodos desde la migración 2026-08-06/07** (topología dibujada en `AI_ARCHITECTURE.md §Topología`): **prod = cluster `mke-prod` del LAPTOP** (ns prod + git/storage/databases/cloudflare; forge, vault, runner `laptop-mke`); **stage = ns `stage` del cluster `mke-prod` del PC GAMER** (`SantiGamer`, WSL2; + `mke-preview` y runners `pc-gamer-mke{,-2}`). El gamer es apagable sin afectar prod. `mke-stage` como cluster fue eliminado hace tiempo.
 - **`mke-local`**: k3d en el laptop (WSL2) para dev. Wildcard `*.mishi.com.co → mke-local`.
 - **`mke-cloud`**: futuro (GKE + prod-mke como fallback); sin desplegar.
 - **CLI `mke`** es la interfaz canónica (deploy/rollout/expose/dns/doctor/ls/**app init**/**preview up|pull|estado|ls|merge|down|limpiar**). No hacer kubectl/docker/cloudflared a mano salvo fallback. Ver skill `mke-deploy`. Los verbos `mke dev` y `mke rama` (mundo viejo) fueron BORRADOS (2026-07-11): `mke preview` es el único camino de iteración.
