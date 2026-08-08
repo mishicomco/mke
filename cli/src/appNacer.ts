@@ -38,7 +38,7 @@ export interface AppNacerOpts {
   env?: string;
   /** directorio del cascarón (default <appsRoot>/<app>). */
   dir?: string;
-  /** salta create-mishi-app + git + push (usa un repo ya presente). */
+  /** salta SOLO el scaffolding de create-mishi-app (git+push corre igual si el dir existe). */
   sinCascaron?: boolean;
   /** salta `mke app init`. */
   sinPlataforma?: boolean;
@@ -93,7 +93,7 @@ export async function appNacer(app: string, opts: AppNacerOpts): Promise<void> {
     console.log(info("DRY RUN — no se toca nada. Plan:"));
     console.log(`  1. cascarón: create-mishi-app --nombre ${app} --subdominio ${subdominio} --dir ${dir}${opts.sinCascaron ? dim("  (SALTEADO)") : ""}`);
     console.log(`  2. repo forge: crea ${remoto} en ${FORGE.base} (privado) + push-mirror a GitHub (best-effort)`);
-    console.log(`  3. git: init + commit inicial + push a origin=${originUrl} (dispara CI del forge → deploy stage)${opts.sinCascaron ? dim("  (SALTEADO)") : ""}`);
+    console.log(`  3. git: init + commit inicial + push a origin=${originUrl} (dispara CI del forge → deploy stage) — si el dir existe`);
     console.log(`  4. plataforma: mke app init ${app} --env ${env} --subdominio ${subdominio}${opts.sinPlataforma ? dim("  (SALTEADO)") : ""}`);
     console.log(`  5. registro: mishi-studio app crear --nombre ${app} --repo ${remoto}${opts.sinRegistro ? dim("  (SALTEADO)") : ""}`);
     console.log(info("\nnada ejecutado (--dry-run)"));
@@ -109,8 +109,14 @@ export async function appNacer(app: string, opts: AppNacerOpts): Promise<void> {
   };
 
   // ── 1) cascarón ────────────────────────────────────────────────────────────
+  // Idempotente: si el dir ya tiene un package.json (nacimiento previo cortado a
+  // mitad), NO se re-scaffoldea — se sigue con git+push/plataforma. Re-correr
+  // `mke app nacer <app>` a secas es el camino de reanudación.
   if (opts.sinCascaron) {
     pasos.push({ nombre: "cascarón", estado: "salteado", detalle: "salteado (--sin-cascaron)" });
+  } else if (existsSync(join(dir, "package.json"))) {
+    pasos.push({ nombre: "cascarón", estado: "ok", detalle: `ya existía en ${dir} (reanudación; no se re-scaffoldea)` });
+    console.log(ok(`cascarón ya existía en ${dir} — reanudando`));
   } else {
     const c = resolverCascaron();
     if (!c) {
@@ -162,8 +168,11 @@ export async function appNacer(app: string, opts: AppNacerOpts): Promise<void> {
   }
 
   // ── 3) git init + commit inicial + push a origin=forge ─────────────────────
-  if (opts.sinCascaron) {
-    pasos.push({ nombre: "git+push", estado: "salteado", detalle: "salteado (--sin-cascaron)" });
+  // Corre siempre que el cascarón exista en disco — INDEPENDIENTE de
+  // --sin-cascaron (fricción R1 prueba de fuego: la reanudación dejaba el repo
+  // sin remotos). Solo se saltea si no hay nada que pushear.
+  if (!existsSync(join(dir, "package.json"))) {
+    pasos.push({ nombre: "git+push", estado: "salteado", detalle: `salteado: no hay cascarón en ${dir}` });
   } else {
     const gitC = (args: string[]) => run("git", ["-C", dir, ...args]);
     if ((await gitC(["rev-parse", "--git-dir"])).code !== 0) await gitC(["init", "-b", "main"]);
@@ -172,7 +181,15 @@ export async function appNacer(app: string, opts: AppNacerOpts): Promise<void> {
       // npm install ANTES del commit: genera package-lock.json que el Dockerfile
       // del cascarón copia (sin lockfile el build de CI del nacimiento falla).
       if (!existsSync(join(dir, "package-lock.json"))) {
-        const inst = await run("npm", ["install", "--prefix", dir]);
+        // El .npmrc del cascarón apunta al registry npm del forge con
+        // ${NODE_AUTH_TOKEN}; mke lo materializa desde el vault (fricción R1:
+        // sin esto el install muere con E401 y el humano tiene que adivinar el
+        // secreto). Va por env del hijo, nunca por args (visible en /proc).
+        const npmToken = process.env.NODE_AUTH_TOKEN ?? (await secretGet(FORGE.npmTokenSecret));
+        if (!npmToken) {
+          return cortar("git+push", `sin token del registry npm del forge: exportá NODE_AUTH_TOKEN o cargá el secreto ${FORGE.npmTokenSecret} en vault-mishi`);
+        }
+        const inst = await run("npm", ["install", "--prefix", dir], { env: { ...process.env, NODE_AUTH_TOKEN: npmToken } });
         if (inst.code !== 0) return cortar("git+push", `npm install falló (no se commitea sin lockfile): ${ultimas(inst.stderr || inst.stdout)}`);
       }
       await gitC(["add", "-A"]);

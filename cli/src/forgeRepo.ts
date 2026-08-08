@@ -20,6 +20,8 @@ export const FORGE = {
   apiTokenSecret: "git-mishi-api-token",
   /** PAT de GitHub para el push-mirror de respaldo. */
   mirrorPatSecret: "github-mirror-pat",
+  /** token del registry npm del forge (NODE_AUTH_TOKEN del .npmrc del cascarón). */
+  npmTokenSecret: "git-mishi-npm-token",
 } as const;
 
 /** URL git HTTPS del repo primario en el forge (lo que será `origin`). */
