@@ -429,7 +429,23 @@ export async function artifactPublicar(
   const host = hostDe(nombre);
   console.log(info(`publicando ${dim(nombre)} → https://${host}`));
 
-  // 1) fuente e historia (git) — el PVC nunca es el unico ejemplar.
+  // 1) DNS PRIMERO (un CNAME por artifact): es el único paso con latencia de
+  // propagación (hostname→túnel por los POPs de CF), así que arranca YA y
+  // propaga en paralelo con git+guardia+runtime+cp. SIEMPRE por la API de CF:
+  // "el host resuelve" NO prueba nada — hay un comodín en la zona y TODO
+  // subdominio resuelve (bache real: el atajo por getent dejó un artifact
+  // nuevo colgado del destino del comodín, 530 hasta un `mke dns` manual).
+  let dnsRecienCreado = false;
+  try {
+    const dns = await upsertCname(host, tunnelTarget(SPEC.tunnelUuid));
+    dnsRecienCreado = dns === "creado";
+    console.log(ok(`DNS ${dns}: ${host}`));
+  } catch (e) {
+    console.log(bad(`DNS fallo: ${(e as Error).message}`));
+    return false;
+  }
+
+  // 2) fuente e historia (git) — el PVC nunca es el unico ejemplar.
   // `nacer` deja el cascaron EXACTAMENTE en cloneDir()/<nombre>: publicar
   // desde ahi es el flujo natural y NO copia sobre si mismo (antes el rmSync
   // previo BORRABA el trabajo — bache destructivo real de un agente).
@@ -447,20 +463,6 @@ export async function artifactPublicar(
     await archivar(nombre, opts.mensaje ?? `publicar ${nombre} (${basename(origen)})`);
   }
 
-  // 2) DNS (un CNAME por artifact). SIEMPRE por la API de CF: "el host
-  // resuelve" NO prueba nada — hay un comodin en la zona y TODO subdominio
-  // resuelve (bache real: el atajo por getent dejo un artifact nuevo colgado
-  // del destino del comodin, 530 hasta un `mke dns` manual). El upsert es
-  // idempotente y cuesta ~1 s: esa es la republicacion rapida honesta.
-  let dnsRecienCreado = false;
-  try {
-    const dns = await upsertCname(host, tunnelTarget(SPEC.tunnelUuid));
-    dnsRecienCreado = dns === "creado";
-    console.log(ok(`DNS ${dns}: ${host}`));
-  } catch (e) {
-    console.log(bad(`DNS fallo: ${(e as Error).message}`));
-    return false;
-  }
 
   // 3) puerta (privados por defecto) + routing + CSP (idempotentes)
   if (!(await guardiaDeploy())) return false;
@@ -642,6 +644,15 @@ export async function artifactNacer(nombre: string): Promise<boolean> {
   // NOMBRE → nombre real en los archivos de texto de la plantilla
   await run("sh", ["-c", `grep -rl NOMBRE ${destino} | xargs -r sed -i 's/NOMBRE/${nombre}/g'`]);
   console.log(ok(`cascarón en ${destino}`));
+  // el CNAME se crea YA: la asociación hostname→túnel de Cloudflare tarda
+  // ~30 s-2 min en propagar por los POPs, y ese era el único paso lento de la
+  // PRIMERA publicación. Propagando mientras editas, publicar llega caliente.
+  try {
+    const dns = await upsertCname(hostDe(nombre), tunnelTarget(SPEC.tunnelUuid));
+    console.log(ok(`DNS ${dns}: ${hostDe(nombre)} ${dim("(propaga mientras editas)")}`));
+  } catch (e) {
+    console.log(warn(`DNS no pre-creado (${(e as Error).message}); publicar lo hará`));
+  }
   console.log(info(`edita y publica:  mke artifact publicar ${nombre} ${destino}`));
   return true;
 }
