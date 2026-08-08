@@ -229,10 +229,13 @@ async function main() {
         if (!nombre) return fail("uso: mke artifact borrar <nombre>");
         await artifactBorrar(nombre);
       } else if (action === "acceso") {
-        // `mke artifact acceso <artifact> <sujeto>` o `... --todos <sujeto>`
-        const todos = flags.todos === true;
+        // `mke artifact acceso <artifact> <sujeto>` o `... --todos <sujeto>`.
+        // OJO parseFlags: un flag seguido de un valor se lo traga como string
+        // (`--todos email` → flags.todos = email), así que se aceptan ambas
+        // formas.
+        const todos = flags.todos === true || typeof flags.todos === "string";
         const objetivo = todos ? "*" : nombre;
-        const sujeto = todos ? nombre : origen;
+        const sujeto = typeof flags.todos === "string" ? flags.todos : todos ? nombre : origen;
         if (!objetivo || !sujeto) {
           return fail("uso: mke artifact acceso <artifact|--todos> <email|rol:x> [--quitar]");
         }
