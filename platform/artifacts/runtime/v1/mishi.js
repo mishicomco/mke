@@ -75,7 +75,17 @@
     sello.className = "barra-sello";
     sello.textContent = "artifact";
     sello.title = "Prototipo sin repo propio ni BD. Graduar = mke artifact graduar.";
-    barra.append(nombre, sello);
+    // el HUECO de la app dentro de la barra estandar (mismo contrato que
+    // BarraMishi del molde): si el body trae un elemento [data-barra], se
+    // ADOPTA aca — con sus listeners intactos, la app lo pinta con su piel.
+    const hueco = document.createElement("span");
+    hueco.className = "barra-hueco";
+    const propio = document.querySelector("[data-barra]");
+    if (propio) {
+      propio.removeAttribute("hidden");
+      hueco.append(propio);
+    }
+    barra.append(nombre, hueco, sello);
     document.body.prepend(barra);
 
     fetch("/_mishi/sesion")

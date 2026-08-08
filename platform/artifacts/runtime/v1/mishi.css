@@ -46,7 +46,11 @@ body {
   top: 0;
   z-index: 10;
 }
-.barra-nombre { font-weight: 600; margin-right: auto; }
+.barra-nombre { font-weight: 600; }
+/* el hueco de la app dentro de la barra estandar (mismo contrato que
+   BarraMishi del molde): empuja sello y chip a la derecha; la app lo llena
+   (<nav data-barra> en el body) y lo pinta con su propia piel */
+.barra-hueco { display: flex; align-items: center; gap: 12px; margin-right: auto; min-width: 0; }
 .barra-sello {
   font-size: 11px;
   color: var(--muted);
