@@ -12,7 +12,7 @@
 //                   (+ push-mirror a GitHub, best-effort — ver nota)
 //   3. git+push   → git init + commit inicial + push a origin=forge (dispara CI)
 //   4. plataforma → appInit() en-proceso (BD+DNS+Secret+host static-mishi+grant)
-//   5. registro   → `mishi-studio app crear --nombre <app> --repo mishicomco/<app>`
+//   5. registro   → MUERTO 2026-08-08 (Studio archivado; catálogo = mke-catalogo)
 //   6. resumen    → qué quedó pendiente de humano (secretos reales, etc.)
 //
 // Secretos SIEMPRE por vault-mishi, jamás impresos.
@@ -42,7 +42,7 @@ export interface AppNacerOpts {
   sinCascaron?: boolean;
   /** salta `mke app init`. */
   sinPlataforma?: boolean;
-  /** salta el registro en Studio. */
+  /** no-op de compat (el registro en Studio murió 2026-08-08). */
   sinRegistro?: boolean;
   /** imprime el plan y no toca nada. */
   dryRun?: boolean;
@@ -95,7 +95,7 @@ export async function appNacer(app: string, opts: AppNacerOpts): Promise<void> {
     console.log(`  2. repo forge: crea ${remoto} en ${FORGE.base} (privado) + push-mirror a GitHub (best-effort)`);
     console.log(`  3. git: init + commit inicial + push a origin=${originUrl} (dispara CI del forge → deploy stage) — si el dir existe`);
     console.log(`  4. plataforma: mke app init ${app} --env ${env} --subdominio ${subdominio}${opts.sinPlataforma ? dim("  (SALTEADO)") : ""}`);
-    console.log(`  5. registro: mishi-studio app crear --nombre ${app} --repo ${remoto}${opts.sinRegistro ? dim("  (SALTEADO)") : ""}`);
+    console.log(dim("  5. registro en Studio: MUERTO (Studio archivado; catálogo = ConfigMap mke-catalogo)"));
     console.log(info("\nnada ejecutado (--dry-run)"));
     return;
   }
@@ -225,23 +225,9 @@ export async function appNacer(app: string, opts: AppNacerOpts): Promise<void> {
     }
   }
 
-  // ── 5) registro en Studio — vía su CLI (no la API interna) ─────────────────
-  if (opts.sinRegistro) {
-    pasos.push({ nombre: "registro", estado: "salteado", detalle: "salteado (--sin-registro)" });
-  } else if (!enPath("mishi-studio")) {
-    pasos.push({ nombre: "registro", estado: "salteado", detalle: "TODO: `mishi-studio` no está en PATH — registrá a mano: mishi-studio app crear --nombre " + app + " --repo " + remoto });
-    console.log(warn("registro en Studio SALTEADO: `mishi-studio` no está en PATH (TODO manual)"));
-  } else {
-    const reg = await run("mishi-studio", ["app", "crear", "--nombre", app, "--repo", remoto]);
-    if (reg.code !== 0) {
-      // No cortamos: la app ya nació (repo+plataforma). El registro es catálogo.
-      pasos.push({ nombre: "registro", estado: "salteado", detalle: `TODO: registro en Studio falló (re-corre: mishi-studio app crear --nombre ${app} --repo ${remoto}): ${ultimas(reg.stderr || reg.stdout, 5)}` });
-      console.log(warn(`registro en Studio falló (no bloquea; re-corrible): ${ultimas(reg.stderr || reg.stdout, 5)}`));
-    } else {
-      pasos.push({ nombre: "registro", estado: "ok", detalle: `app registrada en Studio (repo ${remoto})` });
-      console.log(ok(`app registrada en Studio`));
-    }
-  }
+  // (el paso "registro en Studio" MURIÓ el 2026-08-08: Studio está archivado
+  //  desde 2026-08-07 — el catálogo vivo es el ConfigMap mke-catalogo, que ya
+  //  regenera `mke app init`. --sin-registro queda como no-op de compat.)
 
   resumen(pasos);
 }
