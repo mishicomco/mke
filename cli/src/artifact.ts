@@ -158,9 +158,11 @@ const CSP = [
 
 const GUARDIA = "artifact-guardia";
 const GUARDIA_IMG = `${GUARDIA}:dev`;
-// Autorizacion de los artifacts (fail-closed en la guardia): los artifacts son
-// PRIVADOS DE SANTI por defecto — el IdP es permisivo (solo firma), asi que la
-// allowlist vive aqui, en la puerta.
+// Autorizacion de los artifacts: el DUEÑO de la verdad es la tabla `accesos`
+// de artifact-mishi (`mke artifact acceso`), no esta lista. Lo que queda aqui
+// es el RESPALDO ANTI-LOCKOUT que la guardia usa SOLO si artifact-mishi no
+// responde — por eso conserva los emails que tenian acceso cuando la allowlist
+// era la unica verdad (2026-08-08). No crece: dar acceso = `mke artifact acceso`.
 const GUARDIA_PERMITIDOS = [
   "santiramirezc@gmail.com",
   "q1.26.mateo@gmail.com", // cuenta IA dedicada: verifica lo que publica (OK Santi 2026-08-07)
@@ -654,6 +656,53 @@ export async function artifactNacer(nombre: string): Promise<boolean> {
     console.log(warn(`DNS no pre-creado (${(e as Error).message}); publicar lo hará`));
   }
   console.log(info(`edita y publica:  mke artifact publicar ${nombre} ${destino}`));
+  return true;
+}
+
+/**
+ * Da o quita acceso a VER un artifact. La verdad vive en la tabla `accesos` de
+ * artifact-mishi; este verbo habla con su endpoint interno igual que el
+ * registro del manifiesto: curl DESDE el pod de static-mishi (el endpoint
+ * rechaza todo lo que venga por Traefik, X-Forwarded-Host presente).
+ *
+ * `--todos` = artifact '*' (todos los artifacts). El sujeto es un email o
+ * `rol:<rol>` (rol por-app de la tabla usuarios de artifact-mishi).
+ */
+export async function artifactAcceso(
+  artifact: string,
+  sujeto: string,
+  opciones: { quitar?: boolean } = {},
+): Promise<boolean> {
+  if (artifact !== "*") {
+    const invalido = validarNombre(artifact);
+    if (invalido) {
+      console.log(bad(invalido));
+      return false;
+    }
+  }
+  const pod = await podStatic();
+  if (!pod) {
+    console.log(bad("no encuentro el pod de static-mishi (es el telefono interno del cluster)"));
+    return false;
+  }
+  const cuerpo = JSON.stringify({
+    artifact,
+    sujeto: sujeto.trim().toLowerCase(),
+    quitar: opciones.quitar === true,
+    por: "mke",
+  }).replace(/'/g, "'\\''");
+  const r = await execEnPod(
+    pod,
+    `curl -s -m 10 -X POST http://artifact-mishi.${SPEC.namespace}.svc.cluster.local/api/interno/acceso ` +
+      `-H 'content-type: application/json' -d '${cuerpo}'`,
+  );
+  if (!/"ok":true/.test(r.out)) {
+    console.log(bad(`acceso NO aplicado: ${r.out.slice(0, 200) || "artifact-mishi no responde"}`));
+    return false;
+  }
+  const donde = artifact === "*" ? "TODOS los artifacts" : `${artifact}${SUFIJO}`;
+  console.log(ok(opciones.quitar ? `acceso quitado: ${sujeto} → ${donde}` : `acceso dado: ${sujeto} → ${donde}`));
+  console.log(info("la guardia cachea el veredicto 60 s por email|artifact"));
   return true;
 }
 

@@ -119,6 +119,26 @@ plataforma de mke — identity-mishi NO se toco:
   publica `mishi.sesion` + evento `mishi:sesion`.
 - `guardiaDeploy()` es parte de `publicar` (se construye solo si falta);
   `mke artifact guardia` fuerza rebuild tras editar `server.mjs`.
+### Quién entra: la tabla `accesos` (2026-08-08 — muere la allowlist en código)
+
+La guardia autentica; QUIÉN puede ver cada artifact es dato, no código (dar
+acceso no puede costar un redeploy). La verdad vive en la tabla `accesos` de
+artifact-mishi: `(artifact, sujeto)` donde `artifact='*'` = todos y `sujeto` es
+un email o `rol:<rol>` (rol por-app de `usuarios`). Un admin de artifact-mishi
+entra a todo. Fail-closed: sin fila y sin admin, 403.
+
+```
+mke artifact acceso <n|--todos> <email|rol:x> [--quitar]
+```
+
+El verbo llama el endpoint solo-interno (`/api/interno/acceso`) con curl desde
+el pod de static-mishi, igual que el registro del manifiesto. La guardia
+consulta ese endpoint tras validar el JWT y cachea el veredicto **60 s por
+email|artifact** (la ForwardAuth corre en cada request, incluidos assets).
+`ALLOWED_EMAILS` sobrevive SOLO como respaldo anti-lockout: si artifact-mishi
+no responde, la puerta cae a esa lista del env (no se cachea, para volver a la
+verdad apenas reviva) en vez de dejar a todos afuera.
+
 - Un artifact PUBLICO no existe hoy: si un prototipo necesita publico, es señal
   de graduar (o de un flag `--publico` futuro con caso real).
 
@@ -225,6 +245,26 @@ Dos niveles: **Nivel 0 sin manifiesto** (`jsonb` libre, prototipo puro) y
 **Nivel 1 con manifiesto** (validacion + documentacion viva). Lo que no se
 recupera es el autocompletado del editor — costo real de no tener build, y una
 señal mas de cuando graduar.
+
+### Semilla de plataforma (2026-08-08)
+
+Un artifact que abre VACÍO obliga a sembrar a mano desde una sesión, y esos
+datos quedan con dueño real (editables/borrables). Por eso el manifiesto
+declara datos iniciales:
+
+```json
+"colecciones": { "menu": { "campos": {…},
+  "semilla": { "cafe": { "nombre": "Café", "precio": 4000 } } } }
+```
+
+Al registrar el manifiesto, artifact-mishi los materializa con el dueño
+sintético `mishi:semilla` — ningún `sub` del IdP puede valer eso, así que la
+regla "solo el dueño escribe" ya los vuelve intocables por API, sin regla
+nueva. Es DECLARATIVO como kustomize: lo que el manifiesto deja de declarar se
+BORRA (solo filas de ese dueño; los documentos de usuarios reales jamás entran
+al diff, y un upsert nunca pisa una clave ocupada por alguien real). Se valida
+contra los campos declarados (errores que nombran clave y campo) y cuenta
+contra las cuotas: si no cabe, el registro entero falla (413) y no deja rastro.
 
 ### Modelo de datos
 

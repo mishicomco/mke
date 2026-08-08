@@ -21,13 +21,54 @@ const ENTRAR = process.env.ENTRAR_URL ?? "https://identity.mishi.com.co/entrar";
 const EMISOR = "identity-mishi";
 const COOKIE = "mishi_sesion";
 // AUTORIZACION propia (ley rbac-por-app: el IdP es permisivo y SOLO firma; la
-// puerta real es de cada app). Fail-closed: lista vacia = nadie entra.
+// puerta real es de cada app). El DUEÑO de la verdad es la tabla `accesos` de
+// artifact-mishi, consultada por su endpoint interno: dar acceso a alguien es
+// `mke artifact acceso ...`, no editar codigo y redeployar.
+//
+// ALLOWED_EMAILS queda como RESPALDO ANTI-LOCKOUT: si artifact-mishi no
+// responde (caido, migrando, red), la puerta cae a esa lista del env en vez de
+// dejar a todo el mundo afuera. Fail-closed igual: lista vacia = nadie entra.
+const ACCESO_URL = process.env.ACCESO_URL
+  ?? "http://artifact-mishi.prod.svc.cluster.local/api/interno/acceso";
 const PERMITIDOS = (process.env.ALLOWED_EMAILS ?? "")
   .split(",")
   .map((e) => e.trim().toLowerCase())
   .filter(Boolean);
-const autorizado = (usuario) =>
-  PERMITIDOS.includes((usuario?.email ?? "").toLowerCase());
+const enRespaldo = (email) => PERMITIDOS.includes(email);
+
+/** nombre del artifact desde el host publico (<nombre>-artifact.mishi.com.co). */
+const artifactDeHost = (host) =>
+  /^([a-z0-9][a-z0-9-]*)-artifact\.mishi\.com\.co$/.exec(
+    String(host ?? "").toLowerCase().split(":")[0],
+  )?.[1] ?? null;
+
+// Veredicto cacheado 60 s por email|artifact: la ForwardAuth corre en CADA
+// request (incluidos assets), y una consulta HTTP por asset seria absurda.
+const CACHE_MS = 60_000;
+const cache = new Map();
+
+async function autorizado(usuario, host) {
+  const email = (usuario?.email ?? "").toLowerCase();
+  if (!email) return false;
+  const artifact = artifactDeHost(host);
+  if (!artifact) return false; // host que no es artifact: no se adivina
+  const llave = `${email}|${artifact}`;
+  const hit = cache.get(llave);
+  if (hit && hit.hasta > Date.now()) return hit.valor;
+  let valor;
+  try {
+    const url = `${ACCESO_URL}?email=${encodeURIComponent(email)}&artifact=${encodeURIComponent(artifact)}`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    valor = (await r.json()).autorizado === true;
+  } catch {
+    // respaldo anti-lockout (ver arriba): NO se cachea, para volver a la
+    // verdad en cuanto artifact-mishi reviva.
+    return enRespaldo(email);
+  }
+  cache.set(llave, { valor, hasta: Date.now() + CACHE_MS });
+  return valor;
+}
 
 const jwksSets = IDPS.map((u) => createRemoteJWKSet(new URL(`${u}/v1/llaves`)));
 
@@ -88,14 +129,14 @@ createServer(async (req, res) => {
   if (ruta === "/guardia") {
     const usuario = await usuarioDe(req.headers.cookie);
     if (usuario) {
-      if (autorizado(usuario)) {
+      if (await autorizado(usuario, req.headers["x-forwarded-host"])) {
         res.writeHead(204);
         return res.end();
       }
       // autenticado pero NO autorizado: 403 plano (redirigir al login seria
-      // un loop — ya tiene sesion valida, solo que no es de la lista)
+      // un loop — ya tiene sesion valida, solo que no tiene acceso)
       res.writeHead(403, { "content-type": "text/plain; charset=utf-8" });
-      return res.end("403 — esta cuenta no tiene acceso a los artifacts");
+      return res.end("403 — esta cuenta no tiene acceso a este artifact");
     }
     // SIEMPRE https: el TLS termina en Cloudflare y el tunel habla http, asi
     // que X-Forwarded-Proto llega "http" — pero el `volverPermitido` del IdP
@@ -110,7 +151,7 @@ createServer(async (req, res) => {
   if (ruta === "/sesion") {
     const usuario = await usuarioDe(req.headers.cookie);
     return json(res, 200, usuario
-      ? { autenticado: true, autorizado: autorizado(usuario), usuario }
+      ? { autenticado: true, autorizado: await autorizado(usuario, req.headers["x-forwarded-host"]), usuario }
       : { autenticado: false });
   }
 

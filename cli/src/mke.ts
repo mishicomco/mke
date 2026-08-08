@@ -14,7 +14,7 @@ import { appInit } from "./appInit.js";
 import { appNacer } from "./appNacer.js";
 import { ensureStaticHostPaso } from "./staticHost.js";
 import { ls } from "./ls.js";
-import { artifactPublicar, artifactLs, artifactVer, artifactRollback, artifactBorrar, artifactNacer, guardiaDeploy } from "./artifact.js";
+import { artifactPublicar, artifactLs, artifactVer, artifactRollback, artifactBorrar, artifactNacer, artifactAcceso, guardiaDeploy } from "./artifact.js";
 import { previewUp, previewPull, previewEstado, previewLs, previewMerge, previewDown, previewLimpiar } from "./preview.js";
 import { hostFor } from "./mkeConfig.js";
 
@@ -55,6 +55,8 @@ const HELP = `mke — CLI de plataforma MKE
                                                   commit a artifacts-mishi (historia+backup) → CNAME → routing+CSP → cp al PVC (+runtime compartido)
                                                   → aviso SSE (pestañas abiertas se recargan solas) → doctor    opciones: --mensaje "..."
   mke artifact ls | ver <n> | rollback <n> | borrar <n>   listar · cadena pública · versión anterior · PVC+CNAME (la historia queda)  ·  diseño: mke/AI_ARTIFACTS.md
+  mke artifact acceso <n|--todos> <email|rol:x>  quién puede VER un artifact (tabla accesos de artifact-mishi; la guardia la consulta)
+                                                  opciones: --quitar   ·  --todos = todos los artifacts
   mke publish <front> <env>                      front estático: build imagen contenido → Job al PVC de static-mishi → doctor
         opciones: --tag <t>  --dir <repo>  --host <fqdn>   (env = stage | prod)
   mke rollout <app> <env>                        rollout restart + status (sin rebuild; tag mutable / reciclar pods)
@@ -226,10 +228,19 @@ async function main() {
       } else if (action === "borrar") {
         if (!nombre) return fail("uso: mke artifact borrar <nombre>");
         await artifactBorrar(nombre);
+      } else if (action === "acceso") {
+        // `mke artifact acceso <artifact> <sujeto>` o `... --todos <sujeto>`
+        const todos = flags.todos === true;
+        const objetivo = todos ? "*" : nombre;
+        const sujeto = todos ? nombre : origen;
+        if (!objetivo || !sujeto) {
+          return fail("uso: mke artifact acceso <artifact|--todos> <email|rol:x> [--quitar]");
+        }
+        await artifactAcceso(objetivo, sujeto, { quitar: flags.quitar === true });
       } else if (action === "guardia") {
         await guardiaDeploy(true); // rebuild+redeploy de la puerta
       } else {
-        return fail("uso: mke artifact nacer|publicar|ls|ver|rollback|borrar|guardia …  (diseño: mke/AI_ARTIFACTS.md)");
+        return fail("uso: mke artifact nacer|publicar|ls|ver|rollback|borrar|acceso|guardia …  (diseño: mke/AI_ARTIFACTS.md)");
       }
       break;
     }
