@@ -17,7 +17,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, basename } from "node:path";
+import { join, basename, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { appsRoot, DOMAIN, ENVS } from "./mkeConfig.js";
 import { run, ok, bad, warn, info, dim } from "./sh.js";
@@ -429,34 +429,37 @@ export async function artifactPublicar(
   const host = hostDe(nombre);
   console.log(info(`publicando ${dim(nombre)} → https://${host}`));
 
-  // 1) fuente e historia (git) — el PVC nunca es el unico ejemplar
+  // 1) fuente e historia (git) — el PVC nunca es el unico ejemplar.
+  // `nacer` deja el cascaron EXACTAMENTE en cloneDir()/<nombre>: publicar
+  // desde ahi es el flujo natural y NO copia sobre si mismo (antes el rmSync
+  // previo BORRABA el trabajo — bache destructivo real de un agente).
   if (!opts.sinArchivar) {
     const destRepo = join(cloneDir(), nombre);
     const token = await secretGet(FORGE.apiTokenSecret);
     await asegurarRepo(token);
-    rmSync(destRepo, { recursive: true, force: true });
-    mkdirSync(destRepo, { recursive: true });
-    if (esDir) cpSync(origen, destRepo, { recursive: true });
-    else cpSync(origen, join(destRepo, "index.html"));
+    const enSitio = resolve(origen) === resolve(destRepo);
+    if (!enSitio) {
+      rmSync(destRepo, { recursive: true, force: true });
+      mkdirSync(destRepo, { recursive: true });
+      if (esDir) cpSync(origen, destRepo, { recursive: true });
+      else cpSync(origen, join(destRepo, "index.html"));
+    }
     await archivar(nombre, opts.mensaje ?? `publicar ${nombre} (${basename(origen)})`);
   }
 
-  // 2) DNS (un CNAME por artifact; comodin descartado). Si el host ya
-  // resuelve, el CNAME existe: se salta la API de Cloudflare (republicacion
-  // rapida; si apuntara mal, el doctor postflight lo delata).
+  // 2) DNS (un CNAME por artifact). SIEMPRE por la API de CF: "el host
+  // resuelve" NO prueba nada — hay un comodin en la zona y TODO subdominio
+  // resuelve (bache real: el atajo por getent dejo un artifact nuevo colgado
+  // del destino del comodin, 530 hasta un `mke dns` manual). El upsert es
+  // idempotente y cuesta ~1 s: esa es la republicacion rapida honesta.
   let dnsRecienCreado = false;
-  const yaResuelve = (await run("getent", ["hosts", host])).code === 0;
-  if (yaResuelve) {
-    console.log(ok(`DNS ya resuelve: ${host} ${dim("(CNAME sin tocar)")}`));
-  } else {
-    try {
-      const dns = await upsertCname(host, tunnelTarget(SPEC.tunnelUuid));
-      dnsRecienCreado = dns === "creado";
-      console.log(ok(`DNS ${dns}: ${host}`));
-    } catch (e) {
-      console.log(bad(`DNS fallo: ${(e as Error).message}`));
-      return false;
-    }
+  try {
+    const dns = await upsertCname(host, tunnelTarget(SPEC.tunnelUuid));
+    dnsRecienCreado = dns === "creado";
+    console.log(ok(`DNS ${dns}: ${host}`));
+  } catch (e) {
+    console.log(bad(`DNS fallo: ${(e as Error).message}`));
+    return false;
   }
 
   // 3) puerta (privados por defecto) + routing + CSP (idempotentes)
