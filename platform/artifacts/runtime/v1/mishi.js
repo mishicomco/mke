@@ -2,7 +2,8 @@
 // window.mishi. CONTRATO ESTABLE (ver mishi.css). Los artifacts son PRIVADOS
 // por defecto: artifact-guardia ya dejo pasar a quien ve esta pagina; aca solo
 // se pregunta QUIEN es (/_mishi/sesion) y se ofrece salir (/_mishi/salir).
-// Fase 2: mishi.datos (artifact-mishi); el prototipo usa localStorage.
+// mishi.datos (artifact-mishi) es la capa de datos VIVA en prod; localStorage
+// solo para juguetes.
 (() => {
   const artifact = location.hostname.split(".")[0].replace(/-artifact$/, "");
 

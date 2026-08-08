@@ -72,7 +72,7 @@ asi el artifact lo referencia relativo a su propio origen:
   seguridad) se parcha en UN lugar para TODOS los artifacts, sin republicar
   ninguno. `v2` solo cuando se rompa el contrato; los viejos siguen en `v1`.
 - Contenido v1: theme neutro del molde + barra superior estandar +
-  `window.mishi` (`sesion`, `datos.*` — Fase 2; hoy avisan que no existen).
+  `window.mishi` (`sesion`, `cuandoSesion`, `datos.*` — Fase 2 VIVA en prod).
 
 ## Seguridad de origen desde el dia 1 (la leccion de la cookie)
 
