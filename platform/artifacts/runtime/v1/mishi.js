@@ -21,8 +21,15 @@
   };
   const seg = encodeURIComponent;
 
+  // los módulos del artifact corren ANTES de que la sesión llegue: para leer
+  // el usuario sin carreras, `const usuario = await mishi.cuandoSesion` —
+  // resuelve con el usuario ({sub,email,name}) o null si no hay sesión.
+  let resolverSesion;
+  const cuandoSesion = new Promise((r) => (resolverSesion = r));
+
   window.mishi = {
     artifact,
+    cuandoSesion,
     sesion: null, // se puebla al resolver /_mishi/sesion; escucha "mishi:sesion"
     datos: {
       guardar: (coleccion, clave, valor) =>
@@ -74,8 +81,12 @@
     fetch("/_mishi/sesion")
       .then((r) => (r.ok ? r.json() : null))
       .then((s) => {
-        if (!s || !s.autenticado) return;
+        if (!s || !s.autenticado) {
+          resolverSesion(null);
+          return;
+        }
         window.mishi.sesion = s.usuario;
+        resolverSesion(s.usuario);
         const chip = document.createElement("span");
         chip.className = "quien-chip";
         const foto = document.createElement("span");
@@ -103,6 +114,6 @@
         barra.append(chip);
         window.dispatchEvent(new CustomEvent("mishi:sesion", { detail: s.usuario }));
       })
-      .catch(() => {});
+      .catch(() => resolverSesion(null));
   });
 })();
