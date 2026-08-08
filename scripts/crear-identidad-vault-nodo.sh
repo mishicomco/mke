@@ -20,7 +20,14 @@ set -uo pipefail
 IDENTIDAD="${1:?uso: crear-identidad-vault-nodo.sh <identidad> <archivo-token>}"
 TOKEN_FILE="${2:?uso: crear-identidad-vault-nodo.sh <identidad> <archivo-token>}"
 VAULT_URL="${VAULT_URL:-https://vault.mishi.com.co}"
-GPG_CLI="$HOME/mishicomco/secrets-mishi/bin/mishi-secret"
+# Raiz de confianza en el store GPG offline `~/.config/mishi/secrets/` (el repo
+# secrets-mishi fue borrado 2026-08-08; se lee con `gpg` crudo).
+GPG_STORE="$HOME/.config/mishi/secrets"
+gpg_get() {
+  gpg --batch --quiet --passphrase-file "$GPG_STORE/.passphrase" \
+    --decrypt "$GPG_STORE/$1.gpg" 2>/dev/null \
+    | sed -E '1s/^[[:space:]]*api_key:[[:space:]]*//' | tr -d '\r\n'
+}
 
 NAMESPACES="barrio-mishi block-mishi chrome-mishi content-factory dropshipping-mishi
 flipping-mishi git-mishi hola-mishi identity-mishi images-mishi links-mishi
@@ -28,7 +35,7 @@ mahjong-mishi marketing-mishi memoria-mishi minio-mishi mishi-bank mishi-studio
 omni-mishi omni-whatsapp polla-futbolera postgres-mishi recolor static-mishi
 status-mishi travelhabitco vault-mishi"
 
-ROOT="$("$GPG_CLI" get vault-root-token)" || { echo "no pude leer vault-root-token del GPG" >&2; exit 1; }
+ROOT="$(gpg_get vault-root-token)" || { echo "no pude leer vault-root-token del GPG" >&2; exit 1; }
 [ -n "$ROOT" ] || { echo "vault-root-token vacio" >&2; exit 1; }
 
 resp="$(curl -s -w '\n%{http_code}' -X POST "$VAULT_URL/v1/identidad" \

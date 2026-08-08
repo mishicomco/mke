@@ -24,9 +24,15 @@ set -uo pipefail
 VAULT_URL="${VAULT_URL:-https://vault.mishi.com.co}"
 TOKEN_FILE="${VAULT_DEPLOY_TOKEN_FILE:-$HOME/.config/mishi/vault-mke.token}"
 IDENTIDAD="mke-runner-deploy"
-# CLI del almacen GPG offline (raiz de confianza: el token root NO vive en el
-# vault que protege). No es el shim `mishi-secret` del PATH: ruta explicita.
-GPG_CLI="$HOME/mishicomco/secrets-mishi/bin/mishi-secret"
+# Raiz de confianza: el token root NO vive en el vault que protege, sino en el
+# store GPG offline `~/.config/mishi/secrets/`. El repo secrets-mishi fue borrado
+# (2026-08-08); se lee con `gpg` crudo, no con un CLI externo.
+GPG_STORE="$HOME/.config/mishi/secrets"
+gpg_get() {
+  gpg --batch --quiet --passphrase-file "$GPG_STORE/.passphrase" \
+    --decrypt "$GPG_STORE/$1.gpg" 2>/dev/null \
+    | sed -E '1s/^[[:space:]]*api_key:[[:space:]]*//' | tr -d '\r\n'
+}
 
 NAMESPACES="barrio-mishi block-mishi chrome-mishi content-factory dropshipping-mishi
 flipping-mishi git-mishi hola-mishi identity-mishi images-mishi links-mishi
@@ -48,7 +54,7 @@ if [ -f "$TOKEN_FILE" ]; then
 fi
 
 # ── 1) token root, SOLO en memoria ────────────────────────────────────────────
-ROOT="$("$GPG_CLI" get vault-root-token)" || { echo "no pude leer vault-root-token del GPG" >&2; exit 1; }
+ROOT="$(gpg_get vault-root-token)" || { echo "no pude leer vault-root-token del GPG" >&2; exit 1; }
 [ -n "$ROOT" ] || { echo "vault-root-token vacio" >&2; exit 1; }
 
 # ── 2) identidad tipo ci ──────────────────────────────────────────────────────
