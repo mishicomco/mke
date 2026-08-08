@@ -59,7 +59,9 @@ export async function doctor(host: string, healthPath = "/health"): Promise<Diag
   if (code === "000") {
     motivo = "inalcanzable (timeout)";
     console.log(bad(`${url} inalcanzable (timeout)`));
-  } else if (is1033 || code === "530") {
+  } else if (code === "530" || (is1033 && !/^(200|201|301|302|401|403)$/.test(code))) {
+    // un codigo sano manda aunque el body mencione "1033" (durante la
+    // propagacion la cadena alterna y el doctor imprimia "1033/302")
     motivo = `tunnel sin ruta (1033/${code})`;
     console.log(bad(`tunnel sin ruta al host (1033/${code}) — CNAME apunta a un tunnel que no sirve ${host}`));
     console.log(info("  fix: mke dns <host> <env>  (re-apunta al tunnel correcto del entorno)"));
