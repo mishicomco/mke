@@ -30,6 +30,10 @@ const COOKIE = "mishi_sesion";
 // dejar a todo el mundo afuera. Fail-closed igual: lista vacia = nadie entra.
 const ACCESO_URL = process.env.ACCESO_URL
   ?? "http://artifact-mishi.prod.svc.cluster.local/api/interno/acceso";
+// verificar = la ruta que AUTO-PROVISIONA al usuario (le da su fila+rol) antes
+// de decidir; sin esto el acceso por `rol:` no funciona (usuarios nunca se
+// puebla para artifacts). Le mandamos el usuario COMPLETO del JWT.
+const VERIFICAR_URL = process.env.VERIFICAR_URL ?? `${ACCESO_URL}/verificar`;
 const PERMITIDOS = (process.env.ALLOWED_EMAILS ?? "")
   .split(",")
   .map((e) => e.trim().toLowerCase())
@@ -57,8 +61,14 @@ async function autorizado(usuario, host) {
   if (hit && hit.hasta > Date.now()) return hit.valor;
   let valor;
   try {
-    const url = `${ACCESO_URL}?email=${encodeURIComponent(email)}&artifact=${encodeURIComponent(artifact)}`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    // POST con el usuario COMPLETO: artifact-mishi lo auto-provisiona (fila +
+    // rol default) y decide — así el acceso por `rol:` funciona.
+    const r = await fetch(VERIFICAR_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ usuario, artifact }),
+      signal: AbortSignal.timeout(3000),
+    });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     valor = (await r.json()).autorizado === true;
   } catch {

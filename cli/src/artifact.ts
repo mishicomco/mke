@@ -706,13 +706,25 @@ export async function artifactAcceso(
   return true;
 }
 
-/** borra del PVC + CNAME. La historia queda en git (recuperable con publicar). */
+/** borra del PVC + CNAME + BD. La historia queda en git (recuperable con publicar). */
 export async function artifactBorrar(nombre: string): Promise<void> {
   const host = hostDe(nombre);
   const pod = await podStatic();
   if (pod) {
     await execEnPod(pod, `rm -rf ${carpetaPvc(nombre)}`);
     console.log(ok(`borrado del PVC ${dim(carpetaPvc(nombre))}`));
+    // purga la BD (registro + datos + accesos + manifiesto): sin esto, un
+    // `publicar` futuro con el MISMO nombre heredaría datos/privados/manifiesto
+    // viejos (fuga por reuso de nombre). El fuente en git NO se toca: revive.
+    const cuerpo = JSON.stringify({ artifact: nombre }).replace(/'/g, "'\\''");
+    const r = await execEnPod(
+      pod,
+      `curl -s -m 10 -X POST http://artifact-mishi.${SPEC.namespace}.svc.cluster.local/api/interno/purgar ` +
+        `-H 'content-type: application/json' -d '${cuerpo}'`,
+    );
+    const docs = /"documentos":(\d+)/.exec(r.out)?.[1];
+    if (/"ok":true/.test(r.out)) console.log(ok(`datos purgados de la BD ${dim(`(${docs ?? 0} documentos)`)}`));
+    else console.log(warn(`purga de datos NO confirmada: ${r.out.slice(0, 160) || "artifact-mishi no responde"}`));
   } else {
     console.log(warn("no encuentro el pod de static-mishi; PVC sin tocar"));
   }
