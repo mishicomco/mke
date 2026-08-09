@@ -45,10 +45,18 @@ export function hostsParaEdge(catalogo: EntradaCatalogo[]): HostEdge[] {
     .filter((e) => entradaDeEnv(e, "prod"))
     .filter((e) => e.host !== "status.mishi.com.co")
     .map((e) => ({ host: e.host, nombre: e.app, ...(e.api && e.ruta ? { ruta: e.ruta } : {}) }));
-  const yaDerivado = new Set(derivados.map((h) => h.host));
-  return [...derivados, ...PLATAFORMA.filter((h) => !yaDerivado.has(h.host))].sort((a, b) =>
-    a.nombre.localeCompare(b.nombre),
-  );
+  // Si un host de PLATAFORMA ya salió derivado del cluster, sus atributos
+  // (critico, ruta) se FUSIONAN en la entrada derivada — no se pierden.
+  const porHost = new Map(derivados.map((h) => [h.host, h]));
+  for (const p of PLATAFORMA) {
+    const derivado = porHost.get(p.host);
+    if (!derivado) porHost.set(p.host, p);
+    else {
+      if (p.critico) derivado.critico = true;
+      if (p.ruta && !derivado.ruta) derivado.ruta = p.ruta;
+    }
+  }
+  return [...porHost.values()].sort((a, b) => a.nombre.localeCompare(b.nombre));
 }
 
 let cachedToken: string | null = null;

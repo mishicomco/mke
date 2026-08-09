@@ -32,11 +32,14 @@ describe("hostsParaEdge — la vista prod que consume el worker", () => {
     assert.ok(!hosts.some((h) => h.host === "status.mishi.com.co"));
   });
 
-  it("suma la PLATAFORMA sin duplicar un host ya derivado del cluster", () => {
+  it("suma la PLATAFORMA sin duplicar un host ya derivado del cluster, fusionando atributos", () => {
     const hosts = hostsParaEdge([
       entrada({ app: "vault", host: "vault.mishi.com.co", api: true, ruta: "/salud" }),
+      entrada({ app: "mesh-central", host: "mesh.mishi.com.co", api: true, ruta: "/" }),
     ]);
     assert.equal(hosts.filter((h) => h.host === "vault.mishi.com.co").length, 1);
+    const mesh = hosts.find((h) => h.host === "mesh.mishi.com.co");
+    assert.equal(mesh?.critico, true, "critico de PLATAFORMA se fusiona en la entrada derivada");
     for (const p of PLATAFORMA.filter((p) => p.host !== "vault.mishi.com.co")) {
       assert.ok(hosts.some((h) => h.host === p.host), `falta ${p.host}`);
     }
