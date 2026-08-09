@@ -44,6 +44,15 @@ export interface AppSpec {
   contenedor: string;
   tieneBackend: boolean;
   tieneFrontend: boolean;
+  /**
+   * ¿el front de esta app se sirve por static-mishi? Default true. En false
+   * (manifiesto `frontEstatico: false`) la app sirve su propia superficie
+   * pública por su ingress propio (ej. chrome-mishi: noVNC gateado en
+   * chrome-vnc), así que el preflight NO mete su host en static-mishi y el
+   * deploy NO publica front al PVC. NO es un override por-app: es una capacidad
+   * general (apps servicio / con ingress propio).
+   */
+  frontEstatico: boolean;
   /** apps/backend/drizzle con al menos el journal → hay compuerta de migraciones. */
   tieneDrizzle: boolean;
   drizzleDir: string;
@@ -74,6 +83,8 @@ export function hostDeOverlayTexto(kustomizationYaml: string): string | null {
 export interface MishiApp {
   subdominio?: string;
   conFrontend?: boolean;
+  /** false = la app sirve su front por su ingress propio, no por static-mishi. */
+  frontEstatico?: boolean;
 }
 
 /** Lee `.mishi-app.json` del repo (lo escribe create-mishi-app). {} si no está. */
@@ -143,6 +154,7 @@ export function derivarAppSpec(app: string, env: string, opts: AppSpecOpts = {})
     contenedor: app,
     tieneBackend: existsSync(join(dir, "apps", "backend", "Dockerfile")),
     tieneFrontend,
+    frontEstatico: manifiesto.frontEstatico !== false,
     tieneDrizzle,
     drizzleDir,
     tablasSensiblesPath: join(dir, "apps", "backend", "db", "tablas-sensibles.txt"),

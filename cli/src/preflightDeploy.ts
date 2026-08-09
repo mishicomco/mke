@@ -245,7 +245,7 @@ export async function preflightDeploy(spec: AppSpec, opts: PreflightOpts = {}): 
     console.log(`  2. BD/rol \`${spec.db}\` en ${nsForEnv(spec.env)} + Secret k8s \`${spec.secretK8s}\``);
     console.log(`  3. MATERIALIZAR \`${spec.secretK8s}\` desde el vault (${sufijoEnv(spec.env) ? `${VAULT.url} ns \`${spec.app}\`, nombres \`*__${spec.env}\`` : `${spec.env} fuera del vault — no aplica`}) + compuerta de declaración de mke.preview.yaml`);
     console.log(`  4. DNS ${spec.host} → tunnel ${env.tunnelUuid}`);
-    console.log(`  5. ${spec.tieneFrontend && !opts.sinStatic ? `host ${spec.host} en el ingress VIVO de static-mishi (subPath \`${spec.front}\`)` : "sin front estático — no se toca static-mishi"}`);
+    console.log(`  5. ${spec.tieneFrontend && spec.frontEstatico && !opts.sinStatic ? `host ${spec.host} en el ingress VIVO de static-mishi (subPath \`${spec.front}\`)` : "sin front estático — no se toca static-mishi"}`);
     return true;
   }
 
@@ -275,7 +275,7 @@ export async function preflightDeploy(spec: AppSpec, opts: PreflightOpts = {}): 
   // post-mortem #1 fue un CNAME a un túnel muerto que nadie detectó).
   if (!(await ensureDns(spec.host, spec.env))) return false;
 
-  if (spec.tieneFrontend && !opts.sinStatic) {
+  if (spec.tieneFrontend && spec.frontEstatico && !opts.sinStatic) {
     if (!(await convergerHostStatic(spec))) return false;
   } else {
     console.log(dim("  sin front estático — no se toca el ingress de static-mishi."));

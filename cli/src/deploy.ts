@@ -109,7 +109,7 @@ export async function deploy(app: string, env: string, opts: DeployOpts = {}): P
     console.log(`  b. docker build --provenance=false --sbom=false ${imagen}${spec.tieneFrontend ? ` + ${imagenFront} (VITE_IDENTITY_URL=${identityOrigin(env)})` : ""} → ${cargaTxt} → apply -k ${spec.overlay} (+re-pin)`);
     console.log(`  c. ${spec.tieneDrizzle ? `dump → Job ${spec.app}-migrate-${sha} → drift-check de \`${spec.db}\`` : "sin migraciones: nada"}`);
     console.log(`  d. set image deploy/${spec.deployName} ${spec.contenedor}=${imagenRef} → rollout status`);
-    console.log(`  e. ${spec.tieneFrontend ? `publicar front al PVC static-www (subPath=${spec.front})` : "sin front"}`);
+    console.log(`  e. ${spec.tieneFrontend && spec.frontEstatico ? `publicar front al PVC static-www (subPath=${spec.front})` : "sin front estático — no se publica al PVC"}`);
     console.log(`  f. regenerar el ConfigMap mke-catalogo (stage+prod)`);
     console.log(`  g. mke doctor ${spec.host}${healthPath(spec, opts.health)}`);
     console.log(info("nada ejecutado (--dry-run)"));
@@ -273,7 +273,9 @@ export async function deploy(app: string, env: string, opts: DeployOpts = {}): P
   }
 
   // ── e) FRONT al PVC de static-mishi ──────────────────────────────────────
-  if (spec.tieneFrontend) {
+  // Solo si la app sirve su front por static-mishi. Una app con ingress propio
+  // (frontEstatico:false, ej. chrome-mishi noVNC) no publica al PVC.
+  if (spec.tieneFrontend && spec.frontEstatico) {
     if (!(await publicarFrontAlPvc(spec.front, env, imagenFrontRef))) {
       console.log(bad("la publicación del front al PVC falló"));
       process.exitCode = 1;
