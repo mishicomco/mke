@@ -131,7 +131,24 @@ export async function deploy(app: string, env: string, opts: DeployOpts = {}): P
   if (!token) {
     console.log(warn(`sin token npm del forge (vault-mishi get ${NPM_TOKEN_SECRET}) — el build fallará si la app usa @mishicomco/*`));
   }
-  const argsToken = token ? ["--build-arg", `NODE_AUTH_TOKEN=${token}`] : [];
+  // El token npm del forge se pasa como BuildKit SECRET (--mount=type=secret en
+  // el Dockerfile), NO como --build-arg: un ARG queda en el historial de la capa
+  // (`docker history --no-trunc`), cacheado en el nodo, cosechable por otro
+  // proceso del runner. El secret nunca toca una capa. (fuego 2026-08-08 V3.)
+  // Retrocompat en TRANSICIÓN: seguimos pasando --build-arg para los Dockerfiles
+  // aún NO migrados (ARG + npm ci); en un Dockerfile ya migrado (sin ARG) ese
+  // --build-arg queda SIN USAR → no se hornea → no filtra. Cuando toda la flota
+  // migre, borrar la parte --build-arg de acá.
+  if (token) {
+    process.env.NODE_AUTH_TOKEN = token; // lo lee `--secret ...,env=NODE_AUTH_TOKEN`
+    process.env.DOCKER_BUILDKIT = "1"; // --secret exige BuildKit
+  }
+  const argsToken = token
+    ? [
+        "--secret", "id=node_auth_token,env=NODE_AUTH_TOKEN",
+        "--build-arg", `NODE_AUTH_TOKEN=${token}`, // TRANSICIÓN: borrar al migrar toda la flota
+      ]
+    : [];
 
   const codeBackend = await pasoStreamCmd(
     `docker build ${dim(imagen)}`,
