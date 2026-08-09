@@ -32,9 +32,24 @@ export function forgeRepoUrl(app: string): string {
 /** Lee un secreto por vault-mishi. Devuelve null si no existe/vacío. Nunca lo imprime. */
 export async function secretGet(name: string): Promise<string | null> {
   const r = await run("vault-mishi", ["get", name]);
-  if (r.code !== 0) return null;
-  const v = r.stdout.trim();
-  return v.length > 0 ? v : null;
+  if (r.code === 0) {
+    const v = r.stdout.trim();
+    if (v.length > 0) return v;
+  }
+  // Fallback por-nodo: el laptop (runner prod) no tiene el CLI vault-mishi pero
+  // sí el token del forge en un archivo 0600 (identidad por nodo). Sin esto,
+  // `mke ci …` moría ahí con "no pude leer el token".
+  if (name === FORGE.apiTokenSecret) {
+    try {
+      const { readFileSync } = await import("node:fs");
+      const { homedir } = await import("node:os");
+      const v = readFileSync(`${homedir()}/.config/mishi/git-mishi.token`, "utf8").trim();
+      if (v.length > 0) return v;
+    } catch {
+      /* sin archivo tampoco — se reporta como antes */
+    }
+  }
+  return null;
 }
 
 interface ForgeCall {
