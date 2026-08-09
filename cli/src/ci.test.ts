@@ -5,7 +5,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { ENVS_CI, lineasDeError, parsearRuns, runFallido, validarDispatch } from "./ci.js";
+import { ENVS_CI, EXIT_WAIT, elegirRun, esSha, lineasDeError, parsearRuns, runFallido, runTerminal, validarDispatch } from "./ci.js";
+import type { RunCi } from "./ci.js";
+
+// fábrica para los tests de elegirRun (el corazón anti-falso-positivo del wait).
+function run(p: Partial<RunCi>): RunCi {
+  return { id: 1, indice: 1, estado: "success", conclusion: "success", rama: "main", sha: "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111", evento: "push", creado: "", titulo: "", ...p };
+}
 
 test("parsearRuns acepta {workflow_runs:[…]} y también un array pelado", () => {
   const uno = parsearRuns(JSON.stringify({ workflow_runs: [{ id: 7, status: "done", conclusion: "success", head_branch: "main" }] }));
@@ -36,7 +42,7 @@ test("un run todavía corriendo no cuenta como fallido", () => {
 });
 
 test("runFallido reconoce failure/cancelled y no marca success", () => {
-  const base = { id: 1, indice: 1, estado: "done", rama: "main", evento: "push", creado: "", titulo: "" };
+  const base = { id: 1, indice: 1, estado: "done", rama: "main", sha: "", evento: "push", creado: "", titulo: "" };
   assert.equal(runFallido({ ...base, conclusion: "failure" }), true);
   assert.equal(runFallido({ ...base, conclusion: "cancelled" }), true);
   assert.equal(runFallido({ ...base, conclusion: "success" }), false);
@@ -47,6 +53,65 @@ test("lineasDeError filtra las líneas sospechosas y cae al log entero si no hay
   const log = "paso 1 ok\n::error::migracion fallida\npaso 2 ok\n";
   assert.deepEqual(lineasDeError(log), ["::error::migracion fallida"]);
   assert.deepEqual(lineasDeError("todo bien\nsigue bien\n"), ["todo bien", "sigue bien"]);
+});
+
+// ── ci wait: elegir EL run, nunca "el último" ────────────────────────────────
+
+test("elegirRun por tag: matchea prettyref exacto y elige el más nuevo, no runs de main", () => {
+  const runs = [
+    run({ id: 10, rama: "main", estado: "success" }),
+    run({ id: 12, rama: "v0.1.2", estado: "running", conclusion: "" }),
+    run({ id: 11, rama: "main", estado: "success" }),
+  ];
+  assert.equal(elegirRun(runs, "v0.1.2")?.id, 12);
+  assert.equal(elegirRun(runs, "v9.9.9"), null);
+});
+
+test("elegirRun con minId ignora runs pre-existentes (la raíz del falso positivo)", () => {
+  // escenario real: push a main, el run nuevo AÚN no existe; el viejo es success.
+  const antes = [run({ id: 10, rama: "main", estado: "success" })];
+  assert.equal(elegirRun(antes, "main", { minId: 10 }), null); // NO reporta el viejo
+  const despues = [...antes, run({ id: 13, rama: "main", estado: "running", conclusion: "" })];
+  assert.equal(elegirRun(despues, "main", { minId: 10 })?.id, 13);
+});
+
+test("elegirRun por sha y con --sha desambigua tag+main simultáneos del mismo push", () => {
+  const runs = [
+    run({ id: 20, rama: "main", sha: "3c82f9ac".padEnd(40, "0") }),
+    run({ id: 21, rama: "v0.1.2", sha: "3c82f9ac".padEnd(40, "0") }),
+    run({ id: 19, rama: "main", sha: "deadbeef".padEnd(40, "0") }),
+  ];
+  assert.equal(elegirRun(runs, "3c82f9ac")?.id, 21); // por sha: el más nuevo de ese sha
+  assert.equal(elegirRun(runs, "v0.1.2")?.id, 21); // por tag: sigue el tag, no main
+  assert.equal(elegirRun(runs, "main", { sha: "3c82f9ac" })?.id, 20); // rama + sha exacto
+  assert.equal(elegirRun(runs, "main", { sha: "cafecafe" }), null);
+});
+
+test("elegirRun ignora eventos delete (on:delete de previews comparte prettyref)", () => {
+  const runs = [run({ id: 30, rama: "main", evento: "delete" })];
+  assert.equal(elegirRun(runs, "main"), null);
+});
+
+test("esSha reconoce hex ≥7 y no confunde tags ni ramas", () => {
+  assert.equal(esSha("3c82f9ac"), true);
+  assert.equal(esSha("main"), false);
+  assert.equal(esSha("v0.1.2"), false);
+  assert.equal(esSha("abc"), false);
+});
+
+test("runTerminal: running/waiting NO son terminales; success/failure/skipped sí", () => {
+  assert.equal(runTerminal(run({ estado: "running", conclusion: "" })), false);
+  assert.equal(runTerminal(run({ estado: "waiting", conclusion: "" })), false);
+  assert.equal(runTerminal(run({ estado: "success" })), true);
+  assert.equal(runTerminal(run({ estado: "failure", conclusion: "failure" })), true);
+  assert.equal(runTerminal(run({ estado: "skipped", conclusion: "skipped" })), true);
+});
+
+test("los exit codes del wait son inequívocos y solo success es 0", () => {
+  assert.equal(EXIT_WAIT.success, 0);
+  const noVerdes = [EXIT_WAIT.fallo, EXIT_WAIT.timeout, EXIT_WAIT["no-aparecio"], EXIT_WAIT.killed];
+  assert.ok(noVerdes.every((c) => c > 0));
+  assert.equal(new Set(noVerdes).size, 4); // distinguibles entre sí
 });
 
 test("los únicos environments válidos del dispatch son stage y prod", () => {

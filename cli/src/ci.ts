@@ -39,6 +39,8 @@ export interface RunCi {
   /** veredicto terminal (Forgejo lo mete en `status`; GitHub en `conclusion`). */
   conclusion: string;
   rama: string;
+  /** sha completo del commit del run (`commit_sha` en Forgejo). */
+  sha: string;
   evento: string;
   creado: string;
   titulo: string;
@@ -81,6 +83,7 @@ export function parsearRuns(json: string): RunCi[] {
       estado,
       conclusion,
       rama: String(x.head_branch ?? x.prettyref ?? ""),
+      sha: String(x.commit_sha ?? x.head_sha ?? ""),
       evento: String(x.event ?? x.trigger_event ?? ""),
       creado: String(x.created_at ?? x.created ?? x.started ?? ""),
       titulo: String(x.title ?? ""),
@@ -131,6 +134,192 @@ async function ultimoRunInteresante(app: string): Promise<number | null> {
   const runs = parsearRuns(r.body);
   if (!runs.length) return null;
   return (runs.find(runFallido) ?? runs[0]).id;
+}
+
+// ── mke ci wait ──────────────────────────────────────────────────────────────
+// Cicatriz que lo motiva (2026-08-09): "el último run" NO es "mi run". Justo
+// después de un push el run nuevo aún no está registrado, y un loop sobre
+// `mke ci runs <app> 1` lee el SUCCESS del run ANTERIOR y reporta verde un
+// deploy que sigue corriendo (pasó ≥2 veces: links y dropshipping). Además un
+// push a main y un tag v* del mismo sha crean runs casi simultáneos, y un
+// runner reiniciado deja el run en vuelo ZOMBIE (log cortado sin "Job failed").
+// Por eso este verbo sigue EL run del ref pedido, tolera la ventana en que aún
+// no existe, y detecta el zombie por el heartbeat (`updated_at`) de su task.
+
+export type VeredictoWait = "success" | "fallo" | "timeout" | "no-aparecio" | "killed";
+
+/** exit codes del veredicto — para que un script nunca tenga que adivinar. */
+export const EXIT_WAIT: Record<VeredictoWait, number> = {
+  success: 0,
+  fallo: 1, // failure | error | cancelled | skipped ([skip ci] silencia también el run del tag)
+  timeout: 2,
+  "no-aparecio": 3,
+  killed: 4,
+};
+
+/** true si el ref pinta a sha (hex ≥7) y no a nombre de rama/tag. */
+export function esSha(ref: string): boolean {
+  return /^[0-9a-f]{7,40}$/i.test(ref) && !/^v\d/.test(ref);
+}
+
+/**
+ * Elige EL run que corresponde al ref pedido — NUNCA "el último". PURA.
+ *   - ref sha (hex ≥7): matchea `commit_sha` por prefijo.
+ *   - ref tag/rama: matchea `prettyref` EXACTO (Forgejo manda el tag pelado,
+ *     ej "v0.1.2"); si además viene `sha`, lo exige (desambigua ramas tipo
+ *     `main`, donde runs viejos comparten prettyref).
+ *   - `minId` filtra runs pre-existentes (un dispatch/push nuevo siempre crea
+ *     un id global MAYOR que los que ya estaban).
+ * Devuelve el matching más nuevo (id global más alto), o null.
+ */
+export function elegirRun(runs: RunCi[], ref: string, opts: { sha?: string; minId?: number } = {}): RunCi | null {
+  const candidatos = runs.filter((r) => {
+    if (opts.minId !== undefined && r.id <= opts.minId) return false;
+    if (r.evento === "delete") return false; // el on:delete de previews comparte prettyref
+    const porRef = esSha(ref) ? r.sha.toLowerCase().startsWith(ref.toLowerCase()) : r.rama === ref;
+    if (!porRef) return false;
+    if (opts.sha && !r.sha.toLowerCase().startsWith(opts.sha.toLowerCase())) return false;
+    return true;
+  });
+  if (!candidatos.length) return null;
+  return candidatos.reduce((a, b) => (b.id > a.id ? b : a));
+}
+
+/** true si el estado/conclusión del run ya es terminal. */
+export function runTerminal(r: RunCi): boolean {
+  return TERMINALES.includes(r.estado.toLowerCase()) || r.conclusion !== "";
+}
+
+export interface WaitOpciones {
+  /** sha esperado (desambigua refs de rama tipo `main`). */
+  sha?: string;
+  /** solo considerar runs con id global MAYOR (capturalo ANTES de disparar). */
+  minId?: number;
+  /** timeout total en segundos (default 1200 — chrome-mishi buildea lento). */
+  timeoutSeg?: number;
+  /** ventana para que el run APAREZCA en la API (default 120). */
+  aparecerSeg?: number;
+  /** segundos sin heartbeat de la task para declararlo killed (default 300). */
+  estancadoSeg?: number;
+  /** intervalo de poll (default 5). */
+  intervaloSeg?: number;
+}
+
+const dormir = (seg: number) => new Promise((r) => setTimeout(r, seg * 1000));
+
+/** heartbeat (`updated_at`) de la task del run, vía /actions/tasks. */
+async function heartbeatTask(app: string, indice: number): Promise<Date | null> {
+  const r = await apiGet(`/repos/${FORGE.org}/${encodeURIComponent(app)}/actions/tasks?limit=40`);
+  if (r.status !== 200) return null;
+  try {
+    const body = JSON.parse(r.body) as { workflow_runs?: { url?: string; updated_at?: string }[] };
+    const task = (body.workflow_runs ?? []).find((t) => String(t.url ?? "").endsWith(`/actions/runs/${indice}`));
+    return task?.updated_at ? new Date(task.updated_at) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Espera a que EL run del ref pedido llegue a estado terminal y devuelve un
+ * veredicto inequívoco (exit code en EXIT_WAIT). Tolera la ventana donde el
+ * run AÚN NO EXISTE (no la confunde con "terminó"); detecta el run zombie de
+ * un runner reiniciado (heartbeat estancado → `killed`).
+ */
+export async function ciWait(app: string, ref: string, opts: WaitOpciones = {}): Promise<VeredictoWait> {
+  const timeoutSeg = opts.timeoutSeg ?? 1200;
+  const aparecerSeg = opts.aparecerSeg ?? 120;
+  const estancadoSeg = opts.estancadoSeg ?? 300;
+  const intervaloSeg = opts.intervaloSeg ?? 5;
+  const t0 = Date.now();
+  const transcurrido = () => Math.round((Date.now() - t0) / 1000);
+
+  if (!esSha(ref) && !/^v\d/.test(ref) && !opts.sha && opts.minId === undefined) {
+    console.log(warn(`ref "${ref}" es una rama: sin --sha ni --min-id puedo agarrar un run VIEJO de la misma rama.`));
+    console.log(dim(`  pasá --sha $(git rev-parse ${ref}) o capturá --min-id antes del push.`));
+  }
+
+  let runId: number | null = null; // una vez visto, se sigue ESE run (lock por id)
+  let estadoPrevio = "";
+  let ultimoAvance = Date.now();
+
+  for (;;) {
+    if (transcurrido() > timeoutSeg) {
+      console.log(bad(`timeout (${timeoutSeg}s) esperando el run de ${ref} — sigue sin veredicto terminal`));
+      return "timeout";
+    }
+    const r = await apiGet(`/repos/${FORGE.org}/${encodeURIComponent(app)}/actions/runs?limit=40`);
+    if (r.status !== 200) {
+      console.log(warn(`forge GET runs → ${r.status}; reintento`));
+      await dormir(intervaloSeg);
+      continue;
+    }
+    const runs = parsearRuns(r.body);
+    const run: RunCi | null = runId !== null
+      ? (runs.find((x) => x.id === runId) ?? null)
+      : elegirRun(runs, ref, { sha: opts.sha, minId: opts.minId });
+
+    if (!run) {
+      if (runId !== null) {
+        // ya lo teníamos y desapareció de la lista: raro; seguir esperando.
+        await dormir(intervaloSeg);
+        continue;
+      }
+      if (transcurrido() > aparecerSeg) {
+        console.log(bad(`el run de ${ref} NO apareció en ${aparecerSeg}s — ¿el push llegó al forge? ¿"[skip ci]" en el commit?`));
+        return "no-aparecio";
+      }
+      console.log(dim(`  esperando que el run de ${ref} aparezca en el forge… (${transcurrido()}s)`));
+      await dormir(intervaloSeg);
+      continue;
+    }
+
+    if (runId === null) {
+      runId = run.id;
+      console.log(info(`run #${run.indice} (id ${run.id}) — ${ref} @ ${run.sha.slice(0, 8)}`));
+    }
+
+    if (runTerminal(run)) {
+      const v = (run.conclusion || run.estado).toLowerCase();
+      if (v === "success") {
+        console.log(ok(`run #${run.indice} de ${ref} → success (${transcurrido()}s)`));
+        return "success";
+      }
+      if (v === "skipped") {
+        console.log(bad(`run #${run.indice} de ${ref} → SKIPPED — ojo: "[skip ci]" en el commit tageado silencia también el run del tag`));
+      } else {
+        console.log(bad(`run #${run.indice} de ${ref} → ${v}  (logs: mke ci logs ${app} ${run.id})`));
+      }
+      return "fallo";
+    }
+
+    if (run.estado !== estadoPrevio) {
+      estadoPrevio = run.estado;
+      ultimoAvance = Date.now();
+      console.log(dim(`  run #${run.indice}: ${run.estado} (${transcurrido()}s)`));
+    }
+
+    // zombie: runner reiniciado a mitad → el run queda "running" con la task
+    // sin heartbeat y el log cortado SIN "Job failed".
+    if (run.estado.toLowerCase() === "running") {
+      const hb = await heartbeatTask(app, run.indice);
+      if (hb) ultimoAvance = Math.max(ultimoAvance, hb.getTime());
+      const estancado = Math.round((Date.now() - ultimoAvance) / 1000);
+      if (estancado > estancadoSeg) {
+        console.log(bad(`run #${run.indice} de ${ref} lleva ${estancado}s sin heartbeat — runner muerto/reiniciado (run KILLED, el log queda cortado sin "Job failed")`));
+        return "killed";
+      }
+    }
+
+    await dormir(intervaloSeg);
+  }
+}
+
+/** id global más alto visible HOY — capturalo ANTES de push/dispatch para usar como --min-id. */
+export async function ultimoRunId(app: string): Promise<number> {
+  const r = await apiGet(`/repos/${FORGE.org}/${encodeURIComponent(app)}/actions/runs?limit=1`);
+  if (r.status !== 200) return 0;
+  return parsearRuns(r.body)[0]?.id ?? 0;
 }
 
 /** Líneas que huelen a error, para no vomitar el log entero. */
@@ -230,7 +419,7 @@ export function validarDispatch(env: string, ref?: string): { ref: string } | { 
  * Dispara el workflow estándar con el input `environment` (y el `ref` de prod)
  * VALIDADOS — ver `validarDispatch`.
  */
-export async function ciDeploy(app: string, env: string, refPedido?: string): Promise<void> {
+export async function ciDeploy(app: string, env: string, refPedido?: string, opts: { sinEsperar?: boolean; timeoutSeg?: number } = {}): Promise<void> {
   const validado = validarDispatch(env, refPedido);
   if ("error" in validado) {
     console.log(bad(validado.error));
@@ -238,6 +427,9 @@ export async function ciDeploy(app: string, env: string, refPedido?: string): Pr
     return;
   }
   const ref = validado.ref;
+  // id más alto ANTES del dispatch: el run nuevo tendrá id mayor (así el wait
+  // jamás agarra un run viejo del mismo ref — el falso positivo que motivó todo).
+  const minId = opts.sinEsperar ? 0 : await ultimoRunId(app);
   const res = await fetch(
     `${await forgeBaseLocal()}/api/v1/repos/${FORGE.org}/${encodeURIComponent(app)}/actions/workflows/${WORKFLOW}/dispatches`,
     {
@@ -252,7 +444,13 @@ export async function ciDeploy(app: string, env: string, refPedido?: string): Pr
   );
   if (res.ok || res.status === 204) {
     console.log(ok(`dispatch de ${WORKFLOW} para ${FORGE.org}/${app} → environment=${env} (ref ${ref})`));
-    console.log(dim(`  seguí el run con: mke ci runs ${app}`));
+    if (opts.sinEsperar) {
+      console.log(dim(`  seguí el run con: mke ci wait ${app} --ref ${ref}`));
+      return;
+    }
+    // el dispatch encadena el wait: sin veredicto terminal OK, esto NO es verde.
+    const veredicto = await ciWait(app, ref, { minId, timeoutSeg: opts.timeoutSeg });
+    process.exitCode = EXIT_WAIT[veredicto];
     return;
   }
   console.log(bad(`dispatch → ${res.status}: ${(await res.text()).slice(0, 300)}`));

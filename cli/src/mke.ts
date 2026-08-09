@@ -3,7 +3,7 @@
 // deploy · ci · publish · expose · rollout · dns · doctor · ls · db provision
 
 import { expose } from "./expose.js";
-import { ciRuns, ciLogs, ciDeploy } from "./ci.js";
+import { ciRuns, ciLogs, ciDeploy, ciWait, EXIT_WAIT } from "./ci.js";
 import { ensureDns } from "./dns.js";
 import { doctor } from "./doctor.js";
 import { deploy } from "./deploy.js";
@@ -50,7 +50,15 @@ const HELP = `mke — CLI de plataforma MKE
   mke ci runs <app> [n]                         últimos runs del repo en el forge (id/estado/rama)
   mke ci logs <app> [runId]                     baja el ZIP de logs del run (último FALLIDO por default) y muestra las líneas de error
   mke ci deploy <app> <env>                     dispara el workflow ci-cd.yml con el input "environment" VALIDADO (stage|prod)
+                                                  y ESPERA el veredicto del run (encadena \`ci wait\`; exit ≠0 si no terminó success)
         opciones: --ref <rama|tag>   stage: default main · prod: OBLIGATORIO y tiene que ser un tag v* (ej: --ref v0.1.2)
+                  --sin-esperar (solo dispara)  --timeout <seg>
+  mke ci wait <app> --ref <tag|sha|rama>        espera EL run de ese ref exacto (NUNCA "el último": tras un push el run nuevo
+                                                  tarda en registrarse y "el último" es el ANTERIOR → falso positivo).
+                                                  veredicto/exit: success=0 · fallo(failure/cancelled/skipped)=1 · timeout=2 ·
+                                                  no-apareció=3 · killed(runner muerto, log cortado sin "Job failed")=4
+        opciones: --sha <sha> (OBLIGATORIO en la práctica si el ref es una rama)  --min-id <id> (id global previo al push)
+                  --timeout <seg> (default 1200)  --aparecer <seg> (default 120)  --estancado <seg> (default 300)
   mke artifact nacer <nombre>                    ARTIFACT: genera el cascarón modular estándar en ~/mishicomco/artifacts-mishi/<nombre>
   mke artifact publicar <nombre> <html|carpeta>  frontend sin build ni ambientes en <nombre>-artifact.mishi.com.co —
                                                   commit a artifacts-mishi (historia+backup) → CNAME → routing+CSP → cp al PVC (+runtime compartido)
@@ -150,16 +158,30 @@ async function main() {
     }
     case "ci": {
       const [action, app, tercero] = positional;
-      if (!action || !app) return fail("uso: mke ci runs <app> [n] | mke ci logs <app> [runId] | mke ci deploy <app> <env> [--ref r]");
+      if (!action || !app) return fail("uso: mke ci runs <app> [n] | mke ci logs <app> [runId] | mke ci deploy <app> <env> [--ref r] | mke ci wait <app> --ref <tag|sha|rama>");
       if (action === "runs") {
         await ciRuns(app, tercero ? Number(tercero) : undefined);
       } else if (action === "logs") {
         await ciLogs(app, tercero ? Number(tercero) : undefined);
       } else if (action === "deploy") {
         if (!tercero) return fail("uso: mke ci deploy <app> <stage|prod> [--ref r]  (prod exige --ref <tag v*>)");
-        await ciDeploy(app, tercero, typeof flags.ref === "string" ? flags.ref : undefined);
+        await ciDeploy(app, tercero, typeof flags.ref === "string" ? flags.ref : undefined, {
+          sinEsperar: flags["sin-esperar"] === true,
+          timeoutSeg: typeof flags.timeout === "string" ? Number(flags.timeout) : undefined,
+        });
+      } else if (action === "wait") {
+        const ref = typeof flags.ref === "string" ? flags.ref : undefined;
+        if (!ref) return fail("uso: mke ci wait <app> --ref <tag|sha|rama> [--sha s] [--min-id n] [--timeout seg] [--aparecer seg] [--estancado seg]");
+        const veredicto = await ciWait(app, ref, {
+          sha: typeof flags.sha === "string" ? flags.sha : undefined,
+          minId: typeof flags["min-id"] === "string" ? Number(flags["min-id"]) : undefined,
+          timeoutSeg: typeof flags.timeout === "string" ? Number(flags.timeout) : undefined,
+          aparecerSeg: typeof flags.aparecer === "string" ? Number(flags.aparecer) : undefined,
+          estancadoSeg: typeof flags.estancado === "string" ? Number(flags.estancado) : undefined,
+        });
+        process.exitCode = EXIT_WAIT[veredicto];
       } else {
-        return fail("uso: mke ci runs|logs|deploy <app> …");
+        return fail("uso: mke ci runs|logs|deploy|wait <app> …");
       }
       break;
     }
