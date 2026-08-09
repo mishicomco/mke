@@ -9,13 +9,23 @@ export interface RunResult {
   stderr: string;
 }
 
+export interface RunOpts {
+  /** se escribe al stdin del proceso (p.ej. SQL para `kubectl exec -i ... psql`). */
+  input?: string;
+  /** env COMPLETO del hijo (reemplaza, no mergea) — para inyectar secretos sin
+   * pasarlos por args (visibles en /proc). */
+  env?: NodeJS.ProcessEnv;
+}
+
 /**
  * Corre un comando sin shell. Nunca lanza: devuelve code != 0 en error.
- * `input` se escribe al stdin del proceso (p.ej. SQL para `kubectl exec -i ... psql`).
+ * Tercer arg: string = stdin (compat) u opciones {input, env}.
  */
-export async function run(cmd: string, args: string[], input?: string): Promise<RunResult> {
+export async function run(cmd: string, args: string[], inputOrOpts?: string | RunOpts): Promise<RunResult> {
+  const opts: RunOpts = typeof inputOrOpts === "string" ? { input: inputOrOpts } : (inputOrOpts ?? {});
+  const input = opts.input;
   try {
-    const child = execFileAsync(cmd, args, { maxBuffer: 32 * 1024 * 1024 });
+    const child = execFileAsync(cmd, args, { maxBuffer: 32 * 1024 * 1024, env: opts.env });
     if (input !== undefined) {
       child.child.stdin?.end(input);
     }

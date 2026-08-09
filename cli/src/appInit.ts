@@ -11,7 +11,7 @@
 // nada, reporta "ya existía" y sigue. El password NUNCA se imprime — vive
 // solo en el vault-mishi y en el Secret de k8s.
 
-import { envOrThrow, hostFor } from "./mkeConfig.js";
+import { VAULT, envOrThrow, hostFor } from "./mkeConfig.js";
 import { EXEC_CONTEXT, POD, nsForEnv, toSnake } from "./dbProvision.js";
 import { ensureDns } from "./dns.js";
 import { run, ok, bad, info, warn, dim } from "./sh.js";
@@ -88,17 +88,52 @@ export async function appInit(app: string, env: string, opts: AppInitOpts): Prom
     return;
   }
 
-  // 2) DATABASE_URL al vault (nunca por stdout).
+  // 2) grants del vault ANTES de escribir el secreto (fuego R2: el orden viejo
+  //    escribía con `mke-runner-deploy` sin grant todavía → 403 en TODO primer
+  //    nacimiento). Idempotentes y best-effort.
+  //    - emisor `mke-runner` con `emitir` para el ns (sin esto `mke preview up`
+  //      degrada a sin-lease — causa raíz cazada el 2026-07-19).
+  //    - deploy `mke-runner-deploy`: leer el ns + escribir SOLO DATABASE_URL__*
+  //      (lo usa la fase MATERIALIZAR de cada deploy… y el paso 3 de acá abajo).
+  const grant = await run("kubectl", [
+    "--context", VAULT.podContext, "-n", VAULT.podNamespace,
+    "exec", "deploy/vault-mishi", "--",
+    "node", "/app/dist/scripts/grantEmisor.js", "mke-runner", app,
+  ]);
+  if (grant.code === 0) {
+    steps.push({ name: `grant vault (emisor mke-runner → ${app})`, already: false });
+    console.log(ok(`grant \`emitir\` del vault asegurado para ${app}`));
+  } else {
+    console.log(warn(`grant del vault falló (sigo; re-corre con: kubectl --context ${VAULT.podContext} -n ${VAULT.podNamespace} exec deploy/vault-mishi -- node /app/dist/scripts/grantEmisor.js mke-runner ${app}): ${(grant.stderr || grant.stdout).split("\n")[0]}`));
+  }
+  const grantDeploy = await run("kubectl", [
+    "--context", VAULT.podContext, "-n", VAULT.podNamespace,
+    "exec", "deploy/vault-mishi", "--",
+    "node", "/app/dist/scripts/grantDeploy.js", "mke-runner-deploy", app,
+  ]);
+  if (grantDeploy.code === 0) {
+    steps.push({ name: `grant vault (deploy mke-runner-deploy → ${app})`, already: false });
+    console.log(ok(`grants de deploy del vault asegurados para ${app} (leer + escribir DATABASE_URL__*)`));
+  } else {
+    console.log(warn(`grant de deploy del vault falló (sigo; re-corre con: kubectl --context ${VAULT.podContext} -n ${VAULT.podNamespace} exec deploy/vault-mishi -- node /app/dist/scripts/grantDeploy.js mke-runner-deploy ${app}): ${(grantDeploy.stderr || grantDeploy.stdout).split("\n")[0]}`));
+  }
+
+  // 3) DATABASE_URL al vault (nunca por stdout). Reporta la verdad: si el vault
+  //    no lo guardó, es WARN visible, no un "guardado" falso (fuego R2).
   try {
-    const secretAlready = await guardarSecretoDb(app, env, databaseUrl);
-    steps.push({ name: `secreto ${secretNameDb}`, already: secretAlready });
-    console.log(ok(secretAlready ? `secreto ${secretNameDb} ya existía (actualizado)` : `secreto ${secretNameDb} guardado`));
+    const secretRes = await guardarSecretoDb(app, env, databaseUrl);
+    if (secretRes.guardado) {
+      steps.push({ name: `secreto ${secretNameDb}`, already: secretRes.rotado });
+      console.log(ok(secretRes.rotado ? `secreto ${secretNameDb} ya existía (actualizado)` : `secreto ${secretNameDb} guardado`));
+    } else {
+      console.log(warn(`secreto ${secretNameDb} NO quedó en el vault — re-corre \`mke app init ${app} --env ${env}\` cuando el vault esté sano`));
+    }
   } catch (e) {
     console.log(bad(e instanceof Error ? e.message : String(e)));
     return;
   }
 
-  // 3) namespace + Secret k8s.
+  // 4) namespace + Secret k8s.
   try {
     const nsAlready = await asegurarNamespace(env);
     steps.push({ name: `namespace ${spec.namespace}`, already: nsAlready });
@@ -112,51 +147,17 @@ export async function appInit(app: string, env: string, opts: AppInitOpts): Prom
     return;
   }
 
-  // 4) DNS — reusa ensureDns (mismo mecanismo que `mke dns`/`mke expose`).
+  // 5) DNS — reusa ensureDns (mismo mecanismo que `mke dns`/`mke expose`).
   const dnsOk = await ensureDns(host, env);
   steps.push({ name: `DNS ${host}`, already: false });
   if (!dnsOk) {
     console.log(warn("DNS no quedó verificado — revisá arriba; los demás pasos sí se completaron"));
   }
 
-  // 5) host del front en static-mishi — SIEMPRE ambos entornos (stage+prod): el
+  // 6) host del front en static-mishi — SIEMPRE ambos entornos (stage+prod): el
   // ingress no depende de en qué env se provisionó la BD hoy.
   const staticResult = await ensureStaticHostPaso(app, subdominio);
   steps.push({ name: `host static-mishi`, already: staticResult?.already ?? false });
-
-  // 6) grant del emisor del vault (decisión Santi 2026-07-19): toda app nace con
-  //    grant `emitir` para su ns — sin esto, `mke preview up` recibe 403 del vault
-  //    y degrada a sin-lease (causa raíz cazada el 2026-07-19). Idempotente
-  //    (emisor:grant usa onConflictDoNothing). Best-effort: si el vault de stage
-  //    no está, warning y se sigue (el backfill es re-corrible).
-  const grant = await run("kubectl", [
-    "--context", EXEC_CONTEXT, "-n", "stage",
-    "exec", "deploy/vault-mishi", "--",
-    "node", "/app/dist/scripts/grantEmisor.js", "mke-runner", app,
-  ]);
-  if (grant.code === 0) {
-    steps.push({ name: `grant vault (emisor mke-runner → ${app})`, already: false });
-    console.log(ok(`grant \`emitir\` del vault asegurado para ${app}`));
-  } else {
-    console.log(warn(`grant del vault falló (sigo; re-corre con: kubectl -n stage exec deploy/vault-mishi -- node /app/dist/scripts/grantEmisor.js mke-runner ${app}): ${(grant.stderr || grant.stdout).split("\n")[0]}`));
-  }
-
-  // 6b) grants de DEPLOY (decisión Santi 2026-07-28, "cablear al nacer"): la
-  //     identidad `mke-runner-deploy` materializa el Secret k8s desde el vault
-  //     en cada deploy — necesita leer el ns de la app y escribir SOLO
-  //     `DATABASE_URL__*` (grant acotado por patrón). Sin esto, una app nueva
-  //     degrada con WARN en la fase MATERIALIZAR. Idempotente y best-effort.
-  const grantDeploy = await run("kubectl", [
-    "--context", EXEC_CONTEXT, "-n", "stage",
-    "exec", "deploy/vault-mishi", "--",
-    "node", "/app/dist/scripts/grantDeploy.js", "mke-runner-deploy", app,
-  ]);
-  if (grantDeploy.code === 0) {
-    steps.push({ name: `grant vault (deploy mke-runner-deploy → ${app})`, already: false });
-    console.log(ok(`grants de deploy del vault asegurados para ${app} (leer + escribir DATABASE_URL__*)`));
-  } else {
-    console.log(warn(`grant de deploy del vault falló (sigo; re-corre con: kubectl -n stage exec deploy/vault-mishi -- node /app/dist/scripts/grantDeploy.js mke-runner-deploy ${app}): ${(grantDeploy.stderr || grantDeploy.stdout).split("\n")[0]}`));
-  }
 
   // 7) catálogo derivado: el ConfigMap `mke-catalogo` (stage+prod) se regenera
   //    de los ingress VIVOS. Best-effort, nunca fatal.

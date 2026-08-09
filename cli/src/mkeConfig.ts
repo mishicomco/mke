@@ -176,6 +176,12 @@ export const VAULT = {
   /** archivo 0600 con el token de esa identidad. NUNCA en el repo ni en logs. */
   deployTokenFile:
     process.env.VAULT_DEPLOY_TOKEN_FILE ?? join(homedir(), ".config", "mishi", "vault-mke.token"),
+  /** dónde vive el POD del vault que sirve `url` (para admin por kubectl exec,
+   * p.ej. grants al nacer una app). Fuego R2 2026-08-08: los grants iban al
+   * vault CONGELADO de stage (gamer) mientras las escrituras van al vivo de
+   * prod (laptop desde 2026-08-07) → 403 en todo primer nacimiento. */
+  podContext: process.env.VAULT_POD_CONTEXT ?? "mke-prod-laptop",
+  podNamespace: process.env.VAULT_POD_NAMESPACE ?? "prod",
 } as const;
 
 /** host público por convención; el id interno del app puede diferir del subdominio. */

@@ -123,18 +123,18 @@ export async function provisionarBd(app: string, appSnake: string, env: string):
  * seguido al Secret k8s (`aplicarSecretK8s`), así que la BD queda usable; se
  * avisa fuerte para que alguien lo guarde. Degradar, no caer.
  */
-export async function guardarSecretoDb(app: string, env: string, databaseUrl: string): Promise<boolean> {
+export async function guardarSecretoDb(app: string, env: string, databaseUrl: string): Promise<{ guardado: boolean; rotado: boolean }> {
   const acc = await accesoDeploy();
   if (!acc) {
     console.log(`WARN sin token de mke-runner-deploy: el DATABASE_URL de ${app}/${env} NO quedó en el vault`);
-    return false;
+    return { guardado: false, rotado: false };
   }
   try {
     const r = await escribirValor(acc, app, nombreDatabaseUrl(env), databaseUrl, `DATABASE_URL de ${app} en ${env} (lo escribe mke al provisionar la BD)`);
-    return r.rotado;
+    return { guardado: true, rotado: r.rotado };
   } catch (e) {
     console.log(`WARN no pude guardar el DATABASE_URL de ${app}/${env} en el vault (${e instanceof Error ? e.message : String(e)})`);
-    return false;
+    return { guardado: false, rotado: false };
   }
 }
 
