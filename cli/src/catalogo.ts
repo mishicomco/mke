@@ -73,12 +73,15 @@ export function parsearIngresses(salidaJson: string): IngressLite[] {
   });
 }
 
-/** Ruta de salud preferida entre los paths que declara un ingress. */
+/**
+ * Ruta de salud del ingress. Desde el estándar /salud (2026-08-09) NO se
+ * adivina: o el ingress declara `/salud` (el contrato del ecosistema) o no hay
+ * ruta de salud y el probe cae a `/`. El fallback viejo a /api|/v1 producía
+ * falsos amarillos: backends vivos contestando 404 JSON en una ruta que nunca
+ * fue de salud (travelhabit 2026-08-09).
+ */
 export function rutaDeSalud(paths: string[]): string | null {
-  for (const preferida of ["/salud", "/health", "/api", "/v1"]) {
-    if (paths.includes(preferida)) return preferida;
-  }
-  return paths[0] ?? null;
+  return paths.includes("/salud") ? "/salud" : null;
 }
 
 /**

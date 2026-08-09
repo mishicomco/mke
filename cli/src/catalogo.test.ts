@@ -47,9 +47,11 @@ test("ingress sin la etiqueta part-of=mke no entra al catálogo", () => {
   assert.deepEqual(derivarCatalogo([ajeno], "stage"), []);
 });
 
-test("la ruta de salud prefiere /salud sobre los demás paths", () => {
+test("la ruta de salud es /salud o nada (el estándar no se adivina)", () => {
   assert.equal(rutaDeSalud(["/api", "/v1", "/salud"]), "/salud");
-  assert.equal(rutaDeSalud(["/api"]), "/api");
+  // sin /salud declarado NO se cae a /api: eso producía falsos amarillos de
+  // backends vivos contestando 404 JSON en rutas que nunca fueron de salud.
+  assert.equal(rutaDeSalud(["/api"]), null);
   assert.equal(rutaDeSalud([]), null);
 });
 
