@@ -128,12 +128,17 @@ const SUFIJOS_EFIMEROS = [
 
 export async function deleteRecordsByName(
   name: string,
-  opts: { previewApp?: string; previewRama?: string } = {},
+  opts: { previewApp?: string; previewRama?: string; teardownApp?: boolean } = {},
 ): Promise<number> {
   const esPreviewExacto = Boolean(
     opts.previewApp && opts.previewRama && name === previewPodHost(opts.previewApp, opts.previewRama),
   );
-  if (!SUFIJOS_EFIMEROS.some((s) => name.endsWith(s)) && !esPreviewExacto) {
+  // `mke app borrar` (teardownApp) borra el CNAME EXACTO del host de una app —
+  // el guardarraíl de sufijos efímeros existe para el borrado casual/masivo, no
+  // para el teardown explícito de UNA app nombrada. El sufijo -artifact sigue
+  // vetado (lo maneja `mke artifact borrar`).
+  const esTeardownApp = Boolean(opts.teardownApp) && !name.endsWith("-artifact.mishi.com.co");
+  if (!SUFIJOS_EFIMEROS.some((s) => name.endsWith(s)) && !esPreviewExacto && !esTeardownApp) {
     throw new Error(`rechazo borrar DNS de '${name}': solo hosts efímeros ${SUFIJOS_EFIMEROS.join(" / ")} o el host EXACTO de un preview-pod (app+rama)`);
   }
   const zone = await zoneIdParaHost(name);

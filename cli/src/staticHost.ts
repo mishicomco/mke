@@ -64,6 +64,20 @@ export function addHostToIngress(yamlText: string, host: string): string {
   return `${sinFinal}\n${bloque}\n`;
 }
 
+/**
+ * Quita el bloque de regla de `host` de un ingress (inverso de addHostToIngress,
+ * para `mke app borrar`). No-op si el host no está. Borra desde la línea
+ * `- host: <host>` hasta justo antes del siguiente `- host:` o el fin del texto.
+ */
+export function removeHostFromIngress(yamlText: string, host: string): string {
+  if (!hostExistsInIngress(yamlText, host)) return yamlText;
+  const re = new RegExp(
+    `\\n?\\s*-\\s*host:\\s*${escapeRegex(host)}\\s*\\n(?:(?!\\s*-\\s*host:).*\\n?)*`,
+    "m",
+  );
+  return yamlText.replace(re, "\n").replace(/\n{3,}/g, "\n\n");
+}
+
 /** host stage/prod que le corresponden a un subdominio, por convención de plataforma. */
 export function planStaticHosts(subdominio: string): { stageHost: string; prodHost: string } {
   return {
@@ -109,6 +123,54 @@ export function applyStaticHosts(subdominio: string): StaticHostResult {
     changed = true;
   }
   return { stageHost, prodHost, stageAlready, prodAlready, changed };
+}
+
+/**
+ * Quita el host de `subdominio` de AMBOS overlays (inverso de applyStaticHosts,
+ * para `mke app borrar`). Idempotente: si no estaba en ninguno, `changed=false`.
+ */
+export function removeStaticHosts(subdominio: string): StaticHostResult {
+  const { stageHost, prodHost } = planStaticHosts(subdominio);
+  const stagePath = ingressPath("stage");
+  const prodPath = ingressPath("prod");
+  if (!existsSync(stagePath) || !existsSync(prodPath)) {
+    throw new Error(`no encuentro el ingress de static-mishi (${stagePath} / ${prodPath})`);
+  }
+  const stageText = readFileSync(stagePath, "utf8");
+  const prodText = readFileSync(prodPath, "utf8");
+  const stagePresente = hostExistsInIngress(stageText, stageHost);
+  const prodPresente = hostExistsInIngress(prodText, prodHost);
+
+  let changed = false;
+  if (stagePresente) {
+    writeFileSync(stagePath, removeHostFromIngress(stageText, stageHost));
+    changed = true;
+  }
+  if (prodPresente) {
+    writeFileSync(prodPath, removeHostFromIngress(prodText, prodHost));
+    changed = true;
+  }
+  // stageAlready/prodAlready aquí = "ya NO estaba" (nada que hacer), para reusar el shape.
+  return { stageHost, prodHost, stageAlready: !stagePresente, prodAlready: !prodPresente, changed };
+}
+
+/** commit + push de la REMOCIÓN de hosts (mensaje propio). No-op si no cambió disco. */
+export async function commitAndPushStaticHostsRemoval(app: string, result: StaticHostResult): Promise<void> {
+  if (!result.changed) return;
+  const repo = join(appsRoot(), STATIC_MISHI_REPO);
+  await execFileAsync("git", [
+    "-C", repo, "add",
+    "k8s/overlays/stage/ingress.yaml",
+    "k8s/overlays/prod/ingress.yaml",
+  ]);
+  try {
+    await execFileAsync("git", ["-C", repo, "commit", "-m", `feat(ingress): quitar host de ${app} (stage+prod) — mke app borrar`]);
+  } catch (err) {
+    const e = err as { stdout?: string; message?: string };
+    throw new Error(`git commit falló en static-mishi: ${e.stdout ?? e.message}`);
+  }
+  const push = await gitPush(repo);
+  if (push.code !== 0) throw new Error(`git push falló en static-mishi: ${push.stderr || push.stdout}`);
 }
 
 /**

@@ -21,6 +21,10 @@ Ley: toda fricción se anota y se arregla DE RAÍZ en el mismo turno; nunca se e
 
 Curva de fricción: R1 = 4 → R2 = 2 → R3 = 0 de onboarding (+1 adversario, cerrado). **Señal de LISTO alcanzada**: ronda a ciegas limpia + adversario donde todo lo crítico aguantó. Nacimiento endurecido.
 
-Apps de prueba vivas en stage (para desmontar al cerrar, pendiente OK de Santi): fogata, brasero, hoguera.
+Apps de prueba: fogata, brasero, hoguera — BORRADAS 2026-08-08 con el verbo nuevo `mke app borrar` (k8s+BD/rol+DNS+static+forge+dir+catálogo), hosts en 530 y dirs eliminados.
+
+| F8 | cierre (borrado) | asimetría: `mke app nacer`/`init` existían pero NO `mke app borrar` — el teardown era manual y minado (guardarraíl DNS, clasificador, pasos olvidados); artifacts SÍ tenían `mke artifact borrar` | resuelta | nuevo verbo `mke app borrar <app> --si` (inverso de nacer, doble llave en prod, --forge/--dir-local opt-in); helpers forgeDeleteRepo, removeStaticHosts, deleteRecordsByName(teardownApp); las 3 apps borradas con él de un comando |
+
+Merges a main hechos: `mke` (F1/F2/F5/F6 + F8 verbo borrar) y `create-mishi-app` (F4/F7). Static-mishi limpiado y pusheado.
 
 Ramas con arreglos pendientes de OK de Santi para main: `mke@fuego-nacer`, `create-mishi-app@fuego-nacer` (quedan checked-out; el shim de mke corre esa rama).

@@ -10,6 +10,7 @@ import { deploy } from "./deploy.js";
 import { publish } from "./publish.js";
 import { rollout } from "./rollout.js";
 import { dbProvision } from "./dbProvision.js";
+import { appBorrar } from "./appBorrar.js";
 import { appInit } from "./appInit.js";
 import { appNacer } from "./appNacer.js";
 import { ensureStaticHostPaso } from "./staticHost.js";
@@ -70,6 +71,8 @@ const HELP = `mke — CLI de plataforma MKE
   mke app init <app>                             nacimiento de PLATAFORMA de una app (paso 4 de \`nacer\`, suelto; idempotente):
                                                   BD+rol → vault-mishi → namespace+Secret k8s (DATABASE_URL+SESSION_SECRET) → DNS → host static-mishi → grant vault
         opciones: --env stage|prod (default stage)  --subdominio <name>  --dry-run
+  mke app borrar <app>                           TEARDOWN de una app, inverso de \`nacer\`: k8s + BD/rol + DNS + host static-mishi + catálogo (repo/dir opt-in)
+        opciones: --env stage|prod (default stage)  --si (OBLIGATORIO)  --si-prod (2a llave en prod)  --forge (borra el repo)  --dir-local (borra el checkout)
   mke static agregar <sub>                      agrega el host de <sub> al ingress de static-mishi (stage+prod), idempotente
                                                   (paso suelto de \`mke app init\`; útil si el nacimiento ya pasó sin este paso)
         opciones: --dry-run
@@ -199,7 +202,19 @@ async function main() {
         });
         break;
       }
-      if (action !== "init" || !app) return fail("uso: mke app init <app> [--env stage|prod] [--subdominio nombre] [--dry-run]  |  mke app nacer <nombre>");
+      if (action === "borrar") {
+        if (!app) return fail("uso: mke app borrar <app> [--env stage|prod] [--subdominio sub] --si [--si-prod] [--forge] [--dir-local]");
+        await appBorrar(app, {
+          env: typeof flags.env === "string" ? flags.env : undefined,
+          subdominio: typeof flags.subdominio === "string" ? flags.subdominio : undefined,
+          si: flags.si === true,
+          siProd: flags["si-prod"] === true,
+          forge: flags.forge === true,
+          dirLocal: flags["dir-local"] === true,
+        });
+        break;
+      }
+      if (action !== "init" || !app) return fail("uso: mke app init <app> [--env stage|prod] [--subdominio nombre] [--dry-run]  |  mke app nacer <nombre>  |  mke app borrar <app> --si");
       const env = typeof flags.env === "string" ? flags.env : "stage";
       await appInit(app, env, {
         subdominio: typeof flags.subdominio === "string" ? flags.subdominio : undefined,

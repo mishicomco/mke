@@ -106,6 +106,19 @@ export async function forgeCreateRepo(
   throw new Error(`forge POST /orgs/${FORGE.org}/repos → ${r.status}: ${r.body.slice(0, 300)}`);
 }
 
+/**
+ * Borra el repo `mishicomco/<app>` del forge (inverso de forgeCreateRepo, para
+ * `mke app borrar`). Idempotente: si no existe, devuelve {borrado:false}. El
+ * push-mirror a GitHub se va con el repo (es config del repo del forge); el
+ * repo espejo en GitHub, si lo hubiera, queda como backup y se borra a mano.
+ */
+export async function forgeDeleteRepo(app: string, token: string): Promise<{ borrado: boolean }> {
+  if (!(await forgeRepoExists(app, token))) return { borrado: false };
+  const r = await forgeApi(token, "DELETE", `/repos/${FORGE.org}/${encodeURIComponent(app)}`);
+  if (r.status === 204) return { borrado: true };
+  throw new Error(`forge DELETE /repos/${FORGE.org}/${app} → ${r.status}: ${r.body.slice(0, 300)}`);
+}
+
 /** true si el repo ya tiene un push-mirror configurado en el forge. */
 export async function forgePushMirrorExists(app: string, token: string): Promise<boolean> {
   const r = await forgeApi(

@@ -197,6 +197,26 @@ export async function escribirValor(
   return (await r.json()) as { version: number; rotado: boolean };
 }
 
+/**
+ * Borra un secreto del vault (DELETE /v1/secreto). Idempotente para el llamador:
+ * devuelve `borrado` (true si existía, false si ya no estaba); solo lanza ante
+ * un error REAL del vault (permiso, red). Lo usa `mke app borrar` para no dejar
+ * secretos huérfanos de una app muerta.
+ */
+export async function borrarValor(
+  acc: AccesoVault,
+  ns: string,
+  nombre: string,
+): Promise<{ borrado: boolean }> {
+  const r = await f(acc)(`${acc.url}/v1/secreto/${encodeURIComponent(ns)}/${encodeURIComponent(nombre)}`, {
+    method: "DELETE",
+    headers: cabeceras(acc),
+  });
+  if (r.status === 204) return { borrado: true };
+  if (r.status === 404) return { borrado: false };
+  throw new Error(`vault borrar ${ns}/${nombre}: HTTP ${r.status}`);
+}
+
 /** Nombre del secreto de BD en el vault: `<app>/DATABASE_URL__<env>`. */
 export function nombreDatabaseUrl(env: string): string {
   const sufijo = sufijoEnv(env);
