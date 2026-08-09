@@ -13,7 +13,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { run, ok, bad, warn, info, dim } from "./sh.js";
-import { nsForEnv } from "./dbProvision.js";
+import { envOrThrow } from "./mkeConfig.js";
 import { mergearSecretK8s, clavesEnCluster } from "./secretosDelVault.js";
 import type { AppSpec } from "./appSpec.js";
 
@@ -38,7 +38,7 @@ async function consumeIam(spec: AppSpec): Promise<boolean> {
 // corre al lado del cluster). No la guardamos en ningún lado.
 async function operadorToken(env: string): Promise<string | null> {
   const r = await run("kubectl", [
-    "-n", nsForEnv(env), "get", "secret", "iam-mishi-secrets",
+    "-n", envOrThrow(env).namespace, "get", "secret", "iam-mishi-secrets",
     "-o", "jsonpath={.data.IAM_OPERADOR_TOKEN}",
   ]);
   if (r.code !== 0 || !r.stdout.trim()) return null;
@@ -85,7 +85,7 @@ export async function asegurarTokenIam(spec: AppSpec): Promise<void> {
 
   const operador = await operadorToken(spec.env);
   if (!operador) {
-    console.log(warn(`no leí la credencial de operador de iam-mishi (${nsForEnv(spec.env)}/iam-mishi-secrets) — token IAM de ${spec.app} NO provisionado; el check quedará fail-closed`));
+    console.log(warn(`no leí la credencial de operador de iam-mishi (${envOrThrow(spec.env).namespace}/iam-mishi-secrets) — token IAM de ${spec.app} NO provisionado; el check quedará fail-closed`));
     return;
   }
   console.log(info(`emitiendo token de app para ${spec.app} en iam-mishi (${spec.env})…`));
