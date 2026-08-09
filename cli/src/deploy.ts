@@ -250,6 +250,16 @@ export async function deploy(app: string, env: string, opts: DeployOpts = {}): P
   }
 
   // ── d) ROLLOUT ───────────────────────────────────────────────────────────
+  // APP_VERSION = el sha que se está desplegando: el estándar `/salud` de las
+  // apps lo devuelve y el postflight lo verifica (mata el falso verde de "me
+  // respondió el pod viejo"). Se setea ANTES de set image: ambos patches caen
+  // en el mismo rollout y `rollout status` espera la convergencia final.
+  await paso(`set env APP_VERSION=${sha} AMBIENTE=${env}`, () =>
+    run("kubectl", [
+      "--context", envSpec.context, "-n", envSpec.namespace,
+      "set", "env", `deploy/${spec.deployName}`, `APP_VERSION=${sha}`, `AMBIENTE=${env}`,
+    ]),
+  );
   const setImage = await paso(`set image deploy/${spec.deployName} → ${dim(imagenRef)}`, () =>
     run("kubectl", [
       "--context", envSpec.context, "-n", envSpec.namespace,
@@ -302,5 +312,50 @@ export async function deploy(app: string, env: string, opts: DeployOpts = {}): P
     process.exitCode = 1;
     return;
   }
+
+  // ── h) VERSIÓN: si la app habla el estándar /salud, el verde exige que la
+  // cadena pública sirva EL sha recién desplegado (no el pod viejo). Apps sin
+  // /salud estándar: se nota y se sigue — convergen al estándar a su ritmo.
+  let versionViva = await versionEnSalud(spec.host);
+  if (versionViva !== null && versionViva !== sha) {
+    console.log(dim(`  /salud aún sirve ${versionViva} — reintento en 15 s (¿keep-alive al pod viejo?)`));
+    await new Promise((r) => setTimeout(r, 15_000));
+    versionViva = await versionEnSalud(spec.host);
+  }
+  if (versionViva === null) {
+    console.log(dim(`  /salud sin versión estándar — no verifico el sha desplegado (converge al estándar cuando puedas)`));
+  } else if (versionViva === sha) {
+    console.log(ok(`versión verificada: /salud sirve ${sha} por la cadena pública`));
+  } else {
+    console.log(bad(`postflight FALLÓ: /salud sirve version=${versionViva}, esperaba ${sha} — responde un pod viejo; el deploy NO es verde`));
+    process.exitCode = 1;
+    return;
+  }
   console.log(ok(`deploy verde: ${spec.app} ${sha} → ${spec.host} (${envSpec.namespace})`));
+}
+
+/**
+ * Lee `version` del `/salud` estándar por la cadena pública. `null` = la app
+ * no habla el estándar (sin /salud JSON o sin campo version) — no es error.
+ * Reintenta una vez: justo tras el rollout puede colear un keep-alive al pod
+ * viejo.
+ */
+async function versionEnSalud(host: string): Promise<string | null> {
+  for (let intento = 1; intento <= 2; intento++) {
+    try {
+      const res = await fetch(`https://${host}/salud`, {
+        signal: AbortSignal.timeout(10_000),
+        headers: { "cache-control": "no-cache" },
+      });
+      if (res.ok && (res.headers.get("content-type") ?? "").includes("json")) {
+        const body = (await res.json()) as { version?: unknown };
+        if (typeof body.version === "string" && body.version && body.version !== "dev") return body.version;
+      }
+      return null;
+    } catch {
+      if (intento === 2) return null;
+      await new Promise((r) => setTimeout(r, 10_000));
+    }
+  }
+  return null;
 }
