@@ -33,6 +33,7 @@ import type { AppSpec } from "./appSpec.js";
 import { nsForEnv, toSnake } from "./dbProvision.js";
 import { ensureDns } from "./dns.js";
 import { STATIC_MISHI_REPO, ensureStaticHostPaso } from "./staticHost.js";
+import { asegurarTokenIam } from "./tokenIam.js";
 import {
   aplicarSecretK8s,
   asegurarNamespace,
@@ -265,6 +266,13 @@ export async function preflightDeploy(spec: AppSpec, opts: PreflightOpts = {}): 
   } else {
     console.log(ok("sin drizzle/ en el repo — BD y Secret de plataforma no aplican"));
   }
+
+  // TOKEN IAM: si la app consume la autorización central (iam-mishi), asegura su
+  // token de app en el Secret (emite en iam-mishi si falta; idempotente). Va
+  // ANTES de materializar para que la clave IAM_API_TOKEN ya esté en el Secret;
+  // no es un secreto del vault (iam-mishi es su autoridad) → no pasa por la
+  // compuerta de declaración de mke.preview.yaml.
+  await asegurarTokenIam(spec);
 
   // MATERIALIZAR: el Secret k8s es DERIVADO del vault (dueño de la verdad).
   // Va DESPUÉS de la BD (que escribe DATABASE_URL al vault) y ANTES del build,
