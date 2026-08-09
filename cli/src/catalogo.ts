@@ -227,4 +227,7 @@ export async function regenerarCatalogos(): Promise<void> {
     if (!aplicado) console.log(warn(`catálogo de ${env} no se pudo aplicar (sigo)`));
     else console.log(ok(`catálogo ${dim(`${NOMBRE_CONFIGMAP} (${env})`)} regenerado — ${catalogo.length} host(s) del cluster`));
   }
+  // vista prod → KV del worker status-mishi-edge (best-effort, nunca fatal).
+  const { publicarCatalogoEdge } = await import("./catalogoEdge.js");
+  await publicarCatalogoEdge(catalogo);
 }
