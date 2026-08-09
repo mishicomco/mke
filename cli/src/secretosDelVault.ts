@@ -157,6 +157,13 @@ function cabeceras(acc: AccesoVault): Record<string, string> {
   return { Authorization: `Bearer ${acc.token}`, "content-type": "application/json" };
 }
 
+/** Cabeceras SIN content-type — para requests sin body (DELETE): declarar
+ * `application/json` con body vacío hace que Fastify intente parsear "" y
+ * responda 400. Bug cazado en el fuego (Santi 2026-08-08). */
+function cabecerasSinBody(acc: AccesoVault): Record<string, string> {
+  return { Authorization: `Bearer ${acc.token}` };
+}
+
 /** `GET /v1/secretos/:ns` — SOLO metadata (nombres). Lanza con contexto, sin valores. */
 export async function listarNombres(acc: AccesoVault, ns: string): Promise<string[]> {
   const r = await f(acc)(`${acc.url}/v1/secretos/${encodeURIComponent(ns)}`, {
@@ -210,7 +217,7 @@ export async function borrarValor(
 ): Promise<{ borrado: boolean }> {
   const r = await f(acc)(`${acc.url}/v1/secreto/${encodeURIComponent(ns)}/${encodeURIComponent(nombre)}`, {
     method: "DELETE",
-    headers: cabeceras(acc),
+    headers: cabecerasSinBody(acc),
   });
   if (r.status === 204) return { borrado: true };
   if (r.status === 404) return { borrado: false };

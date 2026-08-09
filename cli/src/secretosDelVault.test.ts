@@ -8,12 +8,14 @@ import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 
 import {
+  borrarValor,
   claveDeNombre,
   clavesDelEntorno,
   compararDeclaracion,
   nombreDatabaseUrl,
   planMaterializacion,
   sufijoEnv,
+  type FetchLike,
 } from "./secretosDelVault.js";
 
 describe("sufijoEnv", () => {
@@ -118,6 +120,40 @@ describe("compararDeclaracion", () => {
     const r = compararDeclaracion(["B", "A"], ["A", "B"]);
     assert.deepEqual(r.faltantes, []);
     assert.deepEqual(r.noDeclarados, []);
+  });
+});
+
+describe("borrarValor", () => {
+  // Un DELETE no lleva body: si el cliente declara content-type application/json,
+  // Fastify intenta parsear "" y responde 400 (bug cazado en el fuego 2026-08-08,
+  // dejaba secretos huérfanos sin poder purgarlos). Este test blinda que NO se
+  // manda content-type en el DELETE.
+  const fakeFetch = (captura: { headers?: Record<string, string> }, status: number): FetchLike =>
+    (async (_url, init) => {
+      captura.headers = (init?.headers ?? {}) as Record<string, string>;
+      return { ok: status < 400, status, json: async () => ({}), text: async () => "" };
+    });
+
+  it("no manda content-type (DELETE sin body); 204 → borrado", async () => {
+    const cap: { headers?: Record<string, string> } = {};
+    const r = await borrarValor({ url: "http://vault", token: "t", fetchImpl: fakeFetch(cap, 204) }, "fogata", "DATABASE_URL__stage");
+    assert.equal(r.borrado, true);
+    assert.equal(cap.headers?.["content-type"], undefined);
+    assert.equal(cap.headers?.Authorization, "Bearer t");
+  });
+
+  it("404 → borrado:false (idempotente, no lanza)", async () => {
+    const cap: { headers?: Record<string, string> } = {};
+    const r = await borrarValor({ url: "http://vault", token: "t", fetchImpl: fakeFetch(cap, 404) }, "fogata", "X");
+    assert.equal(r.borrado, false);
+  });
+
+  it("otro status → lanza con contexto", async () => {
+    const cap: { headers?: Record<string, string> } = {};
+    await assert.rejects(
+      () => borrarValor({ url: "http://vault", token: "t", fetchImpl: fakeFetch(cap, 400) }, "fogata", "X"),
+      /vault borrar fogata\/X: HTTP 400/,
+    );
   });
 });
 

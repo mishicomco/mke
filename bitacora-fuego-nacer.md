@@ -27,7 +27,12 @@ Apps de prueba: fogata, brasero, hoguera — BORRADAS 2026-08-08 con el verbo nu
 
 | F9 | cierre (borrado) | teardown dejaba secretos huérfanos en el vault (`<app>/DATABASE_URL__<env>`): el vault no exponía borrar valor por API — basura acumulándose sin beneficio (feedback Santi) | resuelta (código+test); pendiente deploy prod | vault-mishi gana `DELETE /v1/secreto/:ns/:nombre` (autoriza como escribir, veta dev-pod, idempotente, auditado) + test; `mke app borrar` lo llama (helper `borrarValor`). Rama `vault-mishi@fuego-vault-borrar`. Los 3 huérfanos vivos se purgan al redeployar el vault (toca prod → espera OK). |
 
-Merges a main hechos (con OK de Santi): `mke` (F1/F2/F5/F6 + F8 + F9-cliente) y `create-mishi-app` (F4/F7); ambos pusheados. Static-mishi limpiado y pusheado.
-Pendiente de OK: `vault-mishi@fuego-vault-borrar` → main + deploy prod (el DELETE), y con el vault redeployado: purgar los secretos huérfanos `fogata|brasero|hoguera/DATABASE_URL__stage`.
+| F10 | cierre (purga) | el DELETE del cliente mke mandaba `content-type: application/json` sin body → Fastify parsea "" y responde **400**; el teardown no podía purgar el secreto (lo dejaba huérfano igual) | resuelta | `borrarValor` usa `cabecerasSinBody` (sin content-type) + 3 tests que lo blindan; los 3 huérfanos vivos PURGADOS del vault de prod (404 confirmado) |
+
+Merges a main hechos (con OK de Santi): `mke` (F1/F2/F5/F6 + F8 + F9-cliente + F10) y `create-mishi-app` (F4/F7); pusheados. `vault-mishi` v0.1.2 mergeado + **deployado a prod** (CI run #20 verde). Static-mishi limpiado y pusheado.
+
+Cierre TOTAL: nacimiento endurecido (curva 4→2→0), teardown con verbo propio `mke app borrar` (paridad con nacer), vault con `DELETE /v1/secreto`, cero huérfanos. 10 fricciones, todas de raíz.
+
+Ineficiencia observada por Santi (no bug, anotada): un cambio solo-prod dispara DOS deploys (push main→stage + tag→prod); el de stage es trabajo tirado cuando el fix no era para stage.
 
 Ramas con arreglos pendientes de OK de Santi para main: `mke@fuego-nacer`, `create-mishi-app@fuego-nacer` (quedan checked-out; el shim de mke corre esa rama).
