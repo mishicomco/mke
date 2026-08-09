@@ -27,16 +27,18 @@ export interface HostEdge {
   nombre: string;
   ruta?: string;
   critico?: boolean;
+  /** true = app con backend; false = página estática (el tablero los separa). */
+  api?: boolean;
 }
 
 /** Hosts que el catálogo derivado no puede ver (otros ns, dominios externos). */
 export const PLATAFORMA: HostEdge[] = [
-  { host: "mesh.mishi.com.co", nombre: "MeshCentral", critico: true },
-  { host: "mishi.com.co", nombre: "mishi.com.co" },
-  { host: "git.mishi.com.co", nombre: "Forge (git)" },
-  { host: "vault.mishi.com.co", nombre: "Vault", ruta: "/salud" },
-  { host: "llego.com.co", nombre: "Llegó" },
-  { host: "travelhabit.co", nombre: "TravelHabit" },
+  { host: "mesh.mishi.com.co", nombre: "MeshCentral", critico: true, api: true },
+  { host: "mishi.com.co", nombre: "mishi.com.co", api: false },
+  { host: "git.mishi.com.co", nombre: "Forge (git)", api: true },
+  { host: "vault.mishi.com.co", nombre: "Vault", ruta: "/salud", api: true },
+  { host: "llego.com.co", nombre: "Llegó", api: true },
+  { host: "travelhabit.co", nombre: "TravelHabit", api: true },
 ];
 
 /** Vista prod del catálogo + plataforma, en el formato del worker. PURA. */
@@ -44,7 +46,7 @@ export function hostsParaEdge(catalogo: EntradaCatalogo[]): HostEdge[] {
   const derivados: HostEdge[] = catalogo
     .filter((e) => entradaDeEnv(e, "prod"))
     .filter((e) => e.host !== "status.mishi.com.co")
-    .map((e) => ({ host: e.host, nombre: e.app, ...(e.api && e.ruta ? { ruta: e.ruta } : {}) }));
+    .map((e) => ({ host: e.host, nombre: e.app, api: e.api, ...(e.api && e.ruta ? { ruta: e.ruta } : {}) }));
   // Si un host de PLATAFORMA ya salió derivado del cluster, sus atributos
   // (critico, ruta) se FUSIONAN en la entrada derivada — no se pierden.
   const porHost = new Map(derivados.map((h) => [h.host, h]));

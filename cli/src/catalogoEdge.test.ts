@@ -20,7 +20,7 @@ describe("hostsParaEdge — la vista prod que consume el worker", () => {
       entrada({ app: "bank", host: "bank.mishi.com.co", api: true, ruta: "/api" }),
     ]);
     const bank = hosts.filter((h) => h.nombre === "bank");
-    assert.deepEqual(bank, [{ host: "bank.mishi.com.co", nombre: "bank", ruta: "/api" }]);
+    assert.deepEqual(bank, [{ host: "bank.mishi.com.co", nombre: "bank", api: true, ruta: "/api" }]);
   });
 
   it("front puro va sin ruta; status se excluye (no se chequea a sí mismo)", () => {
