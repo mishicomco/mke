@@ -25,6 +25,9 @@ Apps de prueba: fogata, brasero, hoguera — BORRADAS 2026-08-08 con el verbo nu
 
 | F8 | cierre (borrado) | asimetría: `mke app nacer`/`init` existían pero NO `mke app borrar` — el teardown era manual y minado (guardarraíl DNS, clasificador, pasos olvidados); artifacts SÍ tenían `mke artifact borrar` | resuelta | nuevo verbo `mke app borrar <app> --si` (inverso de nacer, doble llave en prod, --forge/--dir-local opt-in); helpers forgeDeleteRepo, removeStaticHosts, deleteRecordsByName(teardownApp); las 3 apps borradas con él de un comando |
 
-Merges a main hechos: `mke` (F1/F2/F5/F6 + F8 verbo borrar) y `create-mishi-app` (F4/F7). Static-mishi limpiado y pusheado.
+| F9 | cierre (borrado) | teardown dejaba secretos huérfanos en el vault (`<app>/DATABASE_URL__<env>`): el vault no exponía borrar valor por API — basura acumulándose sin beneficio (feedback Santi) | resuelta (código+test); pendiente deploy prod | vault-mishi gana `DELETE /v1/secreto/:ns/:nombre` (autoriza como escribir, veta dev-pod, idempotente, auditado) + test; `mke app borrar` lo llama (helper `borrarValor`). Rama `vault-mishi@fuego-vault-borrar`. Los 3 huérfanos vivos se purgan al redeployar el vault (toca prod → espera OK). |
+
+Merges a main hechos (con OK de Santi): `mke` (F1/F2/F5/F6 + F8 + F9-cliente) y `create-mishi-app` (F4/F7); ambos pusheados. Static-mishi limpiado y pusheado.
+Pendiente de OK: `vault-mishi@fuego-vault-borrar` → main + deploy prod (el DELETE), y con el vault redeployado: purgar los secretos huérfanos `fogata|brasero|hoguera/DATABASE_URL__stage`.
 
 Ramas con arreglos pendientes de OK de Santi para main: `mke@fuego-nacer`, `create-mishi-app@fuego-nacer` (quedan checked-out; el shim de mke corre esa rama).
