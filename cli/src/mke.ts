@@ -57,7 +57,8 @@ const HELP = `mke — CLI de plataforma MKE
                                                   tarda en registrarse y "el último" es el ANTERIOR → falso positivo).
                                                   veredicto/exit: success=0 · fallo(failure/cancelled/skipped)=1 · timeout=2 ·
                                                   no-apareció=3 · killed(runner muerto, log cortado sin "Job failed")=4
-        opciones: --sha <sha> (OBLIGATORIO en la práctica si el ref es una rama)  --min-id <id> (id global previo al push)
+        opciones: --sha <sha> (OBLIGATORIO en la práctica si el ref es una rama; --sha SOLO, sin --ref, también vale)
+                  --min-id <id> (id global previo al push)
                   --timeout <seg> (default 1200)  --aparecer <seg> (default 120)  --estancado <seg> (default 300)
   mke artifact nacer <nombre>                    ARTIFACT: genera el cascarón modular estándar en ~/mishicomco/artifacts-mishi/<nombre>
   mke artifact publicar <nombre> <html|carpeta>  frontend sin build ni ambientes en <nombre>-artifact.mishi.com.co —
@@ -170,8 +171,12 @@ async function main() {
           timeoutSeg: typeof flags.timeout === "string" ? Number(flags.timeout) : undefined,
         });
       } else if (action === "wait") {
-        const ref = typeof flags.ref === "string" ? flags.ref : undefined;
-        if (!ref) return fail("uso: mke ci wait <app> --ref <tag|sha|rama> [--sha s] [--min-id n] [--timeout seg] [--aparecer seg] [--estancado seg]");
+        // `--sha` solo (sin --ref) también identifica el run: se usa como ref.
+        // Fricción real 2026-08-09: `mke ci wait app --sha X` moría en usage.
+        const ref = typeof flags.ref === "string"
+          ? flags.ref
+          : typeof flags.sha === "string" ? flags.sha : undefined;
+        if (!ref) return fail("uso: mke ci wait <app> --ref <tag|sha|rama> [--sha s] [--min-id n] [--timeout seg] [--aparecer seg] [--estancado seg]\n(--sha solo, sin --ref, también vale: espera el run de ese commit)");
         const veredicto = await ciWait(app, ref, {
           sha: typeof flags.sha === "string" ? flags.sha : undefined,
           minId: typeof flags["min-id"] === "string" ? Number(flags["min-id"]) : undefined,
