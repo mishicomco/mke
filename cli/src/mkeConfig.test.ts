@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { aplicarNodo, type EnvSpec } from "./mkeConfig.js";
+import { aplicarNodo, imagenCluster, type EnvSpec } from "./mkeConfig.js";
 
 function envsBase(): Record<string, EnvSpec> {
   return {
@@ -78,4 +78,31 @@ test("json ilegible revienta en vez de seguir con config a medias", () => {
   conNodoFile("{ envsLocales: [", () => {
     assert.throws(() => aplicarNodo(envsBase()), /ilegible/);
   });
+});
+
+// ── Registry local (Fase 1) — es un SEAM de despliegue: si el mapeo push/ref
+// se corrompe, el cluster jala una imagen que no existe. Vale protegerlo.
+test("registries en mke-nodo.json adjunta el registry al env declarado y a nadie más", () => {
+  conNodoFile('{ "registries": { "stage": { "push": "localhost:5111", "ref": "k3d-registry-mishi:5111" } } }', () => {
+    const envs = aplicarNodo(envsBase());
+    assert.deepEqual(envs.stage.registry, { push: "localhost:5111", ref: "k3d-registry-mishi:5111" });
+    assert.equal(envs.prod.registry, undefined); // no declarado → sin registry (camino ssh/import)
+  });
+});
+
+test("registry para env desconocido revienta", () => {
+  conNodoFile('{ "registries": { "produ": { "push": "l:1", "ref": "r:1" } } }', () => {
+    assert.throws(() => aplicarNodo(envsBase()), /registry para env desconocido: produ/);
+  });
+});
+
+test("registry incompleto (falta ref) revienta en vez de deployar a un destino a medias", () => {
+  conNodoFile('{ "registries": { "stage": { "push": "localhost:5111" } } }', () => {
+    assert.throws(() => aplicarNodo(envsBase()), /necesita \{ push, ref \}/);
+  });
+});
+
+test("imagenCluster: con registry prefija ref/, sin registry deja el tag local", () => {
+  assert.equal(imagenCluster({ registry: { push: "localhost:5111", ref: "reg:5111" } }, "app:abc"), "reg:5111/app:abc");
+  assert.equal(imagenCluster({ registry: undefined }, "app:abc"), "app:abc");
 });

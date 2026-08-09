@@ -115,6 +115,46 @@ export function parsearFilasDb(salida: string): EntradaDb[] {
 }
 
 /**
+ * Lee el journal de migraciones REGISTRADO en la BD. Devuelve la lista (posible
+ * vacía) o `null` si no se pudo leer (BD nueva sin schema drizzle, error de
+ * conexión, etc.) — en ese caso quien llama NO puede concluir "al día" y debe
+ * correr la compuerta completa. Solo SELECT.
+ */
+export async function leerJournalDb(db: string, env: string): Promise<EntradaDb[] | null> {
+  const pgNs = nsForEnv(env);
+  const r = await run("kubectl", [
+    "--context", EXEC_CONTEXT, "-n", pgNs,
+    "exec", "-i", POD, "--",
+    "psql", "-U", "postgres", "-d", db, "-Atc",
+    "select created_at || '|' || hash from drizzle.__drizzle_migrations order by created_at asc",
+  ]);
+  if (r.code !== 0) return null;
+  return parsearFilasDb(r.stdout);
+}
+
+/**
+ * ¿Está la BD EXACTAMENTE al día con las migraciones del repo? true SOLO si el
+ * journal de la BD == el del repo (mismo conteo, mismos hashes en orden): no hay
+ * nada pendiente Y no hay drift. En ese caso `mke deploy` puede saltar
+ * dump+migrate (no se toca la BD). Cualquier otra cosa —migraciones pendientes,
+ * drift real, o journal ilegible— devuelve false y la compuerta corre completa
+ * (que migra lo pendiente o aborta ante drift real). Fail-safe: ante la duda, NO
+ * salta. Sin migraciones en el repo → true (nada que hacer).
+ */
+export async function bdAlDia(db: string, env: string, drizzleDir: string): Promise<boolean> {
+  if (!existsSync(join(drizzleDir, "meta", "_journal.json"))) return true;
+  let repo: EntradaRepo[];
+  try {
+    repo = entradasDelRepo(drizzleDir);
+  } catch {
+    return false; // repo inconsistente → que la compuerta completa lo reporte
+  }
+  const dbJournal = await leerJournalDb(db, env);
+  if (dbJournal === null) return false; // no se pudo leer → no concluir "al día"
+  return compararDrift(repo, dbJournal).length === 0;
+}
+
+/**
  * Drift-check completo contra la BD de la app en el entorno. Devuelve true si
  * no hay drift. Sin migraciones en el repo → pasa trivialmente.
  */

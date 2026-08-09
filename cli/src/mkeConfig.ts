@@ -42,6 +42,26 @@ export interface EnvSpec {
    * import` (k3d solo ve clusters locales).
    */
   remote?: { ssh: string; sshKey: string; nodo: string };
+  /**
+   * Registry local de imágenes (Fase 1 de optimización del pipeline, 2026-08-08):
+   * reemplaza el lento `docker save | k3d image import` (~30 s) por un
+   * `docker push` a un registry local + pull LAN del cluster (~2 s), y habilita
+   * rollback sin rebuild (referenciar un `:sha` viejo ya pusheado).
+   *
+   *  - `push`: host al que el `docker push` de ESTE nodo escribe. Se usa
+   *    `localhost:<port>` para no tocar el daemon (localhost = insecure por
+   *    default), aunque el registry sea el mismo.
+   *  - `ref`: host por el que el CONTAINERD del cluster resuelve la imagen
+   *    (p.ej. `k3d-registry-mishi:5111`, mapeado por `registries.yaml` a
+   *    `http://k3d-registry-mishi:5000` in-network). El path del repo es idéntico
+   *    en ambos, así que el blob pusheado por `push` es el que jala `ref`.
+   *
+   * OPT-IN por nodo: solo se activa si el `mke-nodo.json` del nodo declara
+   * `registries: { <env>: { push, ref } }` Y el cluster tiene el `registries.yaml`
+   * bootstrapeado (ver registry-mishi/bootstrap). Sin declaración → se conserva el
+   * camino actual (import/ssh), retrocompatibilidad total.
+   */
+  registry?: { push: string; ref: string };
 }
 
 /**
@@ -61,7 +81,7 @@ export interface EnvSpec {
 export function aplicarNodo(envs: Record<string, EnvSpec>): Record<string, EnvSpec> {
   const file = process.env.MKE_NODO_FILE ?? join(homedir(), ".config", "mishi", "mke-nodo.json");
   if (!existsSync(file)) return envs;
-  let nodo: { envsLocales?: string[] };
+  let nodo: { envsLocales?: string[]; registries?: Record<string, { push: string; ref: string }> };
   try {
     nodo = JSON.parse(readFileSync(file, "utf8"));
   } catch (e) {
@@ -72,6 +92,14 @@ export function aplicarNodo(envs: Record<string, EnvSpec>): Record<string, EnvSp
     if (!spec) throw new Error(`mke-nodo.json declara env desconocido: ${nombre}`);
     if (!spec.remote) continue; // ya es local acá; nada que hacer
     envs[nombre] = { ...spec, context: `k3d-${spec.cluster}`, remote: undefined };
+  }
+  // Registry local OPT-IN por env (Fase 1). Solo se activa donde el nodo lo
+  // declara Y el cluster está bootstrapeado; ausente → camino import/ssh actual.
+  for (const [nombre, reg] of Object.entries(nodo.registries ?? {})) {
+    const spec = envs[nombre];
+    if (!spec) throw new Error(`mke-nodo.json declara registry para env desconocido: ${nombre}`);
+    if (!reg?.push || !reg?.ref) throw new Error(`mke-nodo.json: registry de ${nombre} necesita { push, ref }`);
+    envs[nombre] = { ...spec, registry: { push: reg.push, ref: reg.ref } };
   }
   return envs;
 }
@@ -189,6 +217,17 @@ export function hostFor(app: string, env: string): string {
   const spec = ENVS[env];
   if (!spec) throw new Error(`entorno desconocido: ${env} (usa local|stage|prod)`);
   return `${app}${spec.hostSuffix}.${DOMAIN}`;
+}
+
+/**
+ * Nombre de imagen por el que el CLUSTER la referencia. Con registry local
+ * (Fase 1) es `<ref>/<tag local>`; sin registry, el tag local tal cual (la
+ * imagen vive en el containerd del nodo por `k3d image import`/`ctr import`).
+ * El `docker build` SIEMPRE produce el tag local; `cargarImagenes` se encarga
+ * de pushear al registry cuando aplica.
+ */
+export function imagenCluster(envSpec: Pick<EnvSpec, "registry">, tagLocal: string): string {
+  return envSpec.registry ? `${envSpec.registry.ref}/${tagLocal}` : tagLocal;
 }
 
 export function envOrThrow(env: string): EnvSpec {

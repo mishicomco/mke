@@ -23,7 +23,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { envOrThrow, identityOrigin, NPM_TOKEN_SECRET } from "./mkeConfig.js";
+import { envOrThrow, identityOrigin, imagenCluster, NPM_TOKEN_SECRET } from "./mkeConfig.js";
 import { derivarAppSpec, shaCorto, type AppSpec } from "./appSpec.js";
 import { preflightDeploy } from "./preflightDeploy.js";
 import { compuertaLint, compuertaMigracionesPostBuild } from "./compuertaMigraciones.js";
@@ -90,6 +90,11 @@ export async function deploy(app: string, env: string, opts: DeployOpts = {}): P
   const sha = opts.tag ?? (await shaCorto(spec.dir));
   const imagen = `${spec.app}:${sha}`;
   const imagenFront = `${spec.app}-frontend:${sha}`;
+  // Nombre por el que el CLUSTER referencia la imagen: con registry local es
+  // `<ref>/<tag>`, sin registry el tag local. El `docker build` produce SIEMPRE
+  // el tag local; `cargarImagenes` pushea al registry cuando aplica.
+  const imagenRef = imagenCluster(envSpec, imagen);
+  const imagenFrontRef = imagenCluster(envSpec, imagenFront);
 
   console.log(`\n  ${info(`mke deploy ${dim(spec.app)} (${env}) → ${dim(spec.host)}`)}`);
   console.log(dim(`  imagen ${imagen}${spec.tieneFrontend ? ` + ${imagenFront}` : ""} · deploy/${spec.deployName} · ns ${envSpec.namespace}`));
@@ -98,9 +103,12 @@ export async function deploy(app: string, env: string, opts: DeployOpts = {}): P
     console.log(info("DRY RUN — no se toca nada. Plan:"));
     console.log(`  0. lint de migraciones (${spec.tieneDrizzle ? "hay drizzle" : "sin drizzle"})`);
     await preflightDeploy(spec, { dryRun: true });
-    console.log(`  b. docker build ${imagen}${spec.tieneFrontend ? ` + ${imagenFront} (VITE_IDENTITY_URL=${identityOrigin(env)})` : ""} → k3d image import -c ${envSpec.cluster} → apply -k ${spec.overlay} (+re-pin)`);
+    const cargaTxt = envSpec.registry
+      ? `docker push → ${envSpec.registry.push} (registry local, pull ${envSpec.registry.ref})`
+      : `k3d image import -c ${envSpec.cluster}`;
+    console.log(`  b. docker build --provenance=false --sbom=false ${imagen}${spec.tieneFrontend ? ` + ${imagenFront} (VITE_IDENTITY_URL=${identityOrigin(env)})` : ""} → ${cargaTxt} → apply -k ${spec.overlay} (+re-pin)`);
     console.log(`  c. ${spec.tieneDrizzle ? `dump → Job ${spec.app}-migrate-${sha} → drift-check de \`${spec.db}\`` : "sin migraciones: nada"}`);
-    console.log(`  d. set image deploy/${spec.deployName} ${spec.contenedor}=${imagen} → rollout status`);
+    console.log(`  d. set image deploy/${spec.deployName} ${spec.contenedor}=${imagenRef} → rollout status`);
     console.log(`  e. ${spec.tieneFrontend ? `publicar front al PVC static-www (subPath=${spec.front})` : "sin front"}`);
     console.log(`  f. regenerar el ConfigMap mke-catalogo (stage+prod)`);
     console.log(`  g. mke doctor ${spec.host}${healthPath(spec, opts.health)}`);
@@ -149,11 +157,15 @@ export async function deploy(app: string, env: string, opts: DeployOpts = {}): P
         "--build-arg", `NODE_AUTH_TOKEN=${token}`, // TRANSICIÓN: borrar al migrar toda la flota
       ]
     : [];
+  // No exportamos attestation/SBOM manifests (buildx los genera por default y no
+  // los consumimos — "exporting attestation manifest" en los logs). Apagarlos
+  // recorta el export y evita manifests basura en el registry. (Fase 1.)
+  const argsBuild = ["--provenance=false", "--sbom=false", ...argsToken];
 
   const codeBackend = await pasoStreamCmd(
     `docker build ${dim(imagen)}`,
     "docker",
-    ["build", "-t", imagen, ...argsToken, "-f", join(spec.dir, "apps", "backend", "Dockerfile"), spec.dir],
+    ["build", "-t", imagen, ...argsBuild, "-f", join(spec.dir, "apps", "backend", "Dockerfile"), spec.dir],
   );
   if (codeBackend !== 0) {
     console.log(bad("docker build del backend falló"));
@@ -167,7 +179,7 @@ export async function deploy(app: string, env: string, opts: DeployOpts = {}): P
       "docker",
       [
         "build", "-t", imagenFront,
-        ...argsToken,
+        ...argsBuild,
         "--build-arg", `VITE_IDENTITY_URL=${identityOrigin(env)}`,
         "-f", join(spec.dir, "apps", "frontend", "Dockerfile"), spec.dir,
       ],
@@ -229,17 +241,19 @@ export async function deploy(app: string, env: string, opts: DeployOpts = {}): P
   }
 
   // ── c) COMPUERTA de BD ───────────────────────────────────────────────────
-  if (!(await compuertaMigracionesPostBuild(spec, imagen, sha))) {
+  // El Job de migrar corre DENTRO del cluster → usa el nombre por el que el
+  // cluster jala la imagen (con registry local, `<ref>/<tag>`).
+  if (!(await compuertaMigracionesPostBuild(spec, imagenRef, sha))) {
     console.log(bad("deploy abortado por la compuerta de migraciones — NO hubo rollout"));
     process.exitCode = 1;
     return;
   }
 
   // ── d) ROLLOUT ───────────────────────────────────────────────────────────
-  const setImage = await paso(`set image deploy/${spec.deployName} → ${dim(imagen)}`, () =>
+  const setImage = await paso(`set image deploy/${spec.deployName} → ${dim(imagenRef)}`, () =>
     run("kubectl", [
       "--context", envSpec.context, "-n", envSpec.namespace,
-      "set", "image", `deploy/${spec.deployName}`, `${spec.contenedor}=${imagen}`,
+      "set", "image", `deploy/${spec.deployName}`, `${spec.contenedor}=${imagenRef}`,
     ]),
   );
   if (setImage.code !== 0) {
@@ -260,7 +274,7 @@ export async function deploy(app: string, env: string, opts: DeployOpts = {}): P
 
   // ── e) FRONT al PVC de static-mishi ──────────────────────────────────────
   if (spec.tieneFrontend) {
-    if (!(await publicarFrontAlPvc(spec.front, env, imagenFront))) {
+    if (!(await publicarFrontAlPvc(spec.front, env, imagenFrontRef))) {
       console.log(bad("la publicación del front al PVC falló"));
       process.exitCode = 1;
       return;

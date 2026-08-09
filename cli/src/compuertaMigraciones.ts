@@ -21,7 +21,7 @@ import { envOrThrow } from "./mkeConfig.js";
 import type { AppSpec } from "./appSpec.js";
 import { lintMigracionesRepo } from "./lintMigraciones.js";
 import { dumpPreMigracion } from "./dumpPreMigracion.js";
-import { verificarDrift } from "./driftDb.js";
+import { verificarDrift, bdAlDia } from "./driftDb.js";
 import { run, ok, bad, info, dim } from "./sh.js";
 
 /** Construye el manifiesto del Job de migrar a partir del env[] del Deployment. */
@@ -138,6 +138,16 @@ export async function compuertaMigracionesPostBuild(spec: AppSpec, imagen: strin
     return true;
   }
   console.log(`\n  ${info(`compuerta de migraciones (BD) — ${spec.db} @ ${spec.env}`)}`);
+
+  // 0) FAST-PATH: si la BD ya está EXACTAMENTE al día con el repo (nada
+  // pendiente y sin drift), no hay nada que migrar → saltamos dump+migrate. La
+  // igualdad journal-BD == journal-repo ES la confirmación del drift-check, así
+  // que la seguridad no se debilita: si hubiera pendientes o drift real,
+  // `bdAlDia` devuelve false y corre la compuerta completa (que migra o aborta).
+  if (await bdAlDia(spec.db, spec.env, spec.drizzleDir)) {
+    console.log(ok(`BD ya al día con el repo — sin migraciones pendientes, salto dump+migrate ${dim(`(${spec.db} @ ${spec.env})`)}`));
+    return true;
+  }
 
   // 1) respaldo antes de tocar la BD.
   if (!(await dumpPreMigracion(spec.app, spec.db, spec.env, sha))) return false;
