@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { run, ok, bad, warn, info, dim } from "./sh.js";
 import { envOrThrow } from "./mkeConfig.js";
 import { iamManifiestoTieneCatalogo, parseIamManifiesto, type IamManifiesto } from "./iamManifiesto.js";
+import { operadorToken } from "./tokenIam.js";
 import type { AppSpec } from "./appSpec.js";
 
 export const IAM_MANIFIESTO = "mke.iam.yaml";
@@ -122,6 +123,64 @@ export async function declararIam(spec: AppSpec): Promise<boolean> {
     );
   } catch (e) {
     console.log(warn(`no pude hablar con iam-mishi (${e instanceof Error ? e.message : String(e)}) — catálogo NO actualizado; sigue el deploy`));
+    return true; // sin catálogo publicado, sembrar actores no tiene sentido
   }
+
+  await sembrarActores(spec, manifiesto);
   return true;
+}
+
+/**
+ * Aplica los bindings SEMILLA de `actores:` (principal × rol de ESTA app,
+ * ámbito = esta app). ADITIVO: nunca revoca — quitar un actor del manifiesto NO
+ * quita el binding (eso es `iam-mishi revoke`, operación humana deliberada),
+ * misma semántica que ADMIN_EMAILS ("solo crea, nunca pisa").
+ *
+ * Los bindings son SOLO-OPERADOR por diseño (fuego 2026-08-09): el token de app
+ * jamás puede crearlos. Por eso esto usa la credencial de OPERADOR que mke ya
+ * lee del Secret vivo de iam-mishi en el cluster (lo mismo que hace para EMITIR
+ * el token de app). No se debilita ningún scope: el token de app sigue sin poder
+ * tocar bindings, y la credencial de operador nunca sale del nodo.
+ *
+ * Guardas de mke (defensa en profundidad, además de las de iam-mishi):
+ *   - el rol DEBE estar declarado en el mismo manifiesto (lo valida el parser) →
+ *     el repo de una app no puede sembrar `ecosistema/admin` ni roles ajenos;
+ *   - el ámbito se FUERZA a la app del deploy, jamás `ecosistema`.
+ */
+async function sembrarActores(spec: AppSpec, manifiesto: IamManifiesto): Promise<void> {
+  if (!manifiesto.actores.length) return;
+  const operador = await operadorToken(spec.env);
+  if (!operador) {
+    console.log(warn(`sin credencial de operador de iam-mishi — ${manifiesto.actores.length} actor(es) semilla NO sembrados`));
+    return;
+  }
+  for (const actor of manifiesto.actores) {
+    if (actor.rol === "*" || !manifiesto.roles.some((r) => r.nombre === actor.rol)) {
+      console.log(bad(`actor ${actor.principal}: rol "${actor.rol}" fuera del catálogo de ${spec.app} — NO se siembra`));
+      continue;
+    }
+    try {
+      const res = await fetch(`${iamHost(spec.env)}/v1/bindings`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${operador}`,
+          "content-type": "application/json",
+          "x-iam-actor": "mke-deploy(actores-semilla)",
+        },
+        body: JSON.stringify({
+          principal: actor.principal,
+          rol: { app: spec.app, nombre: actor.rol },
+          ambito: spec.app, // JAMÁS 'ecosistema'
+        }),
+      });
+      if (!res.ok) {
+        console.log(warn(`actor semilla ${actor.principal}→${actor.rol}: HTTP ${res.status} (${await res.text().catch(() => "")})`));
+        continue;
+      }
+      const data = (await res.json()) as { creado?: boolean };
+      console.log(ok(`actor semilla ${dim(actor.principal)} → ${spec.app}/${actor.rol} ${data.creado ? "creado" : "ya existía"}`));
+    } catch (e) {
+      console.log(warn(`actor semilla ${actor.principal}: ${e instanceof Error ? e.message : String(e)}`));
+    }
+  }
 }

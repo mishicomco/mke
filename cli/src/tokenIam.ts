@@ -36,7 +36,7 @@ async function consumeIam(spec: AppSpec): Promise<boolean> {
 
 // Credencial de OPERADOR: la lee del Secret vivo de iam-mishi en el cluster (mke
 // corre al lado del cluster). No la guardamos en ningún lado.
-async function operadorToken(env: string): Promise<string | null> {
+export async function operadorToken(env: string): Promise<string | null> {
   const spec = envOrThrow(env);
   const r = await run("kubectl", [
     "--context", spec.context, "-n", spec.namespace,

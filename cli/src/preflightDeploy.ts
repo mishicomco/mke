@@ -249,7 +249,9 @@ export async function preflightDeploy(spec: AppSpec, opts: PreflightOpts = {}): 
     const iamPlan = await (async () => {
       try {
         const m = await leerManifiestoIam(spec);
-        return m ? `${m.permisos.length} permisos + ${m.roles.length} roles → iam-mishi /v1/declarar` : `sin ${IAM_MANIFIESTO} — no se declara catálogo`;
+        return m
+          ? `${m.permisos.length} permisos + ${m.roles.length} roles → iam-mishi /v1/declarar${m.actores.length ? ` · ${m.actores.length} actor(es) semilla → /v1/bindings (ámbito ${spec.app})` : ""}`
+          : `sin ${IAM_MANIFIESTO} — no se declara catálogo`;
       } catch (e) {
         return `${IAM_MANIFIESTO} INVÁLIDO: ${e instanceof Error ? e.message : String(e)}`;
       }

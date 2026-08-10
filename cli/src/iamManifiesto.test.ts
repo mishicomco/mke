@@ -36,6 +36,40 @@ roles:
   ]);
 });
 
+// ── actores: (bindings SEMILLA) ──────────────────────────────────────────────
+// Protege la frontera de ESCALADA: el manifiesto vive en el repo de la app, así
+// que jamás puede sembrar roles ajenos ni de ecosistema. El parser es la primera
+// de las dos guardas (la otra es el ámbito forzado en declararIam.ts).
+
+test("parseIamManifiesto: actores email→rol, email normalizado a minúsculas", () => {
+  const m = parseIamManifiesto(
+    "roles:\n  admin:\n    - x.*\n  editor:\n    - x.notas.ver\nactores:\n  - Santi@X.com: admin\n  - ana@x.com: editor\n",
+    "x",
+  );
+  assert.deepEqual(m.actores, [
+    { principal: "santi@x.com", rol: "admin" },
+    { principal: "ana@x.com", rol: "editor" },
+  ]);
+});
+
+test("parseIamManifiesto: actor con rol NO declarado en el archivo → revienta (anti-escalada)", () => {
+  assert.throws(
+    () => parseIamManifiesto("roles:\n  admin:\n    - x.*\nactores:\n  - a@b.com: superadmin\n", "x"),
+    /no está declarado en 'roles:'/,
+  );
+  // ecosistema/admin no es citable: 'ecosistema' no es un rol de esta app.
+  assert.throws(() => parseIamManifiesto("actores:\n  - a@b.com: admin\n", "x"), /no está declarado/);
+});
+
+test("parseIamManifiesto: actor sin rol o con principal que no es correo → revienta", () => {
+  assert.throws(() => parseIamManifiesto("roles:\n  admin:\n    - x.*\nactores:\n  - a@b.com\n", "x"), /actor sin rol/);
+  assert.throws(() => parseIamManifiesto("roles:\n  admin:\n    - x.*\nactores:\n  - santi: admin\n", "x"), /no es un correo/);
+});
+
+test("parseIamManifiesto: sin sección actores ⇒ lista vacía (no se siembra nada)", () => {
+  assert.deepEqual(parseIamManifiesto("permisos:\n  - x.y.z\n", "x").actores, []);
+});
+
 test("parseIamManifiesto: 'app' opcional (la pone el deploy) y sanity check si difiere", () => {
   const m = parseIamManifiesto("permisos:\n  - x.y.z\n", "mi-app");
   assert.equal(m.app, "mi-app");
