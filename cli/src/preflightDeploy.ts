@@ -34,6 +34,7 @@ import { nsForEnv, toSnake } from "./dbProvision.js";
 import { ensureDns } from "./dns.js";
 import { STATIC_MISHI_REPO, ensureStaticHostPaso } from "./staticHost.js";
 import { asegurarTokenIam } from "./tokenIam.js";
+import { IAM_MANIFIESTO, declararIam, leerManifiestoIam } from "./declararIam.js";
 import {
   aplicarSecretK8s,
   asegurarNamespace,
@@ -245,8 +246,17 @@ export async function preflightDeploy(spec: AppSpec, opts: PreflightOpts = {}): 
     console.log(`  1. namespace \`${env.namespace}\` (${env.context})`);
     console.log(`  2. BD/rol \`${spec.db}\` en ${nsForEnv(spec.env)} + Secret k8s \`${spec.secretK8s}\``);
     console.log(`  3. MATERIALIZAR \`${spec.secretK8s}\` desde el vault (${sufijoEnv(spec.env) ? `${VAULT.url} ns \`${spec.app}\`, nombres \`*__${spec.env}\`` : `${spec.env} fuera del vault — no aplica`}) + compuerta de declaración de mke.preview.yaml`);
-    console.log(`  4. DNS ${spec.host} → tunnel ${env.tunnelUuid}`);
-    console.log(`  5. ${spec.tieneFrontend && spec.frontEstatico && !opts.sinStatic ? `host ${spec.host} en el ingress VIVO de static-mishi (subPath \`${spec.front}\`)` : "sin front estático — no se toca static-mishi"}`);
+    const iamPlan = await (async () => {
+      try {
+        const m = await leerManifiestoIam(spec);
+        return m ? `${m.permisos.length} permisos + ${m.roles.length} roles → iam-mishi /v1/declarar` : `sin ${IAM_MANIFIESTO} — no se declara catálogo`;
+      } catch (e) {
+        return `${IAM_MANIFIESTO} INVÁLIDO: ${e instanceof Error ? e.message : String(e)}`;
+      }
+    })();
+    console.log(`  4. catálogo IAM desde \`${IAM_MANIFIESTO}\`: ${iamPlan}`);
+    console.log(`  5. DNS ${spec.host} → tunnel ${env.tunnelUuid}`);
+    console.log(`  6. ${spec.tieneFrontend && spec.frontEstatico && !opts.sinStatic ? `host ${spec.host} en el ingress VIVO de static-mishi (subPath \`${spec.front}\`)` : "sin front estático — no se toca static-mishi"}`);
     return true;
   }
 
@@ -273,6 +283,11 @@ export async function preflightDeploy(spec: AppSpec, opts: PreflightOpts = {}): 
   // no es un secreto del vault (iam-mishi es su autoridad) → no pasa por la
   // compuerta de declaración de mke.preview.yaml.
   await asegurarTokenIam(spec);
+
+  // CATÁLOGO IAM: la app DECLARA como código sus permisos/roles en
+  // `mke.iam.yaml` (raíz del repo) y el deploy los publica en iam-mishi con el
+  // token de app recién asegurado. Sin manifiesto no se declara nada.
+  if (!(await declararIam(spec))) return false;
 
   // MATERIALIZAR: el Secret k8s es DERIVADO del vault (dueño de la verdad).
   // Va DESPUÉS de la BD (que escribe DATABASE_URL al vault) y ANTES del build,
