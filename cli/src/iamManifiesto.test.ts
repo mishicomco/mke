@@ -36,38 +36,13 @@ roles:
   ]);
 });
 
-// ── actores: (bindings SEMILLA) ──────────────────────────────────────────────
-// Protege la frontera de ESCALADA: el manifiesto vive en el repo de la app, así
-// que jamás puede sembrar roles ajenos ni de ecosistema. El parser es la primera
-// de las dos guardas (la otra es el ámbito forzado en declararIam.ts).
-
-test("parseIamManifiesto: actores email→rol, email normalizado a minúsculas", () => {
-  const m = parseIamManifiesto(
-    "roles:\n  admin:\n    - x.*\n  editor:\n    - x.notas.ver\nactores:\n  - Santi@X.com: admin\n  - ana@x.com: editor\n",
-    "x",
-  );
-  assert.deepEqual(m.actores, [
-    { principal: "santi@x.com", rol: "admin" },
-    { principal: "ana@x.com", rol: "editor" },
-  ]);
-});
-
-test("parseIamManifiesto: actor con rol NO declarado en el archivo → revienta (anti-escalada)", () => {
+// El manifiesto NO habla de QUIÉN: `actores:` no existe. Sembrar bindings es
+// acto de operador (`iam-mishi grant`), nunca del deploy.
+test("parseIamManifiesto: 'actores' es una clave desconocida (ya no existe la sección)", () => {
   assert.throws(
-    () => parseIamManifiesto("roles:\n  admin:\n    - x.*\nactores:\n  - a@b.com: superadmin\n", "x"),
-    /no está declarado en 'roles:'/,
+    () => parseIamManifiesto("actores:\n  - a@b.com: admin\n", "x"),
+    /clave de nivel raíz desconocida "actores"/,
   );
-  // ecosistema/admin no es citable: 'ecosistema' no es un rol de esta app.
-  assert.throws(() => parseIamManifiesto("actores:\n  - a@b.com: admin\n", "x"), /no está declarado/);
-});
-
-test("parseIamManifiesto: actor sin rol o con principal que no es correo → revienta", () => {
-  assert.throws(() => parseIamManifiesto("roles:\n  admin:\n    - x.*\nactores:\n  - a@b.com\n", "x"), /actor sin rol/);
-  assert.throws(() => parseIamManifiesto("roles:\n  admin:\n    - x.*\nactores:\n  - santi: admin\n", "x"), /no es un correo/);
-});
-
-test("parseIamManifiesto: sin sección actores ⇒ lista vacía (no se siembra nada)", () => {
-  assert.deepEqual(parseIamManifiesto("permisos:\n  - x.y.z\n", "x").actores, []);
 });
 
 // ── comillas (B) ─────────────────────────────────────────────────────────────
@@ -82,11 +57,6 @@ test("parseIamManifiesto: comillas envolventes se desnudan (no crean patrones mu
   assert.equal(m.app, "x");
   assert.deepEqual(m.permisos, [{ nombre: "x.notas.ver", descripcion: "Ver las notas" }]);
   assert.deepEqual(m.roles, [{ nombre: "admin", permisos: ["*"] }]);
-});
-
-test("parseIamManifiesto: actor entrecomillado se desnuda y sigue validando correo", () => {
-  const m = parseIamManifiesto(`roles:\n  admin:\n    - x.*\nactores:\n  - "a@b.com": "admin"\n`, "x");
-  assert.deepEqual(m.actores, [{ principal: "a@b.com", rol: "admin" }]);
 });
 
 // ── advertenciasIam (A) ──────────────────────────────────────────────────────

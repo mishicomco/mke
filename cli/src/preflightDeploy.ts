@@ -263,7 +263,7 @@ export async function preflightDeploy(spec: AppSpec, opts: PreflightOpts = {}): 
       return true;
     }
     const iamPlan = manifiestoDry
-      ? `${manifiestoDry.permisos.length} permisos + ${manifiestoDry.roles.length} roles → iam-mishi /v1/declarar${manifiestoDry.actores.length ? ` · ${manifiestoDry.actores.length} actor(es) semilla → /v1/bindings (ámbito ${spec.app})` : ""}`
+      ? `${manifiestoDry.permisos.length} permisos + ${manifiestoDry.roles.length} roles → iam-mishi /v1/declarar`
       : `sin ${IAM_MANIFIESTO} — no se declara catálogo`;
     console.log(`  4. catálogo IAM desde \`${IAM_MANIFIESTO}\`: ${iamPlan}`);
     if (manifiestoDry) {

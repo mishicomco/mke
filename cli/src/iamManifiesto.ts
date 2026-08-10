@@ -18,8 +18,9 @@
 //       - llego.*
 //     proveedor:
 //       - llego.ordenes.ver
-//   actores:                          # bindings SEMILLA (opcional)
-//     - santi@x.com: admin
+//
+// El manifiesto NO habla de QUIÉN: sembrar bindings es acto deliberado de
+// operador (`iam-mishi grant`), nunca del deploy.
 //
 // El nombre del permiso y los patrones de rol NO se validan acá con la regex de
 // iam-mishi (dueño del modelo): el manifiesto solo transporta. iam-mishi valida
@@ -35,25 +36,16 @@ export interface RolManifiesto {
   permisos: string[];
 }
 
-/** binding SEMILLA: quién arranca con qué rol de ESTA app (ámbito = la app).
- * Es la única parte del manifiesto que habla de QUIÉN; es aditiva (nunca revoca)
- * y solo puede citar roles declarados en el mismo archivo. */
-export interface ActorManifiesto {
-  principal: string;
-  rol: string;
-}
-
 export interface IamManifiesto {
   app: string;
   permisos: PermisoManifiesto[];
   roles: RolManifiesto[];
-  actores: ActorManifiesto[];
 }
 
 /** manifiesto vacío: declarar esto BORRARÍA el catálogo, así que `mke deploy`
  * trata "sin permisos ni roles" como "no hay nada que declarar" (no llama). */
 export function manifiestoIamVacio(app: string): IamManifiesto {
-  return { app, permisos: [], roles: [], actores: [] };
+  return { app, permisos: [], roles: [] };
 }
 
 /** ¿hay algo real que publicar? (un archivo con puros comentarios ⇒ no). */
@@ -119,8 +111,7 @@ export function parseIamManifiesto(text: string, appEsperada?: string): IamManif
   let app: string | undefined;
   const permisos: PermisoManifiesto[] = [];
   const roles: RolManifiesto[] = [];
-  const actores: ActorManifiesto[] = [];
-  let seccion: "permisos" | "roles" | "actores" | null = null;
+  let seccion: "permisos" | "roles" | null = null;
   let rolActual: RolManifiesto | null = null;
   let sangriaRol: number | null = null;
 
@@ -143,10 +134,8 @@ export function parseIamManifiesto(text: string, appEsperada?: string): IamManif
         seccion = "permisos";
       } else if (clave === "roles") {
         seccion = "roles";
-      } else if (clave === "actores") {
-        seccion = "actores";
       } else {
-        throw new Error(`mke.iam.yaml: clave de nivel raíz desconocida "${clave}" (esperado: app|permisos|roles|actores)`);
+        throw new Error(`mke.iam.yaml: clave de nivel raíz desconocida "${clave}" (esperado: app|permisos|roles)`);
       }
       continue;
     }
@@ -166,22 +155,6 @@ export function parseIamManifiesto(text: string, appEsperada?: string): IamManif
         if (!nombre) throw new Error(`mke.iam.yaml: permiso sin nombre: "${cruda}"`);
         permisos.push(descripcion ? { nombre, descripcion } : { nombre });
       }
-      continue;
-    }
-
-    if (seccion === "actores") {
-      const m = linea.match(/^-\s*(\S.*)$/);
-      if (!m) throw new Error(`mke.iam.yaml: item de 'actores' inválido: "${cruda}" (esperado "- correo@dominio: rol")`);
-      const item = m[1].trim();
-      const i = item.indexOf(":");
-      if (i <= 0) throw new Error(`mke.iam.yaml: actor sin rol: "${cruda}" (esperado "- correo@dominio: rol")`);
-      const principal = desentrecomillar(item.slice(0, i)).toLowerCase();
-      const rol = desentrecomillar(item.slice(i + 1));
-      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(principal)) {
-        throw new Error(`mke.iam.yaml: actor "${principal}" no es un correo (el principal del IAM es el email de la sesión Google)`);
-      }
-      if (!/^[a-z0-9-]+$/.test(rol)) throw new Error(`mke.iam.yaml: rol "${rol}" inválido para el actor ${principal}`);
-      actores.push({ principal, rol });
       continue;
     }
 
@@ -223,15 +196,5 @@ export function parseIamManifiesto(text: string, appEsperada?: string): IamManif
   const dup = permisos.map((p) => p.nombre).find((n, i, xs) => xs.indexOf(n) !== i);
   if (dup) throw new Error(`mke.iam.yaml: permiso duplicado "${dup}"`);
 
-  // Un actor solo puede citar un rol DECLARADO en este mismo archivo: el
-  // manifiesto de una app jamás siembra roles de otra app ni de `ecosistema`
-  // (eso sería escalada desde el repo de la app).
-  const huerfano = actores.find((a) => !roles.some((r) => r.nombre === a.rol));
-  if (huerfano) {
-    throw new Error(
-      `mke.iam.yaml: el actor ${huerfano.principal} cita el rol "${huerfano.rol}", que no está declarado en 'roles:' de esta app`,
-    );
-  }
-
-  return { app: appFinal, permisos, roles, actores };
+  return { app: appFinal, permisos, roles };
 }
