@@ -35,6 +35,7 @@ import { ensureDns } from "./dns.js";
 import { STATIC_MISHI_REPO, ensureStaticHostPaso } from "./staticHost.js";
 import { asegurarTokenIam } from "./tokenIam.js";
 import { IAM_MANIFIESTO, declararIam, leerManifiestoIam } from "./declararIam.js";
+import { advertenciasIam } from "./iamManifiesto.js";
 import {
   aplicarSecretK8s,
   asegurarNamespace,
@@ -246,17 +247,28 @@ export async function preflightDeploy(spec: AppSpec, opts: PreflightOpts = {}): 
     console.log(`  1. namespace \`${env.namespace}\` (${env.context})`);
     console.log(`  2. BD/rol \`${spec.db}\` en ${nsForEnv(spec.env)} + Secret k8s \`${spec.secretK8s}\``);
     console.log(`  3. MATERIALIZAR \`${spec.secretK8s}\` desde el vault (${sufijoEnv(spec.env) ? `${VAULT.url} ns \`${spec.app}\`, nombres \`*__${spec.env}\`` : `${spec.env} fuera del vault — no aplica`}) + compuerta de declaración de mke.preview.yaml`);
-    const iamPlan = await (async () => {
-      try {
-        const m = await leerManifiestoIam(spec);
-        return m
-          ? `${m.permisos.length} permisos + ${m.roles.length} roles → iam-mishi /v1/declarar${m.actores.length ? ` · ${m.actores.length} actor(es) semilla → /v1/bindings (ámbito ${spec.app})` : ""}`
-          : `sin ${IAM_MANIFIESTO} — no se declara catálogo`;
-      } catch (e) {
-        return `${IAM_MANIFIESTO} INVÁLIDO: ${e instanceof Error ? e.message : String(e)}`;
-      }
-    })();
+    let manifiestoDry: import("./iamManifiesto.js").IamManifiesto | null = null;
+    let iamError: string | null = null;
+    try {
+      manifiestoDry = await leerManifiestoIam(spec);
+    } catch (e) {
+      iamError = e instanceof Error ? e.message : String(e);
+    }
+    if (iamError) {
+      // Un manifiesto inválido ABORTA el deploy real: no sepultamos el error bajo
+      // los pasos siguientes — cortamos el plan aquí, como cortaría el deploy.
+      console.log(`  4. catálogo IAM desde \`${IAM_MANIFIESTO}\`:`);
+      console.log(bad(`     ${IAM_MANIFIESTO} INVÁLIDO — el deploy REAL ABORTARÍA AQUÍ (no se ejecutaría ningún paso posterior): ${iamError}`));
+      console.log(dim("  (plan truncado: arregla el manifiesto y vuelve a correr --dry-run)"));
+      return true;
+    }
+    const iamPlan = manifiestoDry
+      ? `${manifiestoDry.permisos.length} permisos + ${manifiestoDry.roles.length} roles → iam-mishi /v1/declarar${manifiestoDry.actores.length ? ` · ${manifiestoDry.actores.length} actor(es) semilla → /v1/bindings (ámbito ${spec.app})` : ""}`
+      : `sin ${IAM_MANIFIESTO} — no se declara catálogo`;
     console.log(`  4. catálogo IAM desde \`${IAM_MANIFIESTO}\`: ${iamPlan}`);
+    if (manifiestoDry) {
+      for (const aviso of advertenciasIam(manifiestoDry)) console.log(warn(`     ${aviso}`));
+    }
     console.log(`  5. DNS ${spec.host} → tunnel ${env.tunnelUuid}`);
     console.log(`  6. ${spec.tieneFrontend && spec.frontEstatico && !opts.sinStatic ? `host ${spec.host} en el ingress VIVO de static-mishi (subPath \`${spec.front}\`)` : "sin front estático — no se toca static-mishi"}`);
     return true;

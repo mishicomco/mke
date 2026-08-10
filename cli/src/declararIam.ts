@@ -15,7 +15,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { run, ok, bad, warn, info, dim } from "./sh.js";
 import { envOrThrow } from "./mkeConfig.js";
-import { iamManifiestoTieneCatalogo, parseIamManifiesto, type IamManifiesto } from "./iamManifiesto.js";
+import { advertenciasIam, iamManifiestoTieneCatalogo, parseIamManifiesto, type IamManifiesto } from "./iamManifiesto.js";
 import { operadorToken } from "./tokenIam.js";
 import type { AppSpec } from "./appSpec.js";
 
@@ -76,6 +76,13 @@ export async function declararIam(spec: AppSpec): Promise<boolean> {
   if (!iamManifiestoTieneCatalogo(manifiesto)) {
     console.log(dim(`  ${IAM_MANIFIESTO} sin permisos ni roles — nada que declarar (no se llama a iam-mishi).`));
     return true;
+  }
+
+  // Señal local temprana de escalada: el parser NO es el guardarraíl (transporta
+  // sin juzgar el modelo IAM); iam-mishi rechaza. Avisamos antes de gastar la
+  // llamada para que el dev no se sorprenda con un 422 en medio del deploy.
+  for (const aviso of advertenciasIam(manifiesto)) {
+    console.log(warn(`${IAM_MANIFIESTO}: ${aviso}`));
   }
 
   const token = await tokenDeApp(spec);

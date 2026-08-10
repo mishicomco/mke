@@ -70,6 +70,45 @@ function sangria(linea: string): number {
   return linea.length - linea.replace(/^\s+/, "").length;
 }
 
+// Quita un par de comillas envolventes ("..." o '...'). Un dev que por reflejo
+// escribe `- "*"` NO debe terminar con el patrón muerto literal `"*"` (con
+// comillas): eso rompería su catálogo en silencio. El mini-YAML no tiene otro
+// uso para comillas, así que desenvolverlas es seguro y predecible.
+function desentrecomillar(s: string): string {
+  const t = s.trim();
+  if (t.length >= 2 && ((t[0] === '"' && t.endsWith('"')) || (t[0] === "'" && t.endsWith("'")))) {
+    return t.slice(1, -1);
+  }
+  return t;
+}
+
+/**
+ * Advertencias de ESCALADA sobre un manifiesto ya parseado. El parser es
+ * deliberadamente permisivo (transporta, no juzga el modelo IAM); iam-mishi es
+ * quien RECHAZA en el deploy. Esto le da al dev una señal local temprana de que
+ * su deploy abortará, sin que el parseo mismo falle. NO es el guardarraíl —
+ * ese es el examen de escalada del template + las guardas de iam-mishi.
+ */
+export function advertenciasIam(m: IamManifiesto): string[] {
+  const avisos: string[] = [];
+  const prefijo = `${m.app}.`;
+  for (const p of m.permisos) {
+    if (!p.nombre.startsWith(prefijo)) {
+      avisos.push(`permiso "${p.nombre}" no lleva el prefijo "${prefijo}" — iam-mishi lo rechazará (422) y el deploy abortará`);
+    }
+  }
+  for (const r of m.roles) {
+    for (const patron of r.permisos) {
+      if (patron === "*") {
+        avisos.push(`rol "${r.nombre}": patrón "*" (comodín total) — SOLO roles de ecosistema pueden portarlo; iam-mishi lo rechazará y el deploy abortará`);
+      } else if (!patron.startsWith(prefijo)) {
+        avisos.push(`rol "${r.nombre}": patrón "${patron}" apunta fuera de la app — iam-mishi lo rechazará y el deploy abortará`);
+      }
+    }
+  }
+  return avisos;
+}
+
 /**
  * Parsea el YAML restringido de `mke.iam.yaml`. Tolerante con líneas vacías y
  * comentarios; revienta con mensaje claro ante estructura inesperada (mejor
@@ -98,7 +137,7 @@ export function parseIamManifiesto(text: string, appEsperada?: string): IamManif
       sangriaRol = null;
       if (clave === "app") {
         if (!valor.trim()) throw new Error("mke.iam.yaml: 'app' vacío");
-        app = valor.trim();
+        app = desentrecomillar(valor);
         seccion = null;
       } else if (clave === "permisos") {
         seccion = "permisos";
@@ -120,10 +159,10 @@ export function parseIamManifiesto(text: string, appEsperada?: string): IamManif
       const item = m[1].trim();
       const i = item.indexOf(":");
       if (i === -1) {
-        permisos.push({ nombre: item });
+        permisos.push({ nombre: desentrecomillar(item) });
       } else {
-        const nombre = item.slice(0, i).trim();
-        const descripcion = item.slice(i + 1).trim();
+        const nombre = desentrecomillar(item.slice(0, i));
+        const descripcion = desentrecomillar(item.slice(i + 1));
         if (!nombre) throw new Error(`mke.iam.yaml: permiso sin nombre: "${cruda}"`);
         permisos.push(descripcion ? { nombre, descripcion } : { nombre });
       }
@@ -136,8 +175,8 @@ export function parseIamManifiesto(text: string, appEsperada?: string): IamManif
       const item = m[1].trim();
       const i = item.indexOf(":");
       if (i <= 0) throw new Error(`mke.iam.yaml: actor sin rol: "${cruda}" (esperado "- correo@dominio: rol")`);
-      const principal = item.slice(0, i).trim().toLowerCase();
-      const rol = item.slice(i + 1).trim();
+      const principal = desentrecomillar(item.slice(0, i)).toLowerCase();
+      const rol = desentrecomillar(item.slice(i + 1));
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(principal)) {
         throw new Error(`mke.iam.yaml: actor "${principal}" no es un correo (el principal del IAM es el email de la sesión Google)`);
       }
@@ -165,7 +204,7 @@ export function parseIamManifiesto(text: string, appEsperada?: string): IamManif
       if (sangriaRol !== null && sangria(sinComentario) <= sangriaRol) {
         throw new Error(`mke.iam.yaml: el patrón "${linea}" debe ir MÁS indentado que su rol "${rolActual.nombre}"`);
       }
-      rolActual.permisos.push(linea.replace(/^-\s*/, "").trim());
+      rolActual.permisos.push(desentrecomillar(linea.replace(/^-\s*/, "")));
       continue;
     }
 

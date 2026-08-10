@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseIamManifiesto, iamManifiestoTieneCatalogo, manifiestoIamVacio } from "./iamManifiesto.js";
+import { parseIamManifiesto, iamManifiestoTieneCatalogo, manifiestoIamVacio, advertenciasIam } from "./iamManifiesto.js";
 
 // Protege la FRONTERA de autorización: este parseo es lo único entre el archivo
 // del repo y `POST /v1/declarar`. Lo que no aparece en la declaración se
@@ -68,6 +68,44 @@ test("parseIamManifiesto: actor sin rol o con principal que no es correo → rev
 
 test("parseIamManifiesto: sin sección actores ⇒ lista vacía (no se siembra nada)", () => {
   assert.deepEqual(parseIamManifiesto("permisos:\n  - x.y.z\n", "x").actores, []);
+});
+
+// ── comillas (B) ─────────────────────────────────────────────────────────────
+// Protege: un dev que por reflejo entrecomilla NO debe romper su catálogo en
+// silencio. `- "*"` es el carácter '*', no el patrón muerto literal `"*"`.
+
+test("parseIamManifiesto: comillas envolventes se desnudan (no crean patrones muertos)", () => {
+  const m = parseIamManifiesto(
+    `app: "x"\npermisos:\n  - "x.notas.ver": "Ver las notas"\nroles:\n  admin:\n    - '*'\n`,
+    "x",
+  );
+  assert.equal(m.app, "x");
+  assert.deepEqual(m.permisos, [{ nombre: "x.notas.ver", descripcion: "Ver las notas" }]);
+  assert.deepEqual(m.roles, [{ nombre: "admin", permisos: ["*"] }]);
+});
+
+test("parseIamManifiesto: actor entrecomillado se desnuda y sigue validando correo", () => {
+  const m = parseIamManifiesto(`roles:\n  admin:\n    - x.*\nactores:\n  - "a@b.com": "admin"\n`, "x");
+  assert.deepEqual(m.actores, [{ principal: "a@b.com", rol: "admin" }]);
+});
+
+// ── advertenciasIam (A) ──────────────────────────────────────────────────────
+// El parser transporta sin juzgar el modelo IAM; estas advertencias son la
+// señal LOCAL temprana de que iam-mishi rechazará (no son el guardarraíl).
+
+test("advertenciasIam: avisa de `*` bare y de prefijo de otra app; calla lo válido", () => {
+  const malo = parseIamManifiesto(
+    `app: x\npermisos:\n  - bank.robar.todo\nroles:\n  admin:\n    - '*'\n  espia:\n    - bank.*\n`,
+    "x",
+  );
+  const avisos = advertenciasIam(malo);
+  assert.equal(avisos.length, 3);
+  assert.ok(avisos.some((a) => a.includes("bank.robar.todo")));
+  assert.ok(avisos.some((a) => a.includes('"*"')));
+  assert.ok(avisos.some((a) => a.includes("bank.*")));
+
+  const bueno = parseIamManifiesto(`app: x\npermisos:\n  - x.notas.ver\nroles:\n  admin:\n    - x.*\n`, "x");
+  assert.deepEqual(advertenciasIam(bueno), []);
 });
 
 test("parseIamManifiesto: 'app' opcional (la pone el deploy) y sanity check si difiere", () => {
