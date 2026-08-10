@@ -34,13 +34,21 @@ async function consumeIam(spec: AppSpec): Promise<boolean> {
   }
 }
 
-// Credencial de OPERADOR: la lee del Secret vivo de iam-mishi en el cluster (mke
-// corre al lado del cluster). No la guardamos en ningún lado.
+// Credencial de OPERADOR: la lee del Secret de plataforma DEDICADO, en su propio
+// namespace `iam-operador` — NO del namespace de las apps (Hallazgo 0, 2026-08-10).
+// Antes vivía en `iam-mishi-secrets` del ns `stage`/`prod`, donde cualquier
+// pipeline de app con lectura amplia de secrets podía robar el super-poder. Ahora
+// el ns de apps solo tiene el HASH (inútil); el claro vive aquí, y el runner lo
+// alcanza por un Role dedicado con `resourceNames: [iam-operador]` (ver
+// mke/clusters/rbac/). mke corre al lado del cluster; no lo guarda en ningún lado.
+export const OPERADOR_NS = "iam-operador";
+export const OPERADOR_SECRET = "iam-operador";
+
 async function operadorToken(env: string): Promise<string | null> {
   const spec = envOrThrow(env);
   const r = await run("kubectl", [
-    "--context", spec.context, "-n", spec.namespace,
-    "get", "secret", "iam-mishi-secrets",
+    "--context", spec.context, "-n", OPERADOR_NS,
+    "get", "secret", OPERADOR_SECRET,
     "-o", "jsonpath={.data.IAM_OPERADOR_TOKEN}",
   ]);
   if (r.code !== 0 || !r.stdout.trim()) return null;
@@ -87,7 +95,7 @@ export async function asegurarTokenIam(spec: AppSpec): Promise<void> {
 
   const operador = await operadorToken(spec.env);
   if (!operador) {
-    console.log(warn(`no leí la credencial de operador de iam-mishi (${envOrThrow(spec.env).namespace}/iam-mishi-secrets) — token IAM de ${spec.app} NO provisionado; el check quedará fail-closed`));
+    console.log(warn(`no leí la credencial de operador de iam-mishi (${OPERADOR_NS}/${OPERADOR_SECRET}) — token IAM de ${spec.app} NO provisionado; el check quedará fail-closed`));
     return;
   }
   console.log(info(`emitiendo token de app para ${spec.app} en iam-mishi (${spec.env})…`));

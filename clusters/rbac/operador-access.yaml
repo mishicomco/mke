@@ -1,0 +1,37 @@
+# Acceso DEDICADO y MÍNIMO del runner al token de operador de iam-mishi.
+# Es la única puerta al super-poder: un Role acotado por `resourceNames` al
+# Secret exacto `iam-operador`, con solo `get`, en el ns `iam-operador`.
+# `get` SÍ soporta resourceNames (a diferencia de list/watch) — y mke nunca
+# LISTA secrets, siempre hace `get <nombre>`, así que esto no rompe el flujo.
+#
+# Efecto: `mke deploy` puede leer el operador para emitir tokens de app; un
+# `kubectl get secrets -n iam-operador` (sin nombre, = list) es DENEGADO, igual
+# que get de cualquier OTRO secret del ns.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mke-deploy-operador-lector
+  namespace: iam-operador
+  labels:
+    app.kubernetes.io/part-of: mke
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["iam-operador"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mke-deploy-operador-lector
+  namespace: iam-operador
+  labels:
+    app.kubernetes.io/part-of: mke
+subjects:
+  - kind: ServiceAccount
+    name: mke-deploy
+    namespace: mke-ci
+roleRef:
+  kind: Role
+  name: mke-deploy-operador-lector
+  apiGroup: rbac.authorization.k8s.io

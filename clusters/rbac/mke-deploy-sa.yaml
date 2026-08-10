@@ -1,0 +1,36 @@
+# Identidad de MENOR PRIVILEGIO del runner de CI (Hallazgo 0, 2026-08-10).
+#
+# Hoy el runner (systemd en modo host) habla con k3d usando un kubeconfig de
+# cluster-admin. Eso, sumado a que el operador vivía en el ns de apps, dejaba que
+# cualquier pipeline de app robara el super-poder. Este ServiceAccount reemplaza
+# a cluster-admin: el runner se autentica como `mke-deploy` y solo puede lo que
+# los Roles de este directorio le conceden.
+#
+# Se aplica UNA vez por cluster (gamer=stage, laptop=prod). El token del SA se
+# vuelve un kubeconfig que apunta el runner — ver RUNBOOK-hallazgo0.md.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mke-deploy
+  namespace: mke-ci
+  labels:
+    app.kubernetes.io/part-of: mke
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mke-ci
+  labels:
+    app.kubernetes.io/part-of: mke
+    mke.mishi.com.co/tier: plataforma
+---
+# Token de larga duración del SA (k8s >=1.24 no lo crea solo). Es la credencial
+# que va al kubeconfig del runner. Trátalo como secreto: NO lo commitees relleno.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mke-deploy-token
+  namespace: mke-ci
+  annotations:
+    kubernetes.io/service-account.name: mke-deploy
+type: kubernetes.io/service-account-token

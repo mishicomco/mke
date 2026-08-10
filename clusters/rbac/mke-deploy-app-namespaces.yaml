@@ -1,0 +1,83 @@
+# Role de MENOR PRIVILEGIO para el flujo de `mke deploy` en los namespaces de
+# apps (stage en el gamer, prod en el laptop). Reemplaza cluster-admin.
+#
+# ── Punto clave del Hallazgo 0 ────────────────────────────────────────────────
+# El runner necesita leer/crear/mergear `<app>-secrets` de CUALQUIER app, y los
+# nombres varían por app, así que NO se puede acotar por `resourceNames` (habría
+# que enumerarlos todos). Pero mke SIEMPRE hace `get secret <nombre>`, JAMÁS
+# `list secrets` → aquí se concede `get/create/patch` sobre secrets SIN
+# `list`/`watch`. Sin `list`, un pipeline no puede enumerar y barrer secrets
+# ajenos a ciegas; y como el operador ya NO vive en este ns (se movió a
+# `iam-operador`), el peor caso de un `get` dirigido es una credencial de BD
+# de OTRA app — residual aceptado (ver el reporte, no es el super-poder).
+#
+# ── VERIFICAR ANTES DE CORTAR ─────────────────────────────────────────────────
+# Esta lista de recursos/verbos se derivó leyendo las llamadas kubectl de mke
+# (get/apply/set/create/delete/patch/rollout/exec/logs/wait sobre deploy, rs,
+# pods, pods/exec, pods/log, jobs, configmaps, secrets, services, ingress,
+# events). NO se probó contra un cluster vivo. El runbook exige un `mke deploy`
+# de prueba con este SA ANTES de retirar el kubeconfig de admin: si algo pide un
+# verbo/recurso que falte, agrégalo aquí y reaplica (Role, efecto inmediato).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mke-deploy
+  # namespace lo pone el kustomize/RoleBinding por entorno (stage|prod). Aplica
+  # este mismo Role en AMBOS ns con el namespace correcto (ver runbook).
+  namespace: stage
+  labels:
+    app.kubernetes.io/part-of: mke
+rules:
+  # Workloads: rollout, set image/env, re-pin.
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "apply"]
+  # Pods: doctor/exec/logs/rollout status.
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  # Jobs de migración (compuerta de BD): crear, esperar, limpiar.
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # Secrets: get/create/patch de `<app>-secrets`. SIN list/watch a propósito
+  # (mke solo hace get por nombre; sin list no se pueden barrer secrets ajenos).
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "patch", "apply"]
+  # ConfigMaps: mke-catalogo (catálogo derivado que consume status-mishi).
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "apply"]
+  # Red del servicio + host.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "apply"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "apply"]
+  # Diagnóstico.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+---
+# Bind del SA al Role en el ns de apps. Duplica este RoleBinding por entorno
+# (stage/prod) con el namespace correcto — el runbook lo detalla.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mke-deploy
+  namespace: stage
+  labels:
+    app.kubernetes.io/part-of: mke
+subjects:
+  - kind: ServiceAccount
+    name: mke-deploy
+    namespace: mke-ci
+roleRef:
+  kind: Role
+  name: mke-deploy
+  apiGroup: rbac.authorization.k8s.io
