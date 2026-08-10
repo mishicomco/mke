@@ -164,13 +164,38 @@ function cabecerasSinBody(acc: AccesoVault): Record<string, string> {
   return { Authorization: `Bearer ${acc.token}` };
 }
 
+/** `GET /v1/quien-soy` — como quién autentica este token (diagnóstico, sin
+ * valores ni hashes). null si el vault no expone el endpoint o el token no
+ * autentica; el llamador degrada el mensaje, nunca la operación. */
+export async function quienSoy(acc: AccesoVault): Promise<{ nombre: string; tipo: string } | null> {
+  try {
+    const r = await f(acc)(`${acc.url}/v1/quien-soy`, { method: "GET", headers: cabecerasSinBody(acc) });
+    if (!r.ok) return null;
+    const j = (await r.json()) as { nombre?: string; tipo?: string };
+    return typeof j.nombre === "string" && typeof j.tipo === "string" ? { nombre: j.nombre, tipo: j.tipo } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Un 403 a ciegas no se puede operar (post-mortem iam-mishi 2026-08-09): el
+ * error dice COMO QUIÉN autenticó este runner, para ver al instante si el grant
+ * cayó en otra identidad homónima/por-nodo. */
+async function contextoDeIdentidad(acc: AccesoVault, status: number): Promise<string> {
+  if (status !== 403) return "";
+  const yo = await quienSoy(acc);
+  return yo
+    ? ` (autenticado como '${yo.nombre}' tipo ${yo.tipo} — el grant existe para OTRA identidad; re-corre \`mke app init\` para regrantear a toda la familia de deploy)`
+    : "";
+}
+
 /** `GET /v1/secretos/:ns` — SOLO metadata (nombres). Lanza con contexto, sin valores. */
 export async function listarNombres(acc: AccesoVault, ns: string): Promise<string[]> {
   const r = await f(acc)(`${acc.url}/v1/secretos/${encodeURIComponent(ns)}`, {
     method: "GET",
     headers: cabeceras(acc),
   });
-  if (!r.ok) throw new Error(`vault listar ${ns}: HTTP ${r.status}`);
+  if (!r.ok) throw new Error(`vault listar ${ns}: HTTP ${r.status}${await contextoDeIdentidad(acc, r.status)}`);
   const j = (await r.json()) as { secretos?: { nombre: string }[] };
   return (j.secretos ?? []).map((s) => s.nombre);
 }
@@ -181,7 +206,7 @@ export async function leerValor(acc: AccesoVault, ns: string, nombre: string): P
     method: "GET",
     headers: cabeceras(acc),
   });
-  if (!r.ok) throw new Error(`vault leer ${ns}/${nombre}: HTTP ${r.status}`);
+  if (!r.ok) throw new Error(`vault leer ${ns}/${nombre}: HTTP ${r.status}${await contextoDeIdentidad(acc, r.status)}`);
   const j = (await r.json()) as { valor?: string };
   if (typeof j.valor !== "string") throw new Error(`vault leer ${ns}/${nombre}: respuesta sin valor`);
   return j.valor;

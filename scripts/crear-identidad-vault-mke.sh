@@ -23,7 +23,11 @@ set -uo pipefail
 
 VAULT_URL="${VAULT_URL:-https://vault.mishi.com.co}"
 TOKEN_FILE="${VAULT_DEPLOY_TOKEN_FILE:-$HOME/.config/mishi/vault-mke.token}"
-IDENTIDAD="mke-runner-deploy"
+# Identidad POR NODO (`mke-runner-deploy@<nodo>`): el nombre es UNICO en el vault
+# desde la migracion 0003 y grantDeploy otorga a TODA la familia
+# `mke-runner-deploy`+`mke-runner-deploy@*` — cada runner con su token, sin
+# homonimos (post-mortem iam-mishi 2026-08-09).
+IDENTIDAD="${MKE_VAULT_IDENTIDAD:-mke-runner-deploy@$(hostname)}"
 # Raiz de confianza: el token root NO vive en el vault que protege, sino en el
 # store GPG offline `~/.config/mishi/secrets/`. El repo secrets-mishi fue borrado
 # (2026-08-08); se lee con `gpg` crudo, no con un CLI externo.
