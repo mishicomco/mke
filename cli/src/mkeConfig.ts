@@ -114,20 +114,25 @@ export const ENVS: Record<string, EnvSpec> = aplicarNodo({
     hostGatewayIp: "172.18.0.1",
   },
   stage: {
-    context: "k3d-mke-prod", // ¡stage vive en el cluster prod!
-    cluster: "mke-prod",
+    // Los clusters se nombran por la MÁQUINA donde viven, no por ambiente
+    // (decisión 2026-08-10): el gamer corre UN cluster `mke-gamer` con los ns
+    // stage + preview. Los clusters viejos mke-prod/mke-preview del gamer
+    // murieron en la fusión.
+    context: "k3d-mke-gamer",
+    cluster: "mke-gamer",
     namespace: "stage",
-    tunnelUuid: "dde2337f-7e0a-47b7-aec0-dfc9b10539af", // mke-prod (el cluster ÚNICO lo sirve este tunnel; mke-stage 3ade5843 es legacy, NO enruta a Traefik)
+    tunnelUuid: "9a316591-90fe-42e2-b427-1062e06fbfbc", // mke-gamer (túnel único del cluster del gamer: stage + previews)
     hostSuffix: "-stage",
-    hostGatewayIp: "172.20.0.1",
+    hostGatewayIp: "172.22.0.1",
   },
   prod: {
     // PROD VIVE EN EL LAPTOP desde 2026-08-06 (migración; ver memoria
     // handoff-migracion-prod-laptop). El contexto atraviesa el túnel SSH
     // persistente; el ns prod del cluster del pc gamer quedó congelado a 0
     // como rollback temporal — NO es prod.
-    context: "mke-prod-laptop",
-    cluster: "mke-prod", // nombre del cluster k3d EN el laptop (solo informativo aquí)
+    // Contexto renombrado a la máquina (2026-08-10): antes `mke-prod-laptop`.
+    context: "mke-laptop",
+    cluster: "mke-prod", // nombre del cluster k3d EN el laptop (histórico; renombrarlo = recrear prod, YAGNI)
     namespace: "prod",
     tunnelUuid: "421fe55c-649e-4df2-baec-7273bd8b7e17", // mke-prod-laptop
     hostSuffix: "",
@@ -170,9 +175,11 @@ export const NPM_TOKEN_SECRET = "git-mishi-npm-token";
  * mishi.com.co (para crear/borrar DNS vía API).
  */
 export const PREVIEW = {
-  context: "k3d-mke-preview",
-  cluster: "mke-preview",
-  tunnelName: "mke-preview",
+  // Desde la fusión 2026-08-10 los previews viven en el MISMO cluster del gamer
+  // (`mke-gamer`, ns preview) y salen por su mismo túnel.
+  context: "k3d-mke-gamer",
+  cluster: "mke-gamer",
+  tunnelName: "mke-gamer",
   /** sufijo público: `<slugApp>-<feature>-pre.mishi.com.co` (patrón con GUIÓN, sin wildcard). */
   hostSuffix: "-pre",
   /** zona Cloudflare de mishi.com.co (constante; la descubrió el token dns-api). */
@@ -208,7 +215,7 @@ export const VAULT = {
    * p.ej. grants al nacer una app). Fuego R2 2026-08-08: los grants iban al
    * vault CONGELADO de stage (gamer) mientras las escrituras van al vivo de
    * prod (laptop desde 2026-08-07) → 403 en todo primer nacimiento. */
-  podContext: process.env.VAULT_POD_CONTEXT ?? "mke-prod-laptop",
+  podContext: process.env.VAULT_POD_CONTEXT ?? "mke-laptop",
   podNamespace: process.env.VAULT_POD_NAMESPACE ?? "prod",
 } as const;
 

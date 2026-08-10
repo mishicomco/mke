@@ -1,0 +1,15 @@
+# Middleware del media público de Llegó en STAGE (zona llego.com.co):
+# media-stage.llego.com.co/<obj> → minio /llego/<obj> (bucket anónimo).
+# El original se creó ad-hoc en el cluster viejo y murió con él (2026-08-10);
+# ahora vive acá para que la próxima recreación no lo pierda.
+# Aplicar: kubectl --context k3d-mke-gamer apply -f ~/mishicomco/mke/llego-media-stage.yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: llego-media-prefix
+  namespace: storage-stage
+  labels:
+    app.kubernetes.io/part-of: mke
+spec:
+  addPrefix:
+    prefix: /llego

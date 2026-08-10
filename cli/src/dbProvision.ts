@@ -9,9 +9,14 @@ export interface DbProvisionOpts {
   password?: string;
 }
 
-// El postgres-mishi vive SIEMPRE en el cluster prod; stage/local apuntan a la
-// instancia dev (ns databases-dev), prod a la instancia prod (ns databases).
-export const EXEC_CONTEXT = "k3d-mke-prod";
+// El postgres-mishi del ambiente vive en el cluster de SU nodo: stage/local en
+// el cluster del gamer (ns databases-dev), prod en el del laptop (ns databases).
+// Antes era la constante "k3d-mke-prod", que solo funcionaba porque los DOS
+// clusters se llamaban igual — con los clusters nombrados por máquina
+// (2026-08-10) el contexto se deriva del entorno.
+export function execContext(dbNs: string): string {
+  return envOrThrow(dbNs === "databases" ? "prod" : "stage").context;
+}
 export const POD = "postgres-0";
 
 /** namespace del postgres-mishi que sirve cada entorno (compartido con appInit.ts). */
@@ -44,12 +49,12 @@ export async function dbProvision(app: string, env: string, opts: DbProvisionOpt
   }
   const sql = readFileSync(sqlPath, "utf8");
 
-  console.log(info(`provisionando BD/rol \`${appSnake}\` en ${ns} (${EXEC_CONTEXT}/${POD})`));
+  console.log(info(`provisionando BD/rol \`${appSnake}\` en ${ns} (${execContext(ns)}/${POD})`));
 
   const r = await run(
     "kubectl",
     [
-      "--context", EXEC_CONTEXT, "-n", ns,
+      "--context", execContext(ns), "-n", ns,
       "exec", "-i", POD, "--",
       "psql", "-U", "postgres",
       "-v", `app=${appSnake}`,

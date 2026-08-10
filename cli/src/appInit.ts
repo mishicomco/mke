@@ -2,7 +2,7 @@
 // comando idempotente: BD+rol en postgres-mishi, DATABASE_URL al vault-mishi,
 // namespace + Secret k8s con DATABASE_URL/SESSION_SECRET, DNS del host.
 //
-// Reusa lo horneado: nsForEnv/toSnake/EXEC_CONTEXT/POD de dbProvision.ts (el
+// Reusa lo horneado: nsForEnv/toSnake/execContext/POD de dbProvision.ts (el
 // mismo postgres-mishi, misma convención BD-por-app), ensureDns de dns.ts
 // (mismo CNAME al tunnel del entorno que usa `mke expose`), hostFor/envOrThrow
 // de mkeConfig.ts. No se reimplementa nada de eso acá.
@@ -12,7 +12,7 @@
 // solo en el vault-mishi y en el Secret de k8s.
 
 import { VAULT, envOrThrow, hostFor } from "./mkeConfig.js";
-import { EXEC_CONTEXT, POD, nsForEnv, toSnake } from "./dbProvision.js";
+import { execContext, POD, nsForEnv, toSnake } from "./dbProvision.js";
 import { ensureDns } from "./dns.js";
 import { run, ok, bad, info, warn, dim } from "./sh.js";
 import { ensureStaticHostPaso, planStaticHosts } from "./staticHost.js";
@@ -57,7 +57,7 @@ export async function appInit(app: string, env: string, opts: AppInitOpts): Prom
 
   if (opts.dryRun) {
     console.log(info("DRY RUN — no se toca nada. Plan:"));
-    console.log(`  1. BD+rol \`${appSnake}\` en postgres-mishi (${dbNs}, ${EXEC_CONTEXT}/${POD})`);
+    console.log(`  1. BD+rol \`${appSnake}\` en postgres-mishi (${dbNs}, ${execContext(dbNs)}/${POD})`);
     console.log(`     - CREATE ROLE/DATABASE si no existen, password aleatorio (openssl rand -base64 32)`);
     console.log(`     - ALTER SCHEMA public OWNER TO ${appSnake}; ALTER DEFAULT PRIVILEGES → GRANT ALL a ${appSnake}`);
     console.log(`  2. vault-mishi set ${secretNameDb}  (PUT versionado al vault, nunca se imprime)`);
@@ -76,7 +76,7 @@ export async function appInit(app: string, env: string, opts: AppInitOpts): Prom
   // 1) BD + rol, con fix de ownership (schema public + default privileges).
   //    La mecánica vive en `provisionApp.ts` — la comparte `mke deploy`, que
   //    converge lo que falte en SU entorno (cicatriz: la BD de prod no existía).
-  console.log(info(`BD/rol \`${appSnake}\` en ${dbNs} (${EXEC_CONTEXT}/${POD})`));
+  console.log(info(`BD/rol \`${appSnake}\` en ${dbNs} (${execContext(dbNs)}/${POD})`));
   let databaseUrl: string;
   try {
     const r = await provisionarBd(app, appSnake, env);

@@ -17,7 +17,7 @@ import { createGzip } from "node:zlib";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { EXEC_CONTEXT, POD, nsForEnv } from "./dbProvision.js";
+import { execContext, POD, nsForEnv } from "./dbProvision.js";
 import { ok, bad, dim } from "./sh.js";
 
 const CONSERVAR = 10;
@@ -65,7 +65,7 @@ export async function dumpPreMigracion(app: string, db: string, env: string, sha
 
   const codigo = await new Promise<number>((resolve) => {
     const child = spawn("kubectl", [
-      "--context", EXEC_CONTEXT, "-n", pgNs,
+      "--context", execContext(pgNs), "-n", pgNs,
       "exec", "-i", POD, "--",
       "pg_dump", "-U", "postgres", "-d", db,
     ]);

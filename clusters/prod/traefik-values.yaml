@@ -13,3 +13,6 @@ providers:
     enabled: true
   kubernetesCRD:
     enabled: true # habilita IngressRoute si lo prefieres
+    # los artifacts viven en ns `artifact` pero sus archivos los sirve
+    # static-mishi (ns prod/stage): el IngressRoute cruza namespaces.
+    allowCrossNamespace: true

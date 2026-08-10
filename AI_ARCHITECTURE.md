@@ -2,7 +2,7 @@
 
 > Diseño y lecciones que no cambian seguido. El estado del día vive en `AI_REPO_STATE.md`; la historia en git.
 
-## Topología de la flota (desde 2026-08-07: prod autónomo en el laptop)
+## Topología de la flota (2026-08-10: clusters nombrados por MÁQUINA)
 
 ```
                                    INTERNET
@@ -11,14 +11,16 @@
                               │   Cloudflare   │  mishi.com.co · llego.com.co
                               │  (DNS + edge)  │  travelhabit.co · status en Worker
                               └───┬────────┬───┘
-             túnel mke-prod-laptop│        │túnel mke-prod (dde2337f)
+             túnel mke-prod-laptop│        │túnel mke-gamer (9a316591)
                   (421fe55c)      │        │
 ══════════════════════════════════╪════════╪══════════════════════════════════
    LAPTOP — PROD (24/7, autónomo) │        │   PC GAMER — STAGE (apagable)
                                   │        │
   ┌───────────────────────────────┴──┐   ┌─┴────────────────────────────────┐
-  │ k3d `mke-prod` (ns prod, git,    │   │ k3d `mke-prod` (ns stage)        │
-  │ storage, databases, cloudflare)  │   │  · apps *-stage                  │
+  │ k3d `mke-prod` (histórico) —     │   │ k3d `mke-gamer` (ns stage +      │
+  │ contexto `mke-laptop` (ns prod,  │   │  preview + plataforma)           │
+  │ artifact, git, storage,          │   │  · apps *-stage · previews       │
+  │ databases, cloudflare)           │   │                                  │
   │  · apps: 3d, bank, omni, llego…  │   │  · vault-stage (instancia DEV,   │
   │  · postgres (16 BDs) · minio     │   │    datos congelados — NO es      │
   │  · mesh-central · static-mishi   │   │    el vault)                     │
@@ -31,7 +33,8 @@
   │   tag v* → mke deploy prod       │   │   push main → mke deploy stage   │
   │   (build+k3d import LOCALES)     │   │   PRs quality (ubuntu-latest)    │
   │                                  │   │                                  │
-  │ mke-nodo.json {envsLocales:prod} │   │ k3d `mke-preview` (Studio)       │
+  │ mke-nodo.json {envsLocales:prod} │   │ (previews: ns `preview` del      │
+  │                                  │   │  mismo cluster; Studio archivado)│
   │ backup timer SCOPE=prod → Drive  │   │ backup timer SCOPE=stage → Drive │
   └──────────────────────────────────┘   │ túnel SSH → laptop (operar prod  │
                                          │ remoto: kubectl/doctor; opcional)│

@@ -20,7 +20,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { EXEC_CONTEXT, POD, nsForEnv } from "./dbProvision.js";
+import { execContext, POD, nsForEnv } from "./dbProvision.js";
 import { run, ok, bad, dim } from "./sh.js";
 
 const RE_ANOTACION = /^[ \t]*--[ \t]*(contract|espejo):/i;
@@ -123,7 +123,7 @@ export function parsearFilasDb(salida: string): EntradaDb[] {
 export async function leerJournalDb(db: string, env: string): Promise<EntradaDb[] | null> {
   const pgNs = nsForEnv(env);
   const r = await run("kubectl", [
-    "--context", EXEC_CONTEXT, "-n", pgNs,
+    "--context", execContext(pgNs), "-n", pgNs,
     "exec", "-i", POD, "--",
     "psql", "-U", "postgres", "-d", db, "-Atc",
     "select created_at || '|' || hash from drizzle.__drizzle_migrations order by created_at asc",
@@ -173,7 +173,7 @@ export async function verificarDrift(db: string, env: string, drizzleDir: string
   }
 
   const r = await run("kubectl", [
-    "--context", EXEC_CONTEXT, "-n", pgNs,
+    "--context", execContext(pgNs), "-n", pgNs,
     "exec", "-i", POD, "--",
     "psql", "-U", "postgres", "-d", db, "-Atc",
     "select created_at || '|' || hash from drizzle.__drizzle_migrations order by created_at asc",

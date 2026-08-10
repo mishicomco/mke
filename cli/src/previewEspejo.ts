@@ -7,14 +7,14 @@
 // NO hay DB que provisionar ni dropear: la DB vive y muere con el pod. El espejo
 // es un flujo cross-cluster orquestado por el CLI tras el rollout:
 //   1. pg_dump --data-only de la DB de STAGE en postgres-mishi (cluster mke-prod,
-//      ns databases-dev; ver `dbProvision.ts` EXEC_CONTEXT/POD), excluyendo cada
+//      ns databases-dev; ver `dbProvision.ts` execContext/POD), excluyendo cada
 //      tabla sensible con --exclude-table-data.
 //   2. TRUNCATE de todas las tablas del sidecar (cluster mke-preview, ns preview).
 //   3. restaura el dump dentro del sidecar por `kubectl exec … psql`.
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { EXEC_CONTEXT, POD, nsForEnv, toSnake } from "./dbProvision.js";
+import { execContext, POD, nsForEnv, toSnake } from "./dbProvision.js";
 import { PREVIEW } from "./mkeConfig.js";
 import { run } from "./sh.js";
 
@@ -80,7 +80,7 @@ export async function restaurarEspejo(app: string, podName: string, tablasSensib
   const dbStage = dbNameStage(app);
   const excludeArgs = tablasSensibles.map((t) => `--exclude-table-data=${t}`);
   const dump = await run("kubectl", [
-    "--context", EXEC_CONTEXT, "-n", STAGE_NS, "exec", POD, "--",
+    "--context", execContext(STAGE_NS), "-n", STAGE_NS, "exec", POD, "--",
     "pg_dump", "-U", "postgres", "-d", dbStage, "--data-only", "--disable-triggers", ...excludeArgs,
   ]);
   if (dump.code !== 0) throw new Error(`pg_dump de ${dbStage} (stage) falló: ${dump.stderr || dump.stdout}`);

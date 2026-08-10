@@ -32,6 +32,10 @@ const SUFIJO = "-artifact";
 const REPO = "artifacts-mishi";
 const RUNTIME_PVC = "/srv/www/artifact-runtime";
 const SPEC = ENVS.prod; // un artifact tiene UN solo lugar: ni stage ni prod
+// Desde 2026-08-10 la app/guardia/rutas de artifacts viven en su PROPIO ns
+// `artifact` (laptop); los ARCHIVOS los sigue sirviendo static-mishi desde su
+// PVC en ns prod (el IngressRoute cruza namespaces — allowCrossNamespace).
+const NS_ART = "artifact";
 
 const hostDe = (nombre: string) => `${nombre}${SUFIJO}.${DOMAIN}`;
 const carpetaPvc = (nombre: string) => `/srv/www/${nombre}${SUFIJO}`;
@@ -178,7 +182,7 @@ const guardiaDir = () => join(appsRoot(), "mke", "platform", "artifacts", "guard
 export async function guardiaDeploy(forzar = false): Promise<boolean> {
   if (!forzar) {
     const hay = await run("kubectl", [
-      "--context", SPEC.context, "-n", SPEC.namespace,
+      "--context", SPEC.context, "-n", NS_ART,
       "get", "deploy", GUARDIA, "-o", "name",
     ]);
     if (hay.code === 0) return true;
@@ -200,7 +204,7 @@ export async function guardiaDeploy(forzar = false): Promise<boolean> {
       kind: "Deployment",
       metadata: {
         name: GUARDIA,
-        namespace: SPEC.namespace,
+        namespace: NS_ART,
         labels: { "app.kubernetes.io/part-of": "mke" },
       },
       spec: {
@@ -232,7 +236,7 @@ export async function guardiaDeploy(forzar = false): Promise<boolean> {
       kind: "Service",
       metadata: {
         name: GUARDIA,
-        namespace: SPEC.namespace,
+        namespace: NS_ART,
         labels: { "app.kubernetes.io/part-of": "mke" },
       },
       spec: { selector: { app: GUARDIA }, ports: [{ port: 80, targetPort: 3000 }] },
@@ -250,10 +254,10 @@ export async function guardiaDeploy(forzar = false): Promise<boolean> {
     rmSync(tmp, { force: true });
   }
   if (forzar) {
-    await run("kubectl", ["--context", SPEC.context, "-n", SPEC.namespace, "rollout", "restart", `deploy/${GUARDIA}`]);
+    await run("kubectl", ["--context", SPEC.context, "-n", NS_ART, "rollout", "restart", `deploy/${GUARDIA}`]);
   }
   const listo = await run("kubectl", [
-    "--context", SPEC.context, "-n", SPEC.namespace,
+    "--context", SPEC.context, "-n", NS_ART,
     "rollout", "status", `deploy/${GUARDIA}`, "--timeout=90s",
   ]);
   if (listo.code !== 0) {
@@ -272,14 +276,14 @@ export async function guardiaDeploy(forzar = false): Promise<boolean> {
  * tambien ganara. Ningun host real termina en -artifact (sufijo reservado).
  */
 async function asegurarRouting(): Promise<boolean> {
-  const svcGuardia = `http://${GUARDIA}.${SPEC.namespace}.svc.cluster.local/guardia`;
+  const svcGuardia = `http://${GUARDIA}.${NS_ART}.svc.cluster.local/guardia`;
   const manifiestos = [
     {
       apiVersion: "traefik.io/v1alpha1",
       kind: "Middleware",
       metadata: {
         name: "artifact-auth",
-        namespace: SPEC.namespace,
+        namespace: NS_ART,
         labels: { "app.kubernetes.io/part-of": "mke" },
       },
       spec: { forwardAuth: { address: svcGuardia } },
@@ -289,7 +293,7 @@ async function asegurarRouting(): Promise<boolean> {
       kind: "Middleware",
       metadata: {
         name: "artifact-csp",
-        namespace: SPEC.namespace,
+        namespace: NS_ART,
         labels: { "app.kubernetes.io/part-of": "mke" },
       },
       spec: {
@@ -307,7 +311,7 @@ async function asegurarRouting(): Promise<boolean> {
       kind: "IngressRoute",
       metadata: {
         name: "artifacts",
-        namespace: SPEC.namespace,
+        namespace: NS_ART,
         labels: { "app.kubernetes.io/part-of": "mke" },
       },
       spec: {
@@ -318,7 +322,7 @@ async function asegurarRouting(): Promise<boolean> {
             // precisamente su trabajo). Regla mas larga: gana.
             match: "HostRegexp(`^[a-z0-9-]+-artifact\\.mishi\\.com\\.co$`) && PathPrefix(`/_mishi`)",
             kind: "Rule",
-            services: [{ name: GUARDIA, port: 80, namespace: SPEC.namespace }],
+            services: [{ name: GUARDIA, port: 80, namespace: NS_ART }],
           },
           {
             // Fase 2: /api de todo artifact va a artifact-mishi (la capa de
@@ -326,15 +330,15 @@ async function asegurarRouting(): Promise<boolean> {
             // Pasa por la puerta igual que el contenido (privados por defecto).
             match: "HostRegexp(`^[a-z0-9-]+-artifact\\.mishi\\.com\\.co$`) && PathPrefix(`/api`)",
             kind: "Rule",
-            middlewares: [{ name: "artifact-auth", namespace: SPEC.namespace }],
-            services: [{ name: "artifact-mishi", port: 80, namespace: SPEC.namespace }],
+            middlewares: [{ name: "artifact-auth", namespace: NS_ART }],
+            services: [{ name: "artifact-mishi", port: 80, namespace: NS_ART }],
           },
           {
             match: "HostRegexp(`^[a-z0-9-]+-artifact\\.mishi\\.com\\.co$`)",
             kind: "Rule",
             middlewares: [
-              { name: "artifact-auth", namespace: SPEC.namespace },
-              { name: "artifact-csp", namespace: SPEC.namespace },
+              { name: "artifact-auth", namespace: NS_ART },
+              { name: "artifact-csp", namespace: NS_ART },
             ],
             services: [{ name: "static-mishi", port: 80, namespace: SPEC.namespace }],
           },
@@ -522,7 +526,7 @@ export async function artifactPublicar(
           const cuerpo = JSON.stringify({ artifact: nombre, manifiesto: JSON.parse(esquema) }).replace(/'/g, "'\\''");
           const reg = await execEnPod(
             pod,
-            `curl -s -m 10 -X POST http://artifact-mishi.${SPEC.namespace}.svc.cluster.local/api/manifiesto ` +
+            `curl -s -m 10 -X POST http://artifact-mishi.${NS_ART}.svc.cluster.local/api/manifiesto ` +
               `-H 'content-type: application/json' -d '${cuerpo}'`,
           );
           if (/"ok":true/.test(reg.out)) console.log(ok("manifiesto registrado en artifact-mishi"));
@@ -537,7 +541,7 @@ export async function artifactPublicar(
     // las pestañas abiertas del artifact se recargan solas via SSE
     const aviso = await execEnPod(
       pod,
-      `curl -s -X POST http://${GUARDIA}.${SPEC.namespace}.svc.cluster.local/avisar ` +
+      `curl -s -X POST http://${GUARDIA}.${NS_ART}.svc.cluster.local/avisar ` +
         `-d '{"host":"${host}","version":"${Date.now().toString(36)}"}'`,
     );
     const avisadas = /"avisadas":(\d+)/.exec(aviso.out)?.[1];
@@ -693,7 +697,7 @@ export async function artifactAcceso(
   }).replace(/'/g, "'\\''");
   const r = await execEnPod(
     pod,
-    `curl -s -m 10 -X POST http://artifact-mishi.${SPEC.namespace}.svc.cluster.local/api/interno/acceso ` +
+    `curl -s -m 10 -X POST http://artifact-mishi.${NS_ART}.svc.cluster.local/api/interno/acceso ` +
       `-H 'content-type: application/json' -d '${cuerpo}'`,
   );
   if (!/"ok":true/.test(r.out)) {
@@ -719,7 +723,7 @@ export async function artifactBorrar(nombre: string): Promise<void> {
     const cuerpo = JSON.stringify({ artifact: nombre }).replace(/'/g, "'\\''");
     const r = await execEnPod(
       pod,
-      `curl -s -m 10 -X POST http://artifact-mishi.${SPEC.namespace}.svc.cluster.local/api/interno/purgar ` +
+      `curl -s -m 10 -X POST http://artifact-mishi.${NS_ART}.svc.cluster.local/api/interno/purgar ` +
         `-H 'content-type: application/json' -d '${cuerpo}'`,
     );
     const docs = /"documentos":(\d+)/.exec(r.out)?.[1];

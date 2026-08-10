@@ -28,7 +28,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { deleteRecordsByName } from "./cf.js";
-import { EXEC_CONTEXT, POD, nsForEnv, toSnake } from "./dbProvision.js";
+import { execContext, POD, nsForEnv, toSnake } from "./dbProvision.js";
 import { FORGE, forgeDeleteRepo, secretGet } from "./forgeRepo.js";
 import { appsRoot, envOrThrow, hostFor } from "./mkeConfig.js";
 import { regenerarCatalogos } from "./catalogo.js";
@@ -72,7 +72,7 @@ export async function appBorrar(app: string, opts: AppBorrarOpts): Promise<void>
   // ── Plan / guardarraíl de confirmación ─────────────────────────────────────
   const plan = [
     `  1. k8s: borra deploy/svc/ingress/Secret \`${app}\` en ns \`${spec.namespace}\` (${spec.context})`,
-    `  2. BD+rol: DROP DATABASE ${appSnake} + DROP ROLE ${appSnake} en ${dbNs} (${EXEC_CONTEXT}/${POD})`,
+    `  2. BD+rol: DROP DATABASE ${appSnake} + DROP ROLE ${appSnake} en ${dbNs} (${execContext(dbNs)}/${POD})`,
     `  2b. vault: borra el secreto ${app}/DATABASE_URL__${env}`,
     `  3. DNS: borra el CNAME ${host}`,
     `  4. static-mishi: quita el host de los overlays (stage+prod) + commit/push`,
@@ -125,7 +125,7 @@ export async function appBorrar(app: string, opts: AppBorrarOpts): Promise<void>
       `DROP ROLE IF EXISTS ${appSnake};`,
     ].join("\n");
     const r = await run("kubectl", [
-      "--context", EXEC_CONTEXT, "-n", dbNs,
+      "--context", execContext(dbNs), "-n", dbNs,
       "exec", "-i", POD, "--", "psql", "-U", "postgres",
     ], sql);
     if (r.code === 0) {

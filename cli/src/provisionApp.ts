@@ -14,7 +14,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { appsRoot, envOrThrow } from "./mkeConfig.js";
-import { EXEC_CONTEXT, POD, nsForEnv } from "./dbProvision.js";
+import { execContext, POD, nsForEnv } from "./dbProvision.js";
 import { accesoDeploy, escribirValor, leerValor, nombreDatabaseUrl } from "./secretosDelVault.js";
 import { run } from "./sh.js";
 
@@ -40,7 +40,7 @@ const GPG_CLI_LEGADO = join(homedir(), "mishicomco", "secrets-mishi", "bin", "mi
 /** true si el rol ya existe en el postgres-mishi del namespace dado. */
 export async function roleExists(appSnake: string, dbNs: string): Promise<boolean> {
   const r = await run("kubectl", [
-    "--context", EXEC_CONTEXT, "-n", dbNs,
+    "--context", execContext(dbNs), "-n", dbNs,
     "exec", "-i", POD, "--",
     "psql", "-U", "postgres", "-tAc",
     `SELECT 1 FROM pg_roles WHERE rolname = '${appSnake}'`,
@@ -51,7 +51,7 @@ export async function roleExists(appSnake: string, dbNs: string): Promise<boolea
 /** true si la BD de la app ya existe (el post-mortem: el rol podía estar y la BD no). */
 export async function dbExists(appSnake: string, dbNs: string): Promise<boolean> {
   const r = await run("kubectl", [
-    "--context", EXEC_CONTEXT, "-n", dbNs,
+    "--context", execContext(dbNs), "-n", dbNs,
     "exec", "-i", POD, "--",
     "psql", "-U", "postgres", "-tAc",
     `SELECT 1 FROM pg_database WHERE datname = '${appSnake}'`,
@@ -96,7 +96,7 @@ export async function provisionarBd(app: string, appSnake: string, env: string):
   const r = await run(
     "kubectl",
     [
-      "--context", EXEC_CONTEXT, "-n", dbNs,
+      "--context", execContext(dbNs), "-n", dbNs,
       "exec", "-i", POD, "--",
       "psql", "-U", "postgres",
       "-v", `app=${appSnake}`,
