@@ -48,7 +48,7 @@ mke ls stage
 
 Vive en `src/mkeConfig.ts`. Lo no obvio:
 
-- **Un solo cluster en el PC gamer: `k3d-mke-prod`**, con stage y prod como
+- **Un solo cluster por MÁQUINA (2026-08-10)**: gamer = `k3d-mke-gamer` (stage+preview), laptop = contexto `mke-laptop` (prod+artifact); antes stage y prod eran
   **namespaces** del mismo cluster. (El cluster/contexto/tunnel `mke-stage` se
   eliminó por confuso — era legacy y sólo servía un demo.) Aplicar al contexto
   equivocado da `namespaces "stage" not found`.

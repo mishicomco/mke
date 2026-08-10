@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-SRC_CTX=k3d-mke-prod;    SRC_NS=databases-dev
+SRC_CTX=k3d-mke-gamer;   SRC_NS=databases-dev  # (one-shot ya corrida 2026-08; contexto actualizado al nombre nuevo)
 DST_CTX=mke-prod-laptop; DST_NS=databases
 DB=vault_mishi
 

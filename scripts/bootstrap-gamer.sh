@@ -1,28 +1,33 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  bootstrap-prod.sh — levanta el clúster Mishi-Prod en la pc home (WSL).
+#  bootstrap-gamer.sh — levanta el clúster mke-gamer en el PC gamer (WSL).
 #
-#  Un solo cluster con namespaces stage + prod. Cambia solo configuración,
-#  nunca código (overlays Kustomize).
+#  Un solo cluster POR MÁQUINA (ley 2026-08-10): el gamer corre `mke-gamer`
+#  con namespaces `stage` + `preview` (+ plataforma stage: databases-dev,
+#  storage-stage, git-stage, mesh-central). Cambia solo configuración,
+#  nunca código (overlays Kustomize / manifests de cada repo de plataforma).
 #
 #  Idempotente: se puede correr varias veces. Crea (si no existen):
-#    1. clúster k3d "mke-prod"  (contexto kubectl: k3d-mke-prod)
-#    2. Traefik (Helm) en ns "ingress", service ClusterIP (modelo tunnel-only)
-#    3. túnel Cloudflare "mke-prod" (cloudflared CLI) + Secret tunnel-credentials
-#    4. cloudflared in-cluster (clusters/prod/cloudflared)
-#    5. rutas DNS stage y prod -> túnel mke-prod
+#    0. sysctl de inotify (sin esto un 2º/3º cluster k3s NO arranca:
+#       "inotify_init: too many open files" — lección 2026-08-10)
+#    1. clúster k3d "mke-gamer" (contexto kubectl: k3d-mke-gamer, host:80→lb)
+#    2. Traefik (Helm) en ns "ingress" (clusters/prod/traefik-values.yaml,
+#       con allowCrossNamespace para los artifacts)
+#    3. túnel Cloudflare "mke-gamer" + Secret tunnel-credentials
+#    4. cloudflared in-cluster (clusters/prod/cloudflared con tunnel: mke-gamer)
+#    5. registry local por nodo (registry-mishi/bootstrap)
 #
-#  Prerrequisitos en la pc home:
-#    - WSL con systemd, Docker, k3d, helm v4, kubectl, cloudflared
-#    - cloudflared YA autenticado (~/.cloudflared/cert.pem)
-#  NOTA: NO toca el túnel de ai.mishi.com.co (LM Studio); convive aparte.
+#  La plataforma stage (postgres/minio/forgejo/mesh) y las apps se restauran
+#  desde sus repos + backups de Drive: ver postgres-mishi/backups/RESTORE.md.
+#
+#  Prerrequisitos: WSL con systemd, Docker, k3d, helm, kubectl, cloudflared
+#  YA autenticado (~/.cloudflared/cert.pem).
 # =============================================================================
 set -euo pipefail
 
-CLUSTER="mke-prod"
+CLUSTER="mke-gamer"
 CONTEXT="k3d-${CLUSTER}"
-TUNNEL="mke-prod"
-HOSTS=("hello-stage.mishi.com.co" "hello.mishi.com.co")
+TUNNEL="mke-gamer"
 CF_DIR="${HOME}/.cloudflared"
 
 MKE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,20 +35,27 @@ PROD_DIR="${MKE_ROOT}/clusters/prod"
 
 say() { echo -e "\n▶ $*"; }
 
+# --- 0. límites de inotify (persistentes) ------------------------------------
+if [[ ! -f /etc/sysctl.d/90-mke-inotify.conf ]]; then
+  say "Subiendo límites de inotify (k3s los agota y el cluster no arranca)."
+  sudo sh -c 'printf "fs.inotify.max_user_instances=1024\nfs.inotify.max_user_watches=2097152\n" > /etc/sysctl.d/90-mke-inotify.conf && sysctl -p /etc/sysctl.d/90-mke-inotify.conf'
+fi
+
 # --- 1. Clúster k3d ----------------------------------------------------------
 if k3d cluster list 2>/dev/null | grep -qw "${CLUSTER}"; then
   say "Clúster k3d '${CLUSTER}' ya existe — lo arranco si está parado."
   k3d cluster start "${CLUSTER}" || true
 else
-  say "Creando clúster k3d '${CLUSTER}' (1 nodo, sin Traefik embebido)."
+  say "Creando clúster k3d '${CLUSTER}' (1 nodo, sin Traefik embebido, host:80→lb)."
   k3d cluster create "${CLUSTER}" \
     --servers 1 \
+    --port "80:80@loadbalancer" \
     --k3s-arg "--disable=traefik@server:0" \
     --wait
 fi
 kubectl config use-context "${CONTEXT}" >/dev/null
 
-# --- 2. Traefik (Helm v4) ----------------------------------------------------
+# --- 2. Traefik (Helm) -------------------------------------------------------
 say "Instalando/actualizando Traefik en ns 'ingress'."
 helm repo add traefik https://traefik.github.io/charts >/dev/null 2>&1 || true
 helm repo update traefik >/dev/null
@@ -78,30 +90,27 @@ kubectl --context "${CONTEXT}" -n cloudflare create secret generic tunnel-creden
   --from-file=credentials.json="${CREDS_FILE}" \
   --dry-run=client -o yaml | kubectl --context "${CONTEXT}" apply -f -
 
-say "Desplegando cloudflared in-cluster."
+say "Desplegando cloudflared in-cluster (config del túnel ${TUNNEL})."
 kubectl --context "${CONTEXT}" apply -k "${PROD_DIR}/cloudflared"
 kubectl --context "${CONTEXT}" -n cloudflare rollout status deploy/cloudflared --timeout=120s
 
-# --- 5. DNS por hostname (convive con ai.mishi.com.co) -----------------------
-for h in "${HOSTS[@]}"; do
-  say "Ruta DNS ${h} -> túnel ${TUNNEL}."
-  cloudflared tunnel route dns "${TUNNEL}" "${h}" || \
-    echo "  (ya existía o requiere revisión manual)"
+# --- 5. Registry local por nodo ----------------------------------------------
+say "Registry local (registry-mishi)."
+bash "${MKE_ROOT}/../registry-mishi/bootstrap/bootstrap-registry-nodo.sh" "${CLUSTER}"
+
+# --- 6. Namespaces de trabajo ------------------------------------------------
+for ns in stage preview; do
+  kubectl --context "${CONTEXT}" create namespace "$ns" \
+    --dry-run=client -o yaml | kubectl --context "${CONTEXT}" apply -f -
 done
 
 cat <<EOF
 
-✓ Mishi-Prod listo.
+✓ mke-gamer listo.
    Contexto:   ${CONTEXT}
    Túnel:      ${TUNNEL} (${TUNNEL_ID})
-   Hostnames:  ${HOSTS[*]}
-   Overlays:   stage (namespace stage), prod (namespace prod)
+   Namespaces: stage, preview (+ plataforma a restaurar por repo)
 
-Siguiente: desplegar hello-mishi a prod
-   KUBE_CONTEXT=${CONTEXT} REGISTRY=ghcr.io/OWNER \\
-     scripts/deploy-app.sh hello-mishi prod v0.1.0
-
-Verifica:
-   kubectl --context ${CONTEXT} -n cloudflare get pods
-   curl -I https://hello.mishi.com.co
+Siguiente: plataforma stage (postgres-mishi, minio-mishi, git-mishi, mesh)
+y apps vía \`mke deploy <app> stage\`. DNS por host: \`mke dns <host> stage\`.
 EOF
