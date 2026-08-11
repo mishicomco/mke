@@ -2,7 +2,7 @@ import { existsSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { appsRoot, envOrThrow, hostFor } from "./mkeConfig.js";
-import { run, ok, bad, info, dim } from "./sh.js";
+import { run, ok, bad, info, warn, dim } from "./sh.js";
 import { cargarImagenes, describeCarga } from "./cargaImagenes.js";
 import { doctor } from "./doctor.js";
 
@@ -139,6 +139,28 @@ export async function publicarFrontAlPvc(front: string, env: string, image: stri
       return false;
     }
     console.log(ok(`front publicado al PVC static-www (subPath=${front})`));
+
+    // version.json (actualizador silencioso, ley 2026-08-11): 40 bytes junto al
+    // front con el sha desplegado. La pestaña abierta lo pollea (al volver el
+    // foco + intervalo) contra el borde de CF; sha distinto → foto del estado →
+    // recarga silenciosa → restaurar. Best-effort: sin version.json el
+    // actualizador simplemente no actúa (jamás rompe el deploy).
+    const sha = image.split(":").pop() ?? "";
+    const pod = await run("kubectl", [
+      "--context", spec.context, "-n", ns,
+      "get", "pod", "-l", "app=static-mishi",
+      "-o", "jsonpath={.items[0].metadata.name}",
+    ]);
+    if (pod.code === 0 && pod.stdout) {
+      const escribir = await run("kubectl", [
+        "--context", spec.context, "-n", ns, "exec", pod.stdout, "--",
+        "sh", "-c", `printf '{"version":"%s"}' '${sha}' > /srv/www/${front}/version.json`,
+      ]);
+      if (escribir.code === 0) console.log(ok(`version.json → ${sha} (actualizador)`));
+      else console.log(warn(`version.json no se pudo escribir (sigo): ${escribir.stderr || escribir.stdout}`));
+    } else {
+      console.log(warn("version.json: no encontré el pod de static-mishi (sigo)"));
+    }
     return true;
   } finally {
     try {
