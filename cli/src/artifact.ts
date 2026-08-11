@@ -328,10 +328,14 @@ async function asegurarRouting(): Promise<boolean> {
             // Fase 2: /api de todo artifact va a artifact-mishi (la capa de
             // datos de plataforma). Regla mas larga que la general: gana.
             // Pasa por la puerta igual que el contenido (privados por defecto).
+            // ns PROD, no NS_ART (drift de la fusión 2026-08-10): el deployment
+            // canónico es el del pipeline (`mke deploy` → ns prod, el mismo que
+            // usa la guardia); el clon en ns artifact quedó huérfano con la BD
+            // caída y las escrituras de artifacts rotas 38h.
             match: "HostRegexp(`^[a-z0-9-]+-artifact\\.mishi\\.com\\.co$`) && PathPrefix(`/api`)",
             kind: "Rule",
             middlewares: [{ name: "artifact-auth", namespace: NS_ART }],
-            services: [{ name: "artifact-mishi", port: 80, namespace: NS_ART }],
+            services: [{ name: "artifact-mishi", port: 80, namespace: "prod" }],
           },
           {
             match: "HostRegexp(`^[a-z0-9-]+-artifact\\.mishi\\.com\\.co$`)",
