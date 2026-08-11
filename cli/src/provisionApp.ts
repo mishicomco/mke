@@ -164,8 +164,23 @@ export async function asegurarNamespace(env: string): Promise<boolean> {
   const spec = envOrThrow(env);
   const get = await run("kubectl", ["--context", spec.context, "get", "namespace", spec.namespace]);
   if (get.code === 0) return true;
+  // La identidad de menor privilegio del runner (SA mke-deploy, Hallazgo 0) NO puede
+  // leer ni crear namespaces: son cluster-scoped y sus Roles son namespaced. Los ns de
+  // apps pre-existen (los crea un humano/admin al preparar el entorno), así que un `get`
+  // Forbidden significa "existe, no lo puedo mirar" → seguimos; las ops namespaced
+  // posteriores fallarían claro si de verdad no existiera.
+  const gerr = (get.stderr || get.stdout || "").toLowerCase();
+  if (gerr.includes("forbidden")) return true;
   const create = await run("kubectl", ["--context", spec.context, "create", "namespace", spec.namespace]);
-  if (create.code !== 0) throw new Error(`crear namespace falló: ${create.stderr || create.stdout}`);
+  if (create.code !== 0) {
+    const cerr = (create.stderr || create.stdout || "").toLowerCase();
+    if (cerr.includes("forbidden"))
+      throw new Error(
+        `el namespace ${spec.namespace} no existe y esta identidad no puede crearlo (recurso cluster-scoped). ` +
+          `Créalo una vez con admin: kubectl --context ${spec.context} create namespace ${spec.namespace}`,
+      );
+    throw new Error(`crear namespace falló: ${create.stderr || create.stdout}`);
+  }
   return false;
 }
 
