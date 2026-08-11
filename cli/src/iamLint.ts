@@ -29,9 +29,13 @@ export async function iamLint(opts: IamLintOpts = {}): Promise<void> {
   try {
     texto = await readFile(ruta, "utf8");
   } catch {
-    // Sin archivo no hay catálogo que declarar (camino legacy: la app declara en
-    // runtime). No es un error de lint — se avisa y se sale verde.
-    console.log(warn(`no hay ${IAM_MANIFIESTO} en ${dir} — nada que lintear (la app no declara catálogo COMO CÓDIGO)`));
+    // Sin `mke.iam.yaml` no estás parado en un repo de app mishicomco (o lo
+    // corriste desde el cwd equivocado — p.ej. la raíz del monorepo o mke/cli).
+    // Antes esto era un WARN silencioso que corría contra el cwd por accidente;
+    // ahora es error accionable (exit 1) para no dar un verde engañoso.
+    console.log(bad(`no estás en un repo de app mishicomco: no encontré ${IAM_MANIFIESTO} en ${dir}`));
+    console.log(dim(`  corré \`mke iam lint\` desde la raíz del repo de la app, o pasá \`--dir <repo>\``));
+    process.exitCode = 1;
     return;
   }
 
