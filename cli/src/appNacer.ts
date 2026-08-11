@@ -91,7 +91,7 @@ export async function appNacer(app: string, opts: AppNacerOpts): Promise<void> {
 
   if (opts.dryRun) {
     console.log(info("DRY RUN — no se toca nada. Plan:"));
-    console.log(`  1. cascarón: create-mishi-app --nombre ${app} --subdominio ${subdominio} --dir ${dir}${opts.sinCascaron ? dim("  (SALTEADO)") : ""}`);
+    console.log(`  1. cascarón: create-mishi-app --yes --nombre ${app} --subdominio ${subdominio} --dir ${dir}${opts.sinCascaron ? dim("  (SALTEADO)") : ""}`);
     console.log(`  2. repo forge: crea ${remoto} en ${FORGE.base} (privado) + push-mirror a GitHub (best-effort)`);
     console.log(`  3. git: init + commit inicial + push a origin=${originUrl} (dispara CI del forge → deploy stage) — si el dir existe`);
     console.log(`  4. plataforma: mke app init ${app} --env ${env} --subdominio ${subdominio}${opts.sinPlataforma ? dim("  (SALTEADO)") : ""}`);

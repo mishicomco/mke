@@ -13,6 +13,7 @@ import { dbProvision } from "./dbProvision.js";
 import { appBorrar } from "./appBorrar.js";
 import { appInit } from "./appInit.js";
 import { appNacer } from "./appNacer.js";
+import { iamLint } from "./iamLint.js";
 import { ensureStaticHostPaso } from "./staticHost.js";
 import { ls } from "./ls.js";
 import { artifactPublicar, artifactLs, artifactVer, artifactRollback, artifactBorrar, artifactNacer, artifactAcceso, guardiaDeploy } from "./artifact.js";
@@ -65,8 +66,9 @@ const HELP = `mke — CLI de plataforma MKE
                                                   commit a artifacts-mishi (historia+backup) → CNAME → routing+CSP → cp al PVC (+runtime compartido)
                                                   → aviso SSE (pestañas abiertas se recargan solas) → doctor    opciones: --mensaje "..."
   mke artifact ls | ver <n> | rollback <n> | borrar <n>   listar · cadena pública · versión anterior · PVC+CNAME (la historia queda)  ·  diseño: mke/AI_ARTIFACTS.md
-  mke artifact acceso <n|--todos> <email|rol:x>  quién puede VER un artifact (tabla accesos de artifact-mishi; la guardia la consulta)
+  mke artifact acceso <n|--todos> <email|rol:x|publico>  quién puede VER un artifact (tabla accesos de artifact-mishi; la guardia la consulta)
                                                   opciones: --quitar   ·  --todos = todos los artifacts
+                                                  publico (por artifact, nunca --todos) = se abre SIN sesión, solo lectura
   mke publish <front> <env>                      front estático: build imagen contenido → Job al PVC de static-mishi → doctor
         opciones: --tag <t>  --dir <repo>  --host <fqdn>   (env = stage | prod)
   mke rollout <app> <env>                        rollout restart + status (sin rebuild; tag mutable / reciclar pods)
@@ -82,6 +84,8 @@ const HELP = `mke — CLI de plataforma MKE
         opciones: --env stage|prod (default stage)  --subdominio <name>  --dry-run
   mke app borrar <app>                           TEARDOWN de una app, inverso de \`nacer\`: k8s + BD/rol + DNS + host static-mishi + catálogo (repo/dir opt-in)
         opciones: --env stage|prod (default stage)  --si (OBLIGATORIO)  --si-prod (2a llave en prod)  --forge (borra el repo)  --dir-local (borra el checkout)
+  mke iam lint                                   valida mke.iam.yaml en el dev loop (mismo parser+mensajes que el deploy; sin cluster ni red). Exit 1 si el deploy abortaría.
+        opciones: --dir <repo>  (default: cwd)
   mke static agregar <sub>                      agrega el host de <sub> al ingress de static-mishi (stage+prod), idempotente
                                                   (paso suelto de \`mke app init\`; útil si el nacimiento ya pasó sin este paso)
         opciones: --dry-run
@@ -249,6 +253,12 @@ async function main() {
       });
       break;
     }
+    case "iam": {
+      const [action] = positional;
+      if (action !== "lint") return fail("uso: mke iam lint [--dir <repo>]");
+      await iamLint({ dir: typeof flags.dir === "string" ? flags.dir : undefined });
+      break;
+    }
     case "artifact": {
       const [action, nombre, origen] = positional;
       if (action === "publicar") {
@@ -279,7 +289,7 @@ async function main() {
         const objetivo = todos ? "*" : nombre;
         const sujeto = typeof flags.todos === "string" ? flags.todos : todos ? nombre : origen;
         if (!objetivo || !sujeto) {
-          return fail("uso: mke artifact acceso <artifact|--todos> <email|rol:x> [--quitar]");
+          return fail("uso: mke artifact acceso <artifact|--todos> <email|rol:x|publico> [--quitar]");
         }
         await artifactAcceso(objetivo, sujeto, { quitar: flags.quitar === true });
       } else if (action === "guardia") {
