@@ -38,7 +38,8 @@ body {
 .barra-mishi {
   display: flex;
   align-items: center;
-  gap: 16px;
+  flex-wrap: wrap;        /* red de seguridad: en pantallas angostas envuelve, nunca encima */
+  gap: 10px 16px;
   padding: 10px 20px;
   border-bottom: 1px solid var(--line);
   background: var(--bg);
@@ -72,6 +73,52 @@ body {
   color: var(--muted); padding: 2px 10px; transition: border-color .15s, color .15s;
 }
 .salir-btn:hover { border-color: var(--fg); color: var(--fg); }
+
+/* En celular el chip de sesion se colapsa al avatar (el nombre+email largo era
+   lo que rompia la barra); el resto se aprieta. Va DESPUES de las reglas base
+   de .quien-datos/.salir-btn para ganar por orden (misma especificidad). */
+@media (max-width: 600px) {
+  .barra-mishi { gap: 8px 10px; padding: 8px 14px; }
+  .quien-datos { display: none; }
+  .salir-btn { margin-left: 4px; }
+}
+
+/* ── Panel de identidad (roles/permisos) + modo probar-como-rol ───────── */
+.quien-chip-click { cursor: pointer; }
+.iam-panel {
+  position: absolute; top: 100%; right: 12px; margin-top: 6px;
+  min-width: 260px; max-width: 360px; max-height: 70vh; overflow: auto;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 12px 14px; font-size: 13px; z-index: 20;
+  box-shadow: 0 8px 24px rgba(0,0,0,.12);
+}
+.iam-quien { font-weight: 600; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.iam-titulo { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin: 10px 0 4px; }
+.iam-roles { display: flex; flex-wrap: wrap; gap: 6px; }
+.iam-rol { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 12px; white-space: nowrap; }
+.iam-permisos { list-style: none; margin: 0; padding: 0; }
+.iam-permisos li { padding: 2px 0 2px 16px; position: relative; font-family: ui-monospace, monospace; font-size: 12px; }
+.iam-permisos li::before {
+  content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 7px; height: 7px; border-radius: 50%; border: 1px solid var(--muted);
+}
+.iam-si::before { background: var(--fg); border-color: var(--fg); }
+.iam-no { color: var(--muted); }
+.iam-vacio { color: var(--muted); font-size: 12px; padding: 4px 0; }
+.iam-probar { width: 100%; margin-top: 2px; font-size: 12px; }
+/* banda visible mientras la simulacion esta activa (el 1px de "estas en otro pellejo") */
+.iam-banda {
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  padding: 5px 14px; font-size: 12px; color: var(--fg);
+  border-bottom: 1px dashed var(--fg);
+  position: sticky; top: 0; z-index: 9;
+  background: var(--bg);
+}
+.iam-volver {
+  border: 1px solid var(--line); border-radius: 999px; background: none; cursor: pointer;
+  font: inherit; font-size: 11px; color: var(--muted); padding: 1px 10px;
+}
+.iam-volver:hover { border-color: var(--fg); color: var(--fg); }
 
 /* ── Elementos base neutros ───────────────────────────────────────────── */
 button, input, select, textarea { font: inherit; color: inherit; }
