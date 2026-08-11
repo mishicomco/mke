@@ -9,20 +9,20 @@
 # Se aplica UNA vez por cluster (gamer=stage, laptop=prod). El token del SA se
 # vuelve un kubeconfig que apunta el runner — ver RUNBOOK-hallazgo0.md.
 apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: mke-deploy
-  namespace: mke-ci
-  labels:
-    app.kubernetes.io/part-of: mke
----
-apiVersion: v1
 kind: Namespace
 metadata:
   name: mke-ci
   labels:
     app.kubernetes.io/part-of: mke
     mke.mishi.com.co/tier: plataforma
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mke-deploy
+  namespace: mke-ci
+  labels:
+    app.kubernetes.io/part-of: mke
 ---
 # Token de larga duración del SA (k8s >=1.24 no lo crea solo). Es la credencial
 # que va al kubeconfig del runner. Trátalo como secreto: NO lo commitees relleno.
