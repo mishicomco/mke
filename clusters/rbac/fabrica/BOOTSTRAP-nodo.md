@@ -78,7 +78,16 @@ Ninguna vive en el repo (correcto). Origen de cada una:
    SA_TOKEN="$(kubectl -n mke-ci get secret mke-deploy-token -o jsonpath='{.data.token}' | base64 -d)"
    CA="$(kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')"
    SRV="$(kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.server}')"
-   # escribir ~mke-ci/.kube/config (0600) con cluster{server:$SRV,ca-data:$CA} user{token:$SA_TOKEN}
+   install -d -o mke-ci -g mke-ci -m700 /home/mke-ci/.kube
+   cat > /home/mke-ci/.kube/config <<EOF
+   apiVersion: v1
+   kind: Config
+   clusters: [{ name: nodo, cluster: { server: $SRV, certificate-authority-data: $CA } }]
+   users:    [{ name: mke-deploy, user: { token: $SA_TOKEN } }]
+   contexts: [{ name: nodo, context: { cluster: nodo, user: mke-deploy } }]
+   current-context: nodo
+   EOF
+   chown mke-ci:mke-ci /home/mke-ci/.kube/config && chmod 600 /home/mke-ci/.kube/config
    ```
 2. **`~/.config/mishi/vault-mke.token`** = identidad tipo CI del nodo. Reinstalar nodo
    existente: copiar el token de un backup / re-emitir la MISMA identidad. ⓝ Nodo nuevo:
