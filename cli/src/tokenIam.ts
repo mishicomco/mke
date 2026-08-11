@@ -37,12 +37,22 @@ async function consumeIam(spec: AppSpec): Promise<boolean> {
 // Credencial de EMISOR: la credencial de CI (residual #1 del Hallazgo 0,
 // 2026-08-10). El runner ya NO porta el operador (super-poder que podía otorgar
 // ecosistema/admin); porta el emisor, cuya capacidad ÚNICA es acuñar tokens de
-// app — filtrar lo que el runner toca JAMÁS escala a admin. La lee del Secret de
-// plataforma DEDICADO, en su propio namespace `iam-emisor` — NO del namespace de
-// las apps ni del ns del operador (que salió del cluster por completo: vive solo
-// en el vault). El runner la alcanza por un Role dedicado con
-// `resourceNames: [iam-emisor]` (ver mke/clusters/rbac/emisor-access.yaml). mke
-// corre al lado del cluster; no la guarda en ningún lado.
+// app. La lee del Secret de plataforma DEDICADO, en su propio namespace
+// `iam-emisor` — NO del namespace de las apps ni del ns del operador (que salió
+// del cluster por completo: vive solo en el vault). El runner la alcanza por un
+// Role dedicado con `resourceNames: [iam-emisor]` (ver
+// mke/clusters/rbac/emisor-access.yaml). mke corre al lado del cluster; no la
+// guarda en ningún lado.
+//
+// RADIO REAL de un emisor comprometido (Opción A de Santi, 2026-08-10 — piso
+// aceptado del runner COMPARTIDO): como el runner es UNO para todas las apps, un
+// emisor robado puede acuñar el token `app` de CUALQUIER app y con él MUTAR o
+// tombstonear el CATÁLOGO (permisos/roles) de esa app. Lo que NO puede: crear
+// bindings, tocar `ecosistema/admin`, ni escalar privilegios por ninguna vía —
+// el token de app jamás toca /bindings ni acuña credenciales. El daño es
+// acotado a catálogos de apps y REVERSIBLE por el operador (re-declarar el
+// catálogo / re-grant). El cierre COMPLETO de este radio exige aislar el CI por
+// app (un emisor por runner por app); es un frente FUTURO, no cerrado aquí.
 export const EMISOR_NS = "iam-emisor";
 export const EMISOR_SECRET = "iam-emisor";
 
