@@ -214,12 +214,21 @@ async function materializarSecretos(spec: AppSpec): Promise<boolean> {
   if (plan.huerfanas.length) {
     console.log(warn(`clave huérfana no rescatada (vive solo en el cluster, el vault no la conoce): ${plan.huerfanas.join(", ")}`));
   }
+  // Cookie por ambiente (ley "un frasco por ambiente", 2026-08-11): TODO deploy
+  // de stage lleva IDENTITY_COOKIE_NAME=mishi_sesion_stage en su Secret — el
+  // SDK ≥0.10.0 la lee como default y así stage nunca vuelve a pisar la sesión
+  // de prod en el dominio compartido. Sintética del CLI: no viene del vault ni
+  // exige declaración en mke.preview.yaml.
+  const sinteticos: Record<string, string> =
+    spec.env === "stage" ? { IDENTITY_COOKIE_NAME: "mishi_sesion_stage" } : {};
+
   if (!plan.aMaterializar.length) {
+    if (Object.keys(sinteticos).length) await mergearSecretK8s(spec.app, spec.env, sinteticos);
     console.log(ok(`el vault no tiene secretos de ${spec.app} para ${spec.env} — nada que materializar`));
     return true;
   }
 
-  const valores: Record<string, string> = {};
+  const valores: Record<string, string> = { ...sinteticos };
   try {
     for (const { clave, nombre } of plan.aMaterializar) {
       valores[clave] = await leerValor(acc, spec.app, nombre); // el valor NUNCA se imprime

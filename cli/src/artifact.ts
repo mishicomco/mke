@@ -218,7 +218,17 @@ export async function guardiaDeploy(forzar = false): Promise<boolean> {
                 name: GUARDIA,
                 image: GUARDIA_IMG,
                 imagePullPolicy: "IfNotPresent",
-                env: [{ name: "ALLOWED_EMAILS", value: GUARDIA_PERMITIDOS.join(",") }],
+                env: [
+                  { name: "ALLOWED_EMAILS", value: GUARDIA_PERMITIDOS.join(",") },
+                  // Un host, un veredicto (ley 2026-08-11): los artifacts son
+                  // PROD y su backend valida solo prod — la guardia igual. Con
+                  // el JWKS de stage aquí, una cookie de stage VEÍA la página
+                  // pero la app la negaba (estado fantasma) y un humano
+                  // terminaba recibiendo instrucciones de cookies. Cookie de
+                  // stage ahora = como sin cookie → 302 al IdP de prod, que
+                  // re-emite solo (auto_select) y devuelve.
+                  { name: "IDPS", value: "https://identity.mishi.com.co" },
+                ],
                 ports: [{ containerPort: 3000 }],
                 readinessProbe: { httpGet: { path: "/readyz", port: 3000 } },
                 resources: {
