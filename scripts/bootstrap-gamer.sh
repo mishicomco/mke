@@ -7,6 +7,14 @@
 #  storage-stage, git-stage, mesh-central). Cambia solo configuración,
 #  nunca código (overlays Kustomize / manifests de cada repo de plataforma).
 #
+#  FOLLOW-UP DE INFRA (hallado en la prueba de fuego de la fábrica CI, 2026-08-11):
+#  NO existe el equivalente para el LAPTOP/prod (`bootstrap-laptop.sh`). Hoy el
+#  laptop solo tiene `clusters/rbac/MIGRATION-mke-pc.md`, que documenta el RENAME
+#  de un cluster existente, no un "desde cero". Reinstalar el laptop no se puede
+#  hacer solo con el repo hasta versionar ese script (paridad con este). Es capa
+#  de PROVISIÓN DE CLUSTER — separada del aislamiento de la fábrica de CI, que
+#  quedó cerrado. Ver `clusters/rbac/fabrica/BOOTSTRAP-nodo.md` §Fase 0.
+#
 #  Idempotente: se puede correr varias veces. Crea (si no existen):
 #    0. sysctl de inotify (sin esto un 2º/3º cluster k3s NO arranca:
 #       "inotify_init: too many open files" — lección 2026-08-10)
