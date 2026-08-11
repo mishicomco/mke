@@ -170,7 +170,7 @@ async function catalogoPublicado(env: string): Promise<EntradaCatalogo[] | null>
  * viejas es mejor que borradas en silencio; el dueño de ese ambiente las
  * refresca en su próximo deploy. Solo si no hay de dónde rescatar, se omite.
  */
-export async function catalogoCompleto(): Promise<EntradaCatalogo[]> {
+export async function catalogoCompleto(): Promise<{ catalogo: EntradaCatalogo[]; ilegibles: string[] }> {
   const todo: EntradaCatalogo[] = [];
   const ilegibles: string[] = [];
   const legibles: string[] = [];
@@ -199,7 +199,7 @@ export async function catalogoCompleto(): Promise<EntradaCatalogo[]> {
       console.log(warn(`catálogo: no pude leer los ingress de ${env} ni rescatar su catálogo publicado (queda fuera)`));
     }
   }
-  return ordenar(todo);
+  return { catalogo: ordenar(todo), ilegibles };
 }
 
 /** Aplica el ConfigMap `mke-catalogo` (catálogo completo) en un entorno. */
@@ -232,13 +232,21 @@ export async function aplicarCatalogo(env: string, catalogo: EntradaCatalogo[]):
  * no justifica tumbar un deploy que ya está sano.
  */
 export async function regenerarCatalogos(): Promise<void> {
-  const catalogo = await catalogoCompleto();
+  const { catalogo, ilegibles } = await catalogoCompleto();
   for (const env of ENVS_CATALOGO) {
     const aplicado = await aplicarCatalogo(env, catalogo);
     if (!aplicado) console.log(warn(`catálogo de ${env} no se pudo aplicar (sigo)`));
     else console.log(ok(`catálogo ${dim(`${NOMBRE_CONFIGMAP} (${env})`)} regenerado — ${catalogo.length} host(s) del cluster`));
   }
-  // vista prod → KV del worker status-mishi-edge (best-effort, nunca fatal).
+  // vista prod → KV del worker status-mishi-edge. SOLO desde un nodo que puede LEER
+  // prod en vivo (la autoridad): si prod es ilegible acá (p.ej. runner de stage con
+  // el SA acotado, sin contexto del laptop), NO tocamos el KV — publicar "lo que se
+  // pudo" lo degradaría a solo la plataforma. El deploy de prod (en el laptop) lo
+  // mantiene fresco. Best-effort y nunca fatal.
+  if (ilegibles.includes("prod")) {
+    console.log(dim("  edge (KV prod): prod ilegible desde este nodo — se conserva lo publicado (lo refresca el deploy de prod)."));
+    return;
+  }
   const { publicarCatalogoEdge } = await import("./catalogoEdge.js");
   await publicarCatalogoEdge(catalogo);
 }
