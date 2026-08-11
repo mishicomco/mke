@@ -19,7 +19,7 @@
 //   ns = `<app>` · nombre = `<CLAVE>__<stage|prod>`. La clave del Secret k8s es
 //   el nombre SIN el sufijo. `local` no vive en el vault (entorno de laptop).
 
-import { writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -300,11 +300,14 @@ export async function mergearSecretK8s(
 
   const data: Record<string, string> = {};
   for (const [k, v] of Object.entries(valores)) data[k] = Buffer.from(v).toString("base64");
-  const archivo = join(tmpdir(), `mke-vault-${app}-${env}.json`);
+  // nombre único por proceso: /tmp es compartido y un nombre fijo colisiona
+  // entre usuarios (el runner mke-ci no puede pisar el archivo 0600 de santi)
+  const archivo = join(tmpdir(), `mke-vault-${app}-${env}-${process.pid}.json`);
   writeFileSync(archivo, JSON.stringify({ data }), { mode: 0o600 });
   const patch = await run("kubectl", [
     "--context", spec.context, "-n", spec.namespace,
     "patch", "secret", nombre, "--type", "merge", "--patch-file", archivo,
   ]);
+  rmSync(archivo, { force: true });
   if (patch.code !== 0) throw new Error(`patch del Secret ${nombre} falló: ${patch.stderr || patch.stdout}`);
 }
