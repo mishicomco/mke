@@ -83,12 +83,15 @@ repos, NO push (Forbidden), NO admin, NO crear repos.
 2. **Escritura SIN patrón en 8 ns** (`barrio-mishi`, `git-mishi`, `images-mishi`,
    `mahjong-mishi`, `minio-mishi`, `mishi-studio`, `postgres-mishi`, `static-mishi`)
    — contra el intent documentado "escribe **solo** `DATABASE_URL__*`". Drift: los
-   grants viejos nunca se acotaron al agregar el patrón a los nuevos. Probado
-   explotable (escritura de una clave arbitraria a `static-mishi` = 201; rotada a
-   inerte). **A ARREGLAR** — acotar a `DATABASE_URL__*` (root): script
-   `acotar-escritura-fabrica.sh` (`vault-mishi grant <id> <ns> escribir --patron
-   'DATABASE_URL__*'` reemplaza el alcance). Cero breakage: mke solo escribe
-   `DATABASE_URL__*`.
+   grants viejos nunca se acotaron al agregar el patrón a los nuevos. Fue probado
+   explotable (escritura de clave arbitraria a `static-mishi` = 201).
+   **ARREGLADO 2026-08-11**: `vault-mishi grant <id> <ns> escribir --patron
+   'DATABASE_URL__*'` (root, token del GPG) en los 8 ns — `grant` reemplaza el
+   alcance. Verificado: 0 grants de escritura sin patrón; re-intento del exploit
+   ahora **403**, escritura `DATABASE_URL__*` legítima sigue **201**. Cero breakage
+   (mke solo escribe `DATABASE_URL__*`). Si un `mke deploy` volviera a necesitar
+   escribir otra clave en un ns, ampliar el patrón conscientemente, no volver a
+   "sin patrón".
 
 ### Basura inerte (cleanup deshabilitado en el registry, 405)
 
