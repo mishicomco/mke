@@ -1,0 +1,37 @@
+# `mke deploy` provisiona la BD/rol de cada app haciendo `kubectl exec` en el pod
+# de postgres-mishi (ns `databases` en prod/laptop, `databases-dev` en
+# stage/gamer). Con cluster-admin eso era libre; con el SA acotado necesita este
+# Role en el ns de la BD: get pods + crear exec. NADA de secrets aquí.
+#
+# Aplica con el namespace correcto por cluster: `databases-dev` en el gamer,
+# `databases` en el laptop (ver runbook).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mke-deploy-db-exec
+  namespace: databases
+  labels:
+    app.kubernetes.io/part-of: mke
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mke-deploy-db-exec
+  namespace: databases
+  labels:
+    app.kubernetes.io/part-of: mke
+subjects:
+  - kind: ServiceAccount
+    name: mke-deploy
+    namespace: mke-ci
+roleRef:
+  kind: Role
+  name: mke-deploy-db-exec
+  apiGroup: rbac.authorization.k8s.io
