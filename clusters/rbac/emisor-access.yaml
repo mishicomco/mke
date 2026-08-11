@@ -1,0 +1,43 @@
+# Acceso DEDICADO y MÍNIMO del runner al token de EMISOR de iam-mishi.
+# El runner ya NO lee el operador (super-poder): lee el EMISOR, cuya capacidad
+# única es acuñar tokens de app (residual #1 del Hallazgo 0, 2026-08-10). Filtrar
+# lo que este Role expone NO escala a ecosistema/admin.
+#
+# Un Role acotado por `resourceNames` al Secret exacto `iam-emisor`, con solo
+# `get`, en el ns `iam-emisor`. `get` SÍ soporta resourceNames (a diferencia de
+# list/watch) — y mke nunca LISTA secrets, siempre hace `get <nombre>`.
+#
+# Efecto: `mke deploy` puede leer el emisor para emitir tokens de app; un
+# `kubectl get secrets -n iam-emisor` (sin nombre, = list) es DENEGADO, igual que
+# get de cualquier OTRO secret del ns.
+#
+# Reemplaza a operador-access.yaml (que se retira en el corte a emisor — ver
+# RUNBOOK-emisor.md): el runner deja de tener acceso al operador por completo.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mke-deploy-emisor-lector
+  namespace: iam-emisor
+  labels:
+    app.kubernetes.io/part-of: mke
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["iam-emisor"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mke-deploy-emisor-lector
+  namespace: iam-emisor
+  labels:
+    app.kubernetes.io/part-of: mke
+subjects:
+  - kind: ServiceAccount
+    name: mke-deploy
+    namespace: mke-ci
+roleRef:
+  kind: Role
+  name: mke-deploy-emisor-lector
+  apiGroup: rbac.authorization.k8s.io

@@ -5,8 +5,8 @@
 // el deploy, idempotente:
 //   1. ¿la app consume iam? = su Deployment referencia el Secret key IAM_API_TOKEN.
 //   2. ¿el Secret ya lo tiene? → nada que hacer (reusar; sin churn de tokens).
-//   3. si falta: leer la credencial de OPERADOR del cluster (Secret de
-//      iam-mishi), pedirle a iam-mishi que EMITA un token de app, y materializarlo
+//   3. si falta: leer la credencial de EMISOR del cluster (Secret de plataforma
+//      iam-emisor), pedirle a iam-mishi que EMITA un token de app, y materializarlo
 //      en el Secret <app>-secrets.
 // El token es material DERIVADO (iam-mishi es la autoridad: lo hashea y puede
 // revocar). No vive en el vault-ns de la app → no hace falta ampliar grants.
@@ -34,22 +34,24 @@ async function consumeIam(spec: AppSpec): Promise<boolean> {
   }
 }
 
-// Credencial de OPERADOR: la lee del Secret de plataforma DEDICADO, en su propio
-// namespace `iam-operador` — NO del namespace de las apps (Hallazgo 0, 2026-08-10).
-// Antes vivía en `iam-mishi-secrets` del ns `stage`/`prod`, donde cualquier
-// pipeline de app con lectura amplia de secrets podía robar el super-poder. Ahora
-// el ns de apps solo tiene el HASH (inútil); el claro vive aquí, y el runner lo
-// alcanza por un Role dedicado con `resourceNames: [iam-operador]` (ver
-// mke/clusters/rbac/). mke corre al lado del cluster; no lo guarda en ningún lado.
-export const OPERADOR_NS = "iam-operador";
-export const OPERADOR_SECRET = "iam-operador";
+// Credencial de EMISOR: la credencial de CI (residual #1 del Hallazgo 0,
+// 2026-08-10). El runner ya NO porta el operador (super-poder que podía otorgar
+// ecosistema/admin); porta el emisor, cuya capacidad ÚNICA es acuñar tokens de
+// app — filtrar lo que el runner toca JAMÁS escala a admin. La lee del Secret de
+// plataforma DEDICADO, en su propio namespace `iam-emisor` — NO del namespace de
+// las apps ni del ns del operador (que salió del cluster por completo: vive solo
+// en el vault). El runner la alcanza por un Role dedicado con
+// `resourceNames: [iam-emisor]` (ver mke/clusters/rbac/emisor-access.yaml). mke
+// corre al lado del cluster; no la guarda en ningún lado.
+export const EMISOR_NS = "iam-emisor";
+export const EMISOR_SECRET = "iam-emisor";
 
-async function operadorToken(env: string): Promise<string | null> {
+async function emisorToken(env: string): Promise<string | null> {
   const spec = envOrThrow(env);
   const r = await run("kubectl", [
-    "--context", spec.context, "-n", OPERADOR_NS,
-    "get", "secret", OPERADOR_SECRET,
-    "-o", "jsonpath={.data.IAM_OPERADOR_TOKEN}",
+    "--context", spec.context, "-n", EMISOR_NS,
+    "get", "secret", EMISOR_SECRET,
+    "-o", "jsonpath={.data.IAM_EMISOR_TOKEN}",
   ]);
   if (r.code !== 0 || !r.stdout.trim()) return null;
   try {
@@ -60,11 +62,11 @@ async function operadorToken(env: string): Promise<string | null> {
 }
 
 // Pide a iam-mishi que emita un token de app. Devuelve el token en claro (una vez).
-async function emitirTokenApp(env: string, operador: string, app: string): Promise<string | null> {
+async function emitirTokenApp(env: string, emisor: string, app: string): Promise<string | null> {
   const res = await fetch(`${iamHost(env)}/v1/credenciales`, {
     method: "POST",
     headers: {
-      authorization: `Bearer ${operador}`,
+      authorization: `Bearer ${emisor}`,
       "content-type": "application/json",
       "x-iam-actor": "mke-deploy",
     },
@@ -93,13 +95,13 @@ export async function asegurarTokenIam(spec: AppSpec): Promise<void> {
     return;
   }
 
-  const operador = await operadorToken(spec.env);
-  if (!operador) {
-    console.log(warn(`no leí la credencial de operador de iam-mishi (${OPERADOR_NS}/${OPERADOR_SECRET}) — token IAM de ${spec.app} NO provisionado; el check quedará fail-closed`));
+  const emisor = await emisorToken(spec.env);
+  if (!emisor) {
+    console.log(warn(`no leí la credencial de emisor de iam-mishi (${EMISOR_NS}/${EMISOR_SECRET}) — token IAM de ${spec.app} NO provisionado; el check quedará fail-closed`));
     return;
   }
   console.log(info(`emitiendo token de app para ${spec.app} en iam-mishi (${spec.env})…`));
-  const token = await emitirTokenApp(spec.env, operador, spec.app);
+  const token = await emitirTokenApp(spec.env, emisor, spec.app);
   if (!token) {
     console.log(warn(`no pude emitir el token IAM de ${spec.app} — sigo (check fail-closed hasta reintentar)`));
     return;

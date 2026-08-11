@@ -1,5 +1,12 @@
 # RUNBOOK — cerrar el Hallazgo 0 (operador robable) · corte en vivo
 
+> **Sucesor (2026-08-10): `RUNBOOK-emisor.md`.** Este runbook sacó el operador
+> del ns de apps a `iam-operador`, PERO el runner seguía portando el operador
+> (super-poder). El corte a EMISOR (residual #1) lo cierra: el runner pasa a un
+> emisor de mínimo privilegio y el operador sale del cluster por completo. Si
+> arrancas de cero, corre este primero y luego `RUNBOOK-emisor.md`; si el Hallazgo
+> 0 ya está aplicado, salta directo a `RUNBOOK-emisor.md`.
+
 Lo hace **Santi** (no CI). Toca secrets reales y RBAC del cluster. Orden EXACTO:
 crear el operador en su nueva casa → apuntar el pod al hash → RBAC del runner →
 verificar → recién ahí retirar lo viejo. Cada paso dice qué rompe si se saltea.
