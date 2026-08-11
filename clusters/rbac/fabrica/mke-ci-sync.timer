@@ -1,0 +1,9 @@
+[Unit]
+Description=Sync periodico mke → fabrica CI
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+
+[Install]
+WantedBy=timers.target

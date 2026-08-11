@@ -41,15 +41,41 @@ socket docker rootful.
 ## Actualizar el `mke` de la fábrica
 
 `main` del forge → fábrica por timer systemd `mke-ci-sync.timer` (cada 15 min +
-al boot): `fetch` + `reset --hard origin/main` + `npm ci` si cambió el lock
-(`/usr/local/bin/mke-ci-actualizar`). Forzar ya: `sudo systemctl start mke-ci-sync`.
+al boot): `fetch` + `reset --hard origin/main` + `npm ci` **en `cli/`** si cambió
+`cli/package-lock.json` (`/usr/local/bin/mke-ci-actualizar`). Forzar ya:
+`sudo systemctl start mke-ci-sync.service` (el `.service` oneshot, no el `.timer`).
+El script y los units viven versionados en `clusters/rbac/fabrica/`.
 
-## Rollback (si algo se rompe)
+## Rollback (si algo se rompe) — al estado pre-aislamiento (`User=santi`/`mishi`)
 
-Units de runner respaldados: gamer en el scratchpad del job; **laptop en
-`/root/units-backup-fabrica/`**. Revertir = `User=santi`/`mishi` + WorkingDirectory
-viejos (`~/forgejo-runner/...`) + `daemon-reload` + restart. Los dirs viejos de
-runner en `~santi`/`~mishi` quedan intactos como respaldo.
+Los dirs y units viejos quedan **intactos como respaldo**; el runner viejo NO se
+borró. Guíate por el HOST, no por el nombre del unit (ver trampa abajo).
+
+**En el GAMER (stage):** el unit viejo `forgejo-runner.service` (`User=santi`,
+WorkingDirectory `/home/santi/forgejo-runner`) SIGUE en `/etc/systemd/system/`, y
+`/home/santi/forgejo-runner/{prod,prod-2}` + binario están intactos.
+```sh
+sudo systemctl disable --now forgejo-runner-prod forgejo-runner-prod-2   # los aislados (mke-ci)
+sudo systemctl enable  --now forgejo-runner.service                       # el viejo (User=santi)
+```
+(El unit viejo `forgejo-runner.service` corre UN solo daemon; si necesitas los dos,
+restaura los `forgejo-runner-prod{,-2}.service` con `User=santi`+WorkingDirectory
+`/home/santi/forgejo-runner/...` desde `clusters/rbac/fabrica/` editando el User.)
+
+**En el LAPTOP (prod):** units aislados respaldados en **`/root/units-backup-fabrica/`**.
+```sh
+sudo cp /root/units-backup-fabrica/forgejo-runner-prod*.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl restart forgejo-runner-prod forgejo-runner-prod-2   # vuelven a User=mishi
+```
+
+⚠️ **Trampa de nombres:** en el GAMER (sirve **stage**) los units aislados se llaman
+`forgejo-runner-prod{,-2}` — "prod" es herencia del nombre viejo, NO tocan producción
+(el gamer se registra como `pc-gamer-mke*`/label `mke-stage`). En un incidente,
+identifica el ambiente por la MÁQUINA (gamer=stage, laptop=prod).
+
+Copias versionadas de todos los units + el script de sync: **`clusters/rbac/fabrica/`**
+(con README de re-bootstrap si un host se reinstala).
 
 ## Verificado end-to-end
 

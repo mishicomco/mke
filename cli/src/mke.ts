@@ -48,10 +48,14 @@ const HELP = `mke — CLI de plataforma MKE
                                                   → build backend(+front) → k3d import → apply -k (+re-pin) → dump → Job de migrar → drift-check
                                                   → set image :sha → rollout → publicar front al PVC → catálogo → doctor (postflight)
         opciones: --tag <t>  --dir <repo>  --deploy <nombre-deployment>  --host <fqdn>  --health <path>  --sin-preflight  --dry-run
+  ── CI/CD: el TRIGGER es git, NO un comando mke ──────────────────────────────
+     deploy a STAGE = push a \`main\`   ·   deploy a PROD = push de un tag \`v*\`
+     (el workflow delgado solo llama a \`mke deploy\`; detalle: mke ci --help)
   mke ci runs <app> [n]                         últimos runs del repo en el forge (id/estado/rama)
   mke ci logs <app> [runId]                     baja el ZIP de logs del run (último FALLIDO por default) y muestra las líneas de error
-  mke ci deploy <app> <env>                     dispara el workflow ci-cd.yml con el input "environment" VALIDADO (stage|prod)
-                                                  y ESPERA el veredicto del run (encadena \`ci wait\`; exit ≠0 si no terminó success)
+  mke ci wait <app> --ref <tag|sha|rama>        confirma que TU deploy pasó — espera EL run de ese ref (ver mke ci --help)
+  mke ci deploy <app> <env>                     escape hatch: SOLO en repos con workflow_dispatch (las apps estándar NO lo tienen;
+                                                  ahí el deploy es el push de arriba). Dispara el workflow y espera el veredicto.
         opciones: --ref <rama|tag>   stage: default main · prod: OBLIGATORIO y tiene que ser un tag v* (ej: --ref v0.1.2)
                   --sin-esperar (solo dispara)  --timeout <seg>
   mke ci wait <app> --ref <tag|sha|rama>        espera EL run de ese ref exacto (NUNCA "el último": tras un push el run nuevo
@@ -142,6 +146,35 @@ const PREVIEW_HELP = `mke preview — VERBO DEFINITIVO de iteración: rama efím
                                     \`on: delete\` de cada app): barre previews cuya rama ya no existe
                                     en origin y les aplica la limpieza de cluster (modo runner).`;
 
+const CI_HELP = `mke ci — operar el CI del forge (git-mishi). El TRIGGER del deploy es GIT, no mke.
+
+  CONTRATO DE DEPLOY (horneado en el ci-cd.yml delgado de cada app):
+    • push a \`main\`            → deploy a STAGE  (<app>-stage.mishi.com.co), runner del gamer
+    • push de un tag \`v*\`      → deploy a PROD   (<app>.mishi.com.co),        runner del laptop
+    El workflow solo llama a \`mke deploy <app> <env>\`; el pipeline entero vive en el CLI.
+    Las apps estándar NO tienen \`workflow_dispatch\` (un input desconocido caía al default y
+    deployaba al ambiente equivocado): por eso el escape hatch manual es \`mke deploy\` en la
+    terminal, no un dispatch.
+
+  mke ci runs <app> [n]            últimos n runs del repo (id / estado / rama). Solo lectura.
+  mke ci logs <app> [runId]        baja el ZIP de logs (último FALLIDO por default) y muestra los errores.
+  mke ci wait <app> --ref <r>      CONFIRMA TU DEPLOY: espera EL run del ref exacto (NUNCA "el último":
+                                     tras un push el run nuevo tarda en registrarse y "el último" es el
+                                     ANTERIOR → falso positivo). LOCK por id una vez visto.
+        --ref <tag|sha|rama>       prod: usa el tag (\`--ref v0.1.2\`). stage (push a main): el ref de
+                                     RAMA no basta → pasá \`--sha <sha>\` (o \`--min-id <id previo al push>\`).
+                                     \`--sha\` SOLO (sin --ref) también vale.
+        exit: success=0 · fallo(failure/cancelled/skipped)=1 · timeout=2 · no-apareció=3 ·
+              killed(runner muerto: heartbeat estancado / log cortado sin "Job failed")=4
+        --timeout <seg> (1200) · --aparecer <seg> (120) · --estancado <seg> (300)
+  mke ci deploy <app> <env>        ESCAPE HATCH — solo repos que conservan workflow_dispatch. En una app
+                                     estándar NO dispara nada (usa el push de arriba). Dispara+espera.
+        --ref <rama|tag> (prod exige tag v*) · --sin-esperar · --timeout <seg>
+
+  Trampas (cicatrices reales): \`[skip ci]\` en el commit tageado silencia también el run del tag;
+  un tag no-semver a prod falla-cerrado (no deploya); si el gamer está apagado, stage no deploya
+  (prod sí). Guíate por la MÁQUINA para el ambiente, no por el nombre del runner.`;
+
 async function main() {
   const [, , cmd, ...rest] = process.argv;
   const { positional, flags } = parseFlags(rest);
@@ -163,7 +196,8 @@ async function main() {
     }
     case "ci": {
       const [action, app, tercero] = positional;
-      if (!action || !app) return fail("uso: mke ci runs <app> [n] | mke ci logs <app> [runId] | mke ci deploy <app> <env> [--ref r] | mke ci wait <app> --ref <tag|sha|rama>");
+      if (flags.help || action === "help" || (!action && !app)) { console.log(CI_HELP); break; }
+      if (!action || !app) return fail("uso: mke ci runs <app> [n] | mke ci logs <app> [runId] | mke ci wait <app> --ref <tag|sha|rama> | mke ci deploy <app> <env>  (git push es el trigger real — mke ci --help)");
       if (action === "runs") {
         await ciRuns(app, tercero ? Number(tercero) : undefined);
       } else if (action === "logs") {

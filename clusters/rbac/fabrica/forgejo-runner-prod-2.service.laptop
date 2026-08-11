@@ -1,0 +1,18 @@
+[Unit]
+Description=Forgejo Actions Runner PROD (prod-2 → git.mishi.com.co) — fabrica rootless mke-ci
+After=network.target user@1002.service
+Wants=user@1002.service
+
+[Service]
+Type=simple
+User=mke-ci
+WorkingDirectory=/home/mke-ci/forgejo-runner/prod-2
+ExecStart=/home/mke-ci/forgejo-runner/forgejo-runner daemon -c /home/mke-ci/forgejo-runner/prod-2/config.yml
+Restart=always
+RestartSec=5
+Environment=PATH=/home/mke-ci/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+Environment=DOCKER_HOST=unix:///run/user/1002/docker.sock
+EnvironmentFile=/home/mke-ci/.config/mishi/ci.env
+
+[Install]
+WantedBy=multi-user.target

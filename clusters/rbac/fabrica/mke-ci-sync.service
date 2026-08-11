@@ -1,0 +1,7 @@
+[Unit]
+Description=mke de la fabrica CI: pull de main del forge
+
+[Service]
+Type=oneshot
+User=mke-ci
+ExecStart=/usr/local/bin/mke-ci-actualizar
