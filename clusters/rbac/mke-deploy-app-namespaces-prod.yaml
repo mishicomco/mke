@@ -59,6 +59,12 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "apply"]
+  # CRDs de traefik: apps que declaran Middleware/IngressRoute en sus overlays
+  # (chrome-mishi: forwardauth del noVNC). Fricción 2026-08-11: "traefik.io is
+  # forbidden" en el apply -k del deploy de chrome-mishi.
+  - apiGroups: ["traefik.io"]
+    resources: ["middlewares", "ingressroutes"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "apply"]
   # Diagnóstico.
   - apiGroups: [""]
     resources: ["events"]
