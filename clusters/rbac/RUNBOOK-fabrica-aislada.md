@@ -74,8 +74,9 @@ sudo systemctl restart forgejo-runner-prod forgejo-runner-prod-2   # vuelven a U
 (el gamer se registra como `pc-gamer-mke*`/label `mke-stage`). En un incidente,
 identifica el ambiente por la MÁQUINA (gamer=stage, laptop=prod).
 
-Copias versionadas de todos los units + el script de sync: **`clusters/rbac/fabrica/`**
-(con README de re-bootstrap si un host se reinstala).
+Copias versionadas de todos los units + el script de sync: **`clusters/rbac/fabrica/`**.
+Para levantar un host DESDE CERO (usuario, rootless, credenciales, runner, RBAC):
+**`clusters/rbac/fabrica/BOOTSTRAP-nodo.md`** (secuencia completa parametrizada por nodo).
 
 ## Verificado end-to-end
 
