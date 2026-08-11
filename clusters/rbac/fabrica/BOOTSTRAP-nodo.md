@@ -39,7 +39,9 @@ NO de la fábrica. El registry reboot-proof lo cubre la unit `registry-mishi.ser
 ## Fase A — usuario + docker rootless (mecánico)
 
 ```sh
-apt-get install -y uidmap slirp4netns            # docker-ce-rootless-extras ya suele estar
+# docker rootful + extras rootless (si el host limpio no los trae):
+#   apt-get install -y docker-ce docker-ce-cli docker-ce-rootless-extras  (repo oficial de Docker)
+apt-get install -y uidmap slirp4netns            # deps del rootless
 useradd -m -s /bin/bash mke-ci && chmod 700 /home/mke-ci && usermod -L mke-ci
 echo "mke-ci:<BASE>:65536" >> /etc/subuid        # BASE = 165536 gamer / 231072 laptop
 echo "mke-ci:<BASE>:65536" >> /etc/subgid
@@ -102,8 +104,9 @@ Y **`~/.config/mishi/mke-nodo.json`** (0600): versionado literal por nodo en est
 ## Fase D — runner de Forgejo
 
 ```sh
-# binario (mismo release en ambos nodos; v12.13.1 al construir la fábrica):
-#   descargar de code.forgejo.org/forgejo/runner releases → ~mke-ci/forgejo-runner/forgejo-runner (0755)
+# binario PINEADO (mismo release en ambos nodos): forgejo-runner v12.13.1, linux-amd64
+#   URL: https://code.forgejo.org/forgejo/runner/releases/download/v12.13.1/forgejo-runner-12.13.1-linux-amd64
+#   (verificar el .sha256 de la misma release) → ~mke-ci/forgejo-runner/forgejo-runner (0755)
 # registrar cada runner contra el forge (token de registro desde la UI/API del forge):
 sudo -u mke-ci ~mke-ci/forgejo-runner/forgejo-runner register --no-interactive \
   --instance http://git.mishi.com.co --token <REG_TOKEN> \
@@ -120,6 +123,19 @@ Aplicar en el cluster de ESTE nodo: `mke-deploy-sa.yaml`, `emisor-access.yaml`,
 `mke-deploy-app-namespaces{,-prod}.yaml`, `mke-deploy-databases{,-prod}.yaml` (variantes
 `-prod` para el laptop). Debe ir **antes** de la Fase C1 (el `mke-deploy-token` tiene que
 existir para extraerlo). Orden exacto: `RUNBOOK-hallazgo0.md` y `RUNBOOK-emisor.md`.
+
+**⚠️ Cluster FRESCO (no migrado): el RBAC solo da `get` sobre el Secret `iam-emisor`, NO lo
+crea.** Sin él, `mke deploy` falla al emitir tokens de app (401 en /v1/credenciales). Si el
+cluster no viene de una migración con el emisor ya sembrado, hay que crearlo (RUNBOOK-emisor §2):
+```sh
+kubectl --context <ctx> apply -f iam-mishi/k8s/platform/emisor-namespace.yaml   # repo iam-mishi
+TOKEN="$(vault-mishi get iam-emisor/IAM_EMISOR_TOKEN__<env>)"
+kubectl --context <ctx> -n iam-emisor create secret generic iam-emisor --from-literal=IAM_EMISOR_TOKEN="$TOKEN"
+```
+Invariante: `sha256(IAM_EMISOR_TOKEN)` == el `IAM_EMISOR_TOKEN_SHA256__<env>` del ns iam-mishi
+(el manifiesto de iam-mishi lo trae; ver RUNBOOK-emisor §3). Los manifiestos `iam-mishi/k8s/…`
+y su despliegue (`mke deploy iam-mishi <env>`) viven en el repo **iam-mishi** — cross-repo por
+diseño (iam-mishi es su dueño).
 
 ## Fase F — units + arranque
 
