@@ -1,0 +1,6 @@
+{
+  "_comment": "mke-ci (fabrica rootless) - push via bridge IP porque el daemon rootless no alcanza localhost del host",
+  "registries": {
+    "stage": { "push": "172.17.0.1:5111", "ref": "k3d-registry-mishi:5111" }
+  }
+}

@@ -26,6 +26,16 @@ están los comandos EXACTOS (los que se corrieron al construir la fábrica), en 
 
 `UID` abajo = 1001 (gamer) o 1002 (laptop). Todo como root salvo lo marcado `sudo -u mke-ci`.
 
+## Fase 0 — el cluster + registry del nodo (PRE-requisito, capa de abajo)
+
+Este bootstrap arma el RUNNER; asume que el nodo YA es un cluster k3d con `kubectl`
+funcionando y el registry local `k3d-registry-mishi:5111` vivo. Levantar ESO es capa
+aparte: gamer → `scripts/bootstrap-gamer.sh` (k3d + Traefik + cloudflared + registry).
+**Laptop: aún no hay un script "desde cero" en el repo** (solo `MIGRATION-mke-pc.md`,
+que documenta el RENAME de un cluster existente) — hueco conocido de la capa cluster,
+NO de la fábrica. El registry reboot-proof lo cubre la unit `registry-mishi.service`
+(repo `registry-mishi`).
+
 ## Fase A — usuario + docker rootless (mecánico)
 
 ```sh
@@ -42,7 +52,9 @@ sudo -u mke-ci env XDG_RUNTIME_DIR=/run/user/<UID> HOME=/home/mke-ci sh -c '
   systemctl --user start docker'
 # verificar: docker info | grep rootless   (Storage Driver overlayfs, rootless)
 ```
-Gamer también: instalar Node en `/opt/node` (`tar -xJf node-v24.*-linux-x64.tar.xz -C /opt && ln -sfn /opt/node-v24.* /opt/node`).
+Gamer también: instalar Node (mismo que la fábrica al construirse: **v24.13.0**, de
+`https://nodejs.org/dist/v24.13.0/node-v24.13.0-linux-x64.tar.xz`) en `/opt/node`:
+`tar -xJf node-v24.13.0-linux-x64.tar.xz -C /opt && ln -sfn /opt/node-v24.13.0-linux-x64 /opt/node`.
 
 ## Fase B — clone de mke + shim
 
@@ -50,8 +62,8 @@ Gamer también: instalar Node en `/opt/node` (`tar -xJf node-v24.*-linux-x64.tar
 sudo -u mke-ci git config --global credential.helper store       # usa ~/.git-credentials (Fase C)
 sudo -u mke-ci git clone http://git.mishi.com.co/mishicomco/mke.git /home/mke-ci/mke
 cd /home/mke-ci/mke/cli && sudo -u mke-ci env HOME=/home/mke-ci npm ci
-# shim /home/mke-ci/.local/bin/mke: exporta PATH(+/opt/node/bin en gamer)+DOCKER_HOST,
-#   sourcea ~/.config/mishi/ci.env, cd cli, exec node --import tsx src/mke.ts "$@"
+# shim /home/mke-ci/.local/bin/mke (0755): versionado literal por nodo en este dir —
+#   install -m755 mke.shim.<nodo> /home/mke-ci/.local/bin/mke  (chown mke-ci)
 ```
 
 ## Fase C — las 4 credenciales scoped (los VALORES vienen de fuera)
@@ -66,11 +78,14 @@ Ninguna vive en el repo (correcto). Origen de cada una:
    SRV="$(kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.server}')"
    # escribir ~mke-ci/.kube/config (0600) con cluster{server:$SRV,ca-data:$CA} user{token:$SA_TOKEN}
    ```
-2. **`~/.config/mishi/vault-mke.token`** = identidad `mke-runner-deploy`. Reinstalar nodo
-   existente: copiar el token de un backup / re-emitir. ⓝ Nodo nuevo: acuñar con
-   `scripts/crear-identidad-vault-nodo.sh` (**requiere el store GPG offline
-   `~/.config/mishi/secrets/` con `vault-root-token` — en el host privilegiado de Santi,
-   NUNCA en `mke-ci`**).
+2. **`~/.config/mishi/vault-mke.token`** = identidad tipo CI del nodo. Reinstalar nodo
+   existente: copiar el token de un backup / re-emitir la MISMA identidad. ⓝ Nodo nuevo:
+   acuñar SU identidad propia (revocable sin tocar las demás), p.ej.
+   `bash scripts/crear-identidad-vault-nodo.sh mke-runner-deploy-<nodo> <archivo-token>`
+   (**requiere el store GPG offline `~/.config/mishi/secrets/` con `vault-root-token` — en
+   el host privilegiado de Santi, NUNCA en `mke-ci`**). El script YA nace acotado:
+   `leer` sin patrón (MATERIALIZAR) + `escribir` solo `DATABASE_URL__*` (no re-introduce
+   el over-grant que la prueba de fuego 2026-08-11 arregló).
 3. **`~/.config/mishi/ci.env`** (0600) = `CLOUDFLARE_DNS_API` + `NODE_AUTH_TOKEN`, ambos del
    vault por pipe (no imprimir): `{ printf 'CLOUDFLARE_DNS_API=%s\n' "$(vault-mishi get
    cloudflare-dns-api)"; printf 'NODE_AUTH_TOKEN=%s\n' "$(vault-mishi get git-mishi-npm-token)"; }
@@ -80,8 +95,9 @@ Ninguna vive en el repo (correcto). Origen de cada una:
    existiera, crearlo en el forge (usuario restringido + collab read en `mke` + token
    `read:repository`) con el admin `mishi:$(vault-mishi get git-mishi-admin)`.
 
-Y **`~/.config/mishi/mke-nodo.json`** (contenido literal en la tabla de arriba: push por
-`172.17.0.1:5111`, ref `k3d-registry-mishi:5111`).
+Y **`~/.config/mishi/mke-nodo.json`** (0600): versionado literal por nodo en este dir
+(`mke-nodo.json.gamer` / `.laptop`) — `install -m600 mke-nodo.json.<nodo>
+/home/mke-ci/.config/mishi/mke-nodo.json` (chown mke-ci).
 
 ## Fase D — runner de Forgejo
 

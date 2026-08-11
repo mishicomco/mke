@@ -1,0 +1,7 @@
+{
+  "_comment": "laptop, fabrica rootless mke-ci - prod es local; push via bridge IP (rootless no ve localhost del host)",
+  "envsLocales": ["prod"],
+  "registries": {
+    "prod": { "push": "172.17.0.1:5111", "ref": "k3d-registry-mishi:5111" }
+  }
+}

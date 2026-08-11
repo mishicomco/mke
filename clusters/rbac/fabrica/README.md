@@ -19,6 +19,8 @@ reproducibilidad** (snapshots verificados en disco). El contexto completo está 
 | `forgejo-runner-prod-2.service.gamer` / `.laptop` | `…/forgejo-runner-prod-2.service` | runner #2 |
 | `mke-ci-sync.service` + `.timer` | `/etc/systemd/system/` | pull de main del forge cada 15 min |
 | `mke-ci-actualizar.gamer.sh` / `.laptop.sh` | `/usr/local/bin/mke-ci-actualizar` | `fetch`+`reset --hard origin/main`+`npm ci` si cambió `cli/package-lock.json` |
+| `mke.shim.gamer` / `.laptop` | `/home/mke-ci/.local/bin/mke` (0755) | shim del CLI (PATH+DOCKER_HOST+sourcea ci.env) |
+| `mke-nodo.json.gamer` / `.laptop` | `/home/mke-ci/.config/mishi/mke-nodo.json` (0600) | registry por IP bridge `172.17.0.1:5111` |
 
 ## Diferencias por nodo (NO son intercambiables)
 

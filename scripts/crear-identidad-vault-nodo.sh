@@ -4,11 +4,17 @@
 # crear-identidad-vault-mke.sh (fija al pc gamer): cada nodo runner tiene SU
 # identidad, revocable sin tocar a los demás.
 #
-# Igual que el original: grants leer+escribir sobre los ns de las apps. Además
-# `leer` sobre el ns `santi` — mke deploy lee `git-mishi-npm-token` y
-# `cloudflare-dns-api` de ahí vía vault-mishi (en el gamer eso lo cubre el
-# token humano de Santi; un nodo runner no lo tiene). DEUDA conocida: el grant
-# del vault es por namespace, no por secreto.
+# Grants sobre los ns de las apps: `leer` SIN patrón (MATERIALIZAR lee las claves
+# arbitrarias de cada app — residual aceptado, ver RUNBOOK-fabrica-aislada.md
+# §Prueba de fuego) y `escribir` ACOTADA a `DATABASE_URL__*` (mke SOLO escribe eso
+# al provisionar la BD). Además `leer` sobre el ns `santi` — mke deploy lee
+# `git-mishi-npm-token` y `cloudflare-dns-api` de ahí (en el gamer eso lo cubre el
+# token humano de Santi; un nodo runner no lo tiene).
+#
+# El patrón de escritura NO es opcional: sin él la identidad puede sobrescribir
+# CUALQUIER clave de esos ns (hallazgo de la prueba de fuego 2026-08-11, acotado
+# a mano en los nodos vivos). Un nodo nuevo DEBE nacer ya acotado — no re-introducir
+# el over-grant. El grant del vault es por namespace + patrón de clave.
 #
 # REGLA DE ORO: ningún valor de secreto se imprime jamás.
 #
@@ -60,11 +66,15 @@ echo "identidad $IDENTIDAD creada (id $ID); token en $TOKEN_FILE (0600)"
 for ns in $NAMESPACES santi; do
   for permiso in leer escribir; do
     [ "$ns" = santi ] && [ "$permiso" = escribir ] && continue
+    # escritura ACOTADA a DATABASE_URL__* (mke solo escribe eso); lectura sin patrón.
+    cuerpo="{\"identidadId\":\"$ID\",\"namespace\":\"$ns\",\"permiso\":\"$permiso\""
+    [ "$permiso" = escribir ] && cuerpo="$cuerpo,\"patron\":\"DATABASE_URL__*\""
+    cuerpo="$cuerpo}"
     c=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$VAULT_URL/v1/grant" \
       -H "Authorization: Bearer $ROOT" -H 'content-type: application/json' \
-      -d "{\"identidadId\":\"$ID\",\"namespace\":\"$ns\",\"permiso\":\"$permiso\"}")
+      -d "$cuerpo")
     [ "$c" = "201" ] || echo "  grant $permiso/$ns → HTTP $c" >&2
   done
 done
 unset ROOT
-echo "grants: $(echo $NAMESPACES | wc -w) ns de apps (leer+escribir) + santi (solo leer)"
+echo "grants: $(echo $NAMESPACES | wc -w) ns de apps (leer sin patrón + escribir DATABASE_URL__*) + santi (solo leer)"
