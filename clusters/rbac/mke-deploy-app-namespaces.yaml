@@ -59,6 +59,12 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "apply"]
+  # PVCs: static-mishi (app plataforma) declara `static-www` en su overlay;
+  # su pipeline delgado hace apply -k con este SA (fricción 2026-08-11:
+  # "persistentvolumeclaims is forbidden" al primer deploy post-fábrica).
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "create", "patch", "apply"]
   # Diagnóstico.
   - apiGroups: [""]
     resources: ["events"]
