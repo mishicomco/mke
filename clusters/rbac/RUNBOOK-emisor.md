@@ -28,9 +28,11 @@ El pod de iam-mishi materializa TODO el ns `iam-mishi` al Secret de apps, así q
 allí va SOLO el HASH; el CLARO vive en un ns de vault propio (`iam-emisor`), fuera
 del alcance de los pipelines de app:
 
+Todos los `set` toman el valor por **STDIN** (la firma real de `vault-mishi set`):
+
 ```
-vault-mishi set iam-emisor/IAM_EMISOR_TOKEN__<env>        "$EMISOR"
-vault-mishi set iam-mishi/IAM_EMISOR_TOKEN_SHA256__<env>  "$HASH"
+printf %s "$EMISOR" | vault-mishi set iam-emisor/IAM_EMISOR_TOKEN__<env>
+printf %s "$HASH"   | vault-mishi set iam-mishi/IAM_EMISOR_TOKEN_SHA256__<env>
 ```
 Invariante que NO se puede violar: `sha256(IAM_EMISOR_TOKEN)` == el
 `IAM_EMISOR_TOKEN_SHA256` del ns iam-mishi. Si difieren, tras el paso 3 iam-mishi
@@ -99,8 +101,11 @@ y en el CLI humano. Repite TODO en el otro cluster.
 - El emisor es inerte si no se usa; no hace falta borrarlo para revertir.
 
 ## Rotación futura del emisor
-Rota AMBOS a la vez: nuevo token → `iam-emisor/IAM_EMISOR_TOKEN__<env>` + su hash
-→ `iam-mishi/IAM_EMISOR_TOKEN_SHA256__<env>`; recrea el Secret `iam-emisor/iam-emisor`;
-`mke deploy iam-mishi <env>`; revoca la credencial de emisor vieja por CLI
-(`iam-mishi` con operador → `DELETE /v1/credenciales/:id`). El bootstrap siembra
-por hash y es idempotente (solo agrega).
+Rota AMBOS a la vez (todo `set` por STDIN; el vault es append-only, se sobreescribe):
+```
+printf %s "$NUEVO"                         | vault-mishi set iam-emisor/IAM_EMISOR_TOKEN__<env>
+printf %s "$(printf %s "$NUEVO"|sha256sum|cut -d' ' -f1)" | vault-mishi set iam-mishi/IAM_EMISOR_TOKEN_SHA256__<env>
+```
+Recrea el Secret `iam-emisor/iam-emisor`; `mke deploy iam-mishi <env>`; revoca la
+credencial de emisor vieja por CLI (`iam-mishi` con operador → `DELETE
+/v1/credenciales/:id`). El bootstrap siembra por hash y es idempotente (solo agrega).
