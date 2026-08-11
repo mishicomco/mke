@@ -34,9 +34,11 @@ reproducibilidad** (snapshots verificados en disco). El contexto completo está 
 
 ## Re-bootstrap de un host (si se reinstala)
 
-Pre-requisitos: usuario `mke-ci` (rootless docker, subuid/subgid, linger), su HOME
-poblado con las 4 creds scoped, y el clone de mke — todo en el runbook §"Qué corre"
-y §"Credenciales". Luego:
+**El procedimiento COMPLETO desde un host limpio** (crear `mke-ci`, docker rootless,
+las 4 credenciales, el runner, el RBAC) está en **`BOOTSTRAP-nodo.md`** — con los
+comandos exactos, parametrizados por nodo, y marcando qué valores vienen de fuera
+(vault/GPG/forge). Esta sección es solo el ÚLTIMO paso (instalar los units), que
+asume las Fases A–E de ese bootstrap ya hechas:
 
 ```sh
 # como root, con los archivos de ESTE nodo:
