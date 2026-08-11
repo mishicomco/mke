@@ -128,7 +128,15 @@ export async function catalogoDelEntorno(env: string): Promise<EntradaCatalogo[]
   // flota que no ve el otro cluster, p.ej. el laptop no ve stage). Ns ausente
   // = entorno ilegible, para que el rescate de abajo conserve sus entradas.
   const ns = await run("kubectl", ["--context", spec.context, "get", "namespace", spec.namespace, "-o", "name"]);
-  if (ns.code !== 0) return null;
+  // `get namespace` es cluster-scoped: la identidad de menor privilegio del runner
+  // (SA mke-deploy, Hallazgo 0) recibe Forbidden aunque el ns exista. Forbidden !=
+  // ausente → seguimos a leer los ingresses (que el SA sí puede en su ns). Solo un ns
+  // genuinamente ausente (NotFound) o un fallo del get de ingresses hace el entorno
+  // ilegible, para que el rescate conserve las entradas publicadas.
+  if (ns.code !== 0) {
+    const nerr = (ns.stderr || ns.stdout || "").toLowerCase();
+    if (!nerr.includes("forbidden")) return null;
+  }
   const r = await run("kubectl", ["--context", spec.context, "-n", spec.namespace, "get", "ingress", "-o", "json"]);
   if (r.code !== 0) return null;
   return derivarCatalogo(parsearIngresses(r.stdout), env);
