@@ -9,6 +9,7 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { appsRoot, ENVS, identityOrigin, NPM_TOKEN_SECRET, PREVIEW } from "./mkeConfig.js";
 import {
   previewPodName,
@@ -290,7 +291,7 @@ async function buildBackend(wt: string, imagen: string, opts: { json?: boolean }
  * diferencia de v1 (que instala DENTRO del pod), acá el build corre en el
  * HOST, así que la primera vez necesita su propio `npm ci` local (barato: el
  * caché de npm del host ya tiene los tarballs de builds anteriores). */
-async function buildFrontend(wt: string, opts: { json?: boolean }): Promise<string | null> {
+async function buildFrontend(app: string, wt: string, opts: { json?: boolean }): Promise<string | null> {
   if (!existsSync(join(wt, "node_modules"))) {
     const token = await nodeAuthToken();
     if (token) process.env.NODE_AUTH_TOKEN = token;
@@ -304,11 +305,15 @@ async function buildFrontend(wt: string, opts: { json?: boolean }): Promise<stri
   // '@dropshipping-mishi/contract'"). El Dockerfile real lo resuelve con
   // `turbo run build --filter=@<app>/frontend` (grafo `dependsOn: ["^build"]`);
   // acá usamos el filtro POR PATH (`./apps/frontend`) para no tener que saber
-  // el scope npm de cada app — turbo igual arma el mismo grafo.
+  // el scope npm de cada app — turbo igual arma el mismo grafo. Caché FUERA del
+  // repo (tmpdir): un `--cache-dir` relativo cae DENTRO del worktree y termina
+  // como archivos sin trackear que `mke preview merge` no debe arrastrar a main
+  // (bache real, encontrado en el E2E).
+  const cacheDir = join(tmpdir(), "mke-preview-v2-turbo", app);
   const code = await pasoStreamCmd(
     "turbo build ./apps/frontend (local, carril front — arma primero packages/contract)",
     "npx",
-    ["turbo", "run", "build", "--filter=./apps/frontend", "--cache-dir=.turbo-mke-preview"],
+    ["turbo", "run", "build", "--filter=./apps/frontend", `--cache-dir=${cacheDir}`],
     { json: opts.json, cwd: wt },
   );
   const dist = join(wt, "apps", "frontend", "dist");
@@ -431,7 +436,7 @@ export async function previewUpV2(app: string, rama: string, opts: PreviewV2UpOp
   let tFront = 0;
   if (listo && forma.frontend) {
     const tf0 = Date.now();
-    const dist = await buildFrontend(wt, { json: opts.json });
+    const dist = await buildFrontend(app, wt, { json: opts.json });
     if (dist) {
       const dp = await destinoPod(name, frontContainerName());
       if (!dp) {
@@ -503,7 +508,7 @@ export async function previewPushV2(app: string, rama: string, opts: PreviewV2Pu
   }
   if (carriles.front && forma.frontend) {
     const tf0 = Date.now();
-    const dist = await buildFrontend(wt, { json: opts.json });
+    const dist = await buildFrontend(app, wt, { json: opts.json });
     if (!dist) throw new Error("vite build falló");
     const dp = await destinoPod(name, frontContainerName());
     if (!dp) throw new Error(`no encontré el pod vivo de ${name} (¿deploy caído?)`);
