@@ -73,16 +73,30 @@ son las tablas/API, y esas no cambian al subir de escalón.
    cero. Puede incluso re-implementarse como tabla jsonb en tu propio schema,
    mismo motor.
 
-## Decisiones abiertas (para diseñar con el caso Guarda)
+## Decisión PROPUESTA (2026-08-12 — Santi aún no la toma)
 
-- **schema-por-artifact vs BD-por-artifact**: un PostgREST sirve N schemas de
-  UNA BD. Propuesta: schema-por-artifact en una BD `artifacts` mientras es
-  artifact; al graduar (escalón 2) opcionalmente `ALTER SCHEMA ... OWNER` /
-  dump a BD propia si el aislamiento por-app del engine lo amerita. Decidir
-  midiendo con Guarda.
-- **JWT del IdP → RLS**: cómo viaja `sub`/rol a las políticas (claims de
-  `mishi_sesion` vía `request.jwt.claims` de PostgREST). Verificar que el
-  ES256+JWKS del IdP encaja directo (PostgREST soporta JWKS desde v12).
+- **BD-por-artifact desde que declara `esquema.sql`**. El MOTOR nunca se
+  multiplica: postgres-mishi sigue siendo UN pod con N bases lógicas adentro —
+  BD de artifact = un `CREATE DATABASE` más en ese mismo pod, cero RAM extra.
+  Lo único que se multiplica es PostgREST (el traductor HTTP→SQL, ~30-50MB,
+  una instancia solo puede apuntar a UNA BD), y solo para artifacts que
+  declaran esquema. A cambio: aislamiento del engine (la fuga multi-inquilino
+  — riesgo #1 de AI_ARTIFACTS — imposible por construcción), graduación de
+  datos en CERO absoluto (la BD ya era suya) y UNA sola regla para artifact y
+  app. Alternativa descartable: schema-por-artifact en una BD compartida (un
+  solo pod PostgREST) — ahorra pods comprando de vuelta el riesgo #1.
+  Scale-to-zero de los PostgREST si algún día duele (YAGNI hoy).
+- **PostgREST es plataforma, una instancia por BD**: la app/artifact no escribe
+  ni un byte de PostgREST — mke provisiona pod+rol+ruta igual que hoy
+  provisiona BD y Secret. La puerta (`pgrst-puerta`) sí es UNA compartida.
+- **JWT del IdP → RLS**: verificado VIVO (milestone 1, `platform/postgrest/`):
+  ES256+JWKS del IdP directo en PGRST_JWT_SECRET (foto de AMBOS emisores),
+  `sub` a las políticas vía `request.jwt.claims`. Roles: la puerta consulta
+  iam-mishi por sub×app (patrón guardia, cache 60s) y los inyecta como header
+  que las políticas leen vía `request.headers` — el cliente no puede
+  falsificarlo (la ForwardAuth lo sobreescribe siempre).
+
+## Decisiones abiertas (para diseñar con el caso Guarda)
 - **`mishi.datos` como wrapper**: mantener la API `mishi.datos.*` como fachada
   sobre PostgREST (retrocompat con artifacts existentes) o exponer el estilo
   PostgREST directo (las IAs lo conocen de memoria por Supabase). Puede ser
