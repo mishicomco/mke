@@ -18,6 +18,7 @@ import { ensureStaticHostPaso } from "./staticHost.js";
 import { ls } from "./ls.js";
 import { artifactPublicar, artifactLs, artifactVer, artifactRollback, artifactBorrar, artifactNacer, artifactAcceso, guardiaDeploy } from "./artifact.js";
 import { previewUp, previewPull, previewEstado, previewLs, previewMerge, previewDown, previewLimpiar } from "./preview.js";
+import { previewUpV2, previewPushV2 } from "./previewV2.js";
 import { hostFor } from "./mkeConfig.js";
 
 function parseFlags(args: string[]): { positional: string[]; flags: Record<string, string | boolean> } {
@@ -129,6 +130,15 @@ const PREVIEW_HELP = `mke preview — VERBO DEFINITIVO de iteración: rama efím
         --live                      modo EMBED: vite bajo /live/<app>/ (Studio embebe same-origen)
         --ttl-segundos <n>          TTL del lease (backstop de vida); default del vault
         --json  --dry-run  --repo-url <url>
+        --v2                        preview v2 (opt-in, 2026-08-11): imagen REAL (docker build del
+                                    Dockerfile del repo) en vez de clone+install en vivo; sin HMR — el
+                                    front se actualiza por el actualizador silencioso del molde
+                                    (/version.json). Mismo ns/host/lease/DNS que v1. Detalle: AI_PREVIEW_V2.md
+  mke preview push <app> <rama> --v2   SOLO v2: detecta qué cambió (git diff) y corre el carril que
+                                    toque — front (~5-10s: vite build local + kubectl cp) y/o back
+                                    (~30-60s: docker build + carga de imagen + set image + rollout +
+                                    MIGRATE_ONLY). v1 no tiene push: usa \`pull\` (HMR ya recoge solo).
+        --json
   mke preview pull <app> <rama>    git pull DENTRO del pod (HMR recoge solo) + renueva el lease
   mke preview estado <app> <rama> rama + estado del pod + lease + host
   mke preview ls [<app>]           lista los previews vivos
@@ -349,15 +359,29 @@ async function main() {
       if (flags.help || action === "help") { console.log(PREVIEW_HELP); break; }
       if (action === "up") {
         const [app, rama] = pargs;
-        if (!app || !rama) return fail("uso: mke preview up <app> <rama> [--espejo] [--live] [--ttl-segundos n] [--json] [--dry-run] [--repo-url url]");
-        await previewUp(app, rama, {
-          espejo: flags.espejo === true,
-          live: flags.live === true,
-          json: flags.json === true,
-          dryRun: flags["dry-run"] === true,
-          repoUrl: typeof flags["repo-url"] === "string" ? flags["repo-url"] : undefined,
-          ttlSegundos: typeof flags["ttl-segundos"] === "string" ? Number(flags["ttl-segundos"]) : undefined,
-        });
+        if (!app || !rama) return fail("uso: mke preview up <app> <rama> [--v2] [--espejo] [--live] [--ttl-segundos n] [--json] [--dry-run] [--repo-url url]");
+        if (flags.v2 === true) {
+          await previewUpV2(app, rama, {
+            json: flags.json === true,
+            dryRun: flags["dry-run"] === true,
+            repoUrl: typeof flags["repo-url"] === "string" ? flags["repo-url"] : undefined,
+            ttlSegundos: typeof flags["ttl-segundos"] === "string" ? Number(flags["ttl-segundos"]) : undefined,
+          });
+        } else {
+          await previewUp(app, rama, {
+            espejo: flags.espejo === true,
+            live: flags.live === true,
+            json: flags.json === true,
+            dryRun: flags["dry-run"] === true,
+            repoUrl: typeof flags["repo-url"] === "string" ? flags["repo-url"] : undefined,
+            ttlSegundos: typeof flags["ttl-segundos"] === "string" ? Number(flags["ttl-segundos"]) : undefined,
+          });
+        }
+      } else if (action === "push") {
+        const [app, rama] = pargs;
+        if (!app || !rama) return fail("uso: mke preview push <app> <rama> --v2 [--json]  (--v2 obligatorio: v1 usa `pull` para HMR)");
+        if (flags.v2 !== true) return fail("`mke preview push` es SOLO para --v2 (v1 itera con HMR en vivo, sin push — usá `mke preview pull` para refrescar el git del pod)");
+        await previewPushV2(app, rama, { json: flags.json === true });
       } else if (action === "pull") {
         const [app, rama] = pargs;
         if (!app || !rama) return fail("uso: mke preview pull <app> <rama> [--json]");
@@ -383,7 +407,7 @@ async function main() {
       } else if (action === "limpiar") {
         await previewLimpiar({ json: flags.json === true });
       } else {
-        return fail("uso: mke preview up|pull|estado|ls|merge|down|limpiar");
+        return fail("uso: mke preview up|push|pull|estado|ls|merge|down|limpiar");
       }
       break;
     }

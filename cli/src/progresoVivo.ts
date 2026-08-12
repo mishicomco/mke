@@ -24,6 +24,8 @@ export interface PasoOpts {
   json?: boolean;
   /** costura de test: inyectar el stream en vez de stdout/stderr real. */
   stream?: NodeJS.WriteStream;
+  /** directorio de trabajo del comando (pasoStreamCmd). */
+  cwd?: string;
 }
 
 function streamPara(opts: PasoOpts): NodeJS.WriteStream {
@@ -114,7 +116,7 @@ export function pasoStreamCmd(
   args: string[],
   opts: PasoOpts = {},
 ): Promise<number> {
-  return pasoStream(label, (onLinea) => spawnStream(cmd, args, onLinea), opts);
+  return pasoStream(label, (onLinea) => spawnStream(cmd, args, onLinea, { cwd: opts.cwd }), opts);
 }
 
 /**

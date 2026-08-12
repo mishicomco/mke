@@ -50,9 +50,10 @@ export function spawnStream(
   cmd: string,
   args: string[],
   onLinea: (linea: string) => void,
+  opts: { cwd?: string } = {},
 ): Promise<number> {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args);
+    const child = spawn(cmd, args, { cwd: opts.cwd });
     let buf = "";
     const comer = (d: Buffer) => {
       buf += d.toString();

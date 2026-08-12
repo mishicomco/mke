@@ -78,20 +78,20 @@ export interface PreviewLsOpts {
 }
 
 // helper de push/borrado remoto (el GITHUB_TOKEN del env pisa el de gh — ver CLAUDE.md).
-function gitCredArgs(appDir: string, ...rest: string[]): string[] {
+export function gitCredArgs(appDir: string, ...rest: string[]): string[] {
   return ["-u", "GITHUB_TOKEN", "git", "-c", "credential.helper=!gh auth git-credential", "-C", appDir, ...rest];
 }
 
 // ─── git local: rama + worktree persistido ───────────────────────────────────
 
-function worktreeDir(appDir: string, ramaSlug: string): string {
+export function worktreeDir(appDir: string, ramaSlug: string): string {
   return `${appDir}.wt-${ramaSlug}`;
 }
 
 /** asegura que la rama exista LOCALMENTE (creada desde main actualizado si no
  * existe) y que haya un worktree persistido en `<app>.wt-<rama-slug>`. Devuelve
  * el path del worktree. Idempotente. */
-async function asegurarWorktree(appDir: string, rama: string, ramaSlug: string): Promise<string> {
+export async function asegurarWorktree(appDir: string, rama: string, ramaSlug: string): Promise<string> {
   if (!existsSync(appDir)) throw new Error(`no existe el repo del app: ${appDir} (¿falta clonarlo como hermano?)`);
   const wt = worktreeDir(appDir, ramaSlug);
 
@@ -119,7 +119,7 @@ async function asegurarWorktree(appDir: string, rama: string, ramaSlug: string):
 }
 
 /** best-effort: borra el worktree local. Silencioso si no existe en ESTA máquina. */
-async function borrarWorktreeSiExiste(appDir: string, ramaSlug: string, opts: { json?: boolean }): Promise<void> {
+export async function borrarWorktreeSiExiste(appDir: string, ramaSlug: string, opts: { json?: boolean }): Promise<void> {
   const wt = worktreeDir(appDir, ramaSlug);
   if (!existsSync(wt)) {
     if (!opts.json) console.log(dim(`  sin worktree local en esta máquina (${wt}) — nada que borrar`));
@@ -132,7 +132,7 @@ async function borrarWorktreeSiExiste(appDir: string, ramaSlug: string, opts: { 
 
 // ─── credenciales de git/npm/vault (mismo patrón que `mke dev`/`mke feature`) ─
 
-async function resolveRepoUrl(app: string, override: string | undefined, dryRun: boolean): Promise<string> {
+export async function resolveRepoUrl(app: string, override: string | undefined, dryRun: boolean): Promise<string> {
   if (override) return override;
   // El forge (git-mishi) es la casa PRIMARIA de los repos; GitHub es solo mirror
   // de backup y puede ir atrasado (o ni existir aún para apps recién nacidas).
@@ -158,7 +158,7 @@ async function resolveRepoUrl(app: string, override: string | undefined, dryRun:
   return gh;
 }
 
-async function resolveNpmToken(dryRun: boolean): Promise<string | undefined> {
+export async function resolveNpmToken(dryRun: boolean): Promise<string | undefined> {
   if (dryRun) return undefined;
   // las apps consumen @mishicomco/* del forge (git-mishi): ese token manda.
   // El PAT de GitHub Packages queda de fallback para apps aún no migradas.
@@ -172,13 +172,13 @@ async function resolveNpmToken(dryRun: boolean): Promise<string | undefined> {
 
 /** token de la identidad EMISORA del vault. DEGRADA (null) si no está: en el
  * interino el vault puede no tener el escenario 4 desplegado. */
-async function resolveEmisorTokenSuave(): Promise<string | null> {
+export async function resolveEmisorTokenSuave(): Promise<string | null> {
   const t = await run("vault-mishi", ["get", VAULT.emisorTokenSecret]);
   const token = t.stdout.trim();
   return t.code === 0 && token ? token : null;
 }
 
-function vaultCliente(emisorToken: string): VaultClienteOpts {
+export function vaultCliente(emisorToken: string): VaultClienteOpts {
   return { vaultUrl: VAULT.url, emisorToken };
 }
 
@@ -200,7 +200,7 @@ export async function leerManifiestoPreview(app: string, dir?: string): Promise<
 
 // ─── lease del vault (Contrato 1) con DEGRADACIÓN interina ────────────────────
 
-interface LeaseResuelto {
+export interface LeaseResuelto {
   leaseId: string;
   leaseToken?: string;
 }
@@ -208,7 +208,7 @@ interface LeaseResuelto {
 /** Pide un lease al vault; si el vault no está / no responde / 404, DEGRADA con
  * gracia a `sin-lease` (warning claro) para poder probar pod+DB+HMR en vivo
  * antes de que el escenario 4 del vault esté desplegado. */
-async function adquirirLease(app: string, rama: string, manifiesto: PreviewManifest, opts: { json?: boolean; ttlSegundos?: number }): Promise<LeaseResuelto> {
+export async function adquirirLease(app: string, rama: string, manifiesto: PreviewManifest, opts: { json?: boolean; ttlSegundos?: number }): Promise<LeaseResuelto> {
   const emisor = await resolveEmisorTokenSuave();
   if (!emisor) {
     if (!opts.json) console.log(warn(`vault sin escenario 4 — pod sin lease, secretos de app no disponibles (no encontré ${VAULT.emisorTokenSecret})`));
@@ -521,7 +521,7 @@ export async function previewLs(app: string | undefined, opts: PreviewLsOpts): P
 
 // ─── limpieza del cluster (lease + bundle + DNS) — común a down y merge ────────
 
-async function limpiarCluster(app: string, rama: string, opts: { json?: boolean }): Promise<{ leaseId: string | null; revocado: boolean; dnsBorrado: boolean }> {
+export async function limpiarCluster(app: string, rama: string, opts: { json?: boolean }): Promise<{ leaseId: string | null; revocado: boolean; dnsBorrado: boolean }> {
   const name = previewPodName(app, rama);
   const host = previewPodHost(app, rama);
 
@@ -568,7 +568,7 @@ async function limpiarCluster(app: string, rama: string, opts: { json?: boolean 
 
 /** commits en `rama` que NO están en main (origin/main tras fetch). >0 = trabajo
  * sin mergear. Devuelve -1 si no se pudo determinar (rama local ausente). */
-async function commitsSinMergear(appDir: string, rama: string): Promise<number> {
+export async function commitsSinMergear(appDir: string, rama: string): Promise<number> {
   if ((await run("git", ["-C", appDir, "show-ref", "--verify", "-q", `refs/heads/${rama}`])).code !== 0) return -1;
   await run("git", ["-C", appDir, "fetch", "origin", "main"]);
   const base = (await run("git", ["-C", appDir, "rev-parse", "--verify", "-q", "origin/main"])).code === 0 ? "origin/main" : "main";
@@ -746,7 +746,7 @@ export function edadDesde(ts: string | undefined, ahora = Date.now()): string {
 
 /** cuando `rollout status` vence: nombra los contenedores not-ready y muestra sus
  * últimas líneas de log — el diagnóstico que antes había que excavar a mano. */
-async function diagnosticarPodNoListo(name: string): Promise<void> {
+export async function diagnosticarPodNoListo(name: string): Promise<void> {
   const r = await run("kubectl", ["--context", CTX, "-n", NS, "get", "pod", "-l", `app=${name}`, "-o",
     "jsonpath={range .items[0].status.containerStatuses[*]}{.name}={.ready}{\"\\n\"}{end}"]);
   const noListos = r.stdout.split("\n").filter((l) => l.trim().endsWith("=false")).map((l) => l.split("=")[0]);
@@ -758,7 +758,7 @@ async function diagnosticarPodNoListo(name: string): Promise<void> {
   }
 }
 
-async function waitReachable(url: string, tries = 20, gapMs = 3000): Promise<boolean> {
+export async function waitReachable(url: string, tries = 20, gapMs = 3000): Promise<boolean> {
   for (let i = 0; i < tries; i++) {
     const r = await run("curl", ["-s", "-m", "8", "-o", "/dev/null", "-w", "%{http_code}", url]);
     const code = r.stdout.trim();
