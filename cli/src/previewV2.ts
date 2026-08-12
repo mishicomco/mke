@@ -285,8 +285,18 @@ async function buildBackend(wt: string, imagen: string, opts: { json?: boolean }
   return code === 0;
 }
 
-/** `vite build` LOCAL del frontend (carril front, sin Docker) → devuelve el dist/. */
+/** `vite build` LOCAL del frontend (carril front, sin Docker) → devuelve el dist/.
+ * El worktree lo crea `git worktree add` PELADO (sin node_modules) — a
+ * diferencia de v1 (que instala DENTRO del pod), acá el build corre en el
+ * HOST, así que la primera vez necesita su propio `npm ci` local (barato: el
+ * caché de npm del host ya tiene los tarballs de builds anteriores). */
 async function buildFrontend(wt: string, opts: { json?: boolean }): Promise<string | null> {
+  if (!existsSync(join(wt, "node_modules"))) {
+    const token = await nodeAuthToken();
+    if (token) process.env.NODE_AUTH_TOKEN = token;
+    const install = await pasoStreamCmd("npm ci (worktree pelado — primera vez)", "npm", ["ci"], { json: opts.json, cwd: wt });
+    if (install !== 0) return null;
+  }
   process.env.VITE_IDENTITY_URL = identityOrigin("stage");
   const code = await pasoStreamCmd(
     "vite build (local, carril front)",
