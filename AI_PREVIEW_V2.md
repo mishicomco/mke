@@ -1,5 +1,17 @@
 # AI_PREVIEW_V2 — preview con imagen real (`--v2`)
 
+> 2026-08-12: `--v2` soporta el ESTÁNDAR NUEVO de datos (AI_GRADUACION.md).
+> Detección automática (migraciones con RLS) → el pod gana un sidecar
+> PostgREST en miniatura: initdb del sidecar postgres crea los roles
+> `<db>_web`/`<db>_pgrst` (los guards de las migraciones los esperan), ruta
+> `/datos` del host preview vía un SEGUNDO Ingress anotado con los middlewares
+> `pgrst-puerta`/`pgrst-strip-datos` del ns preview (fixtures; la ForwardAuth
+> apunta a la puerta de stage), y tras cada MIGRATE_ONLY se recarga el schema
+> cache con `NOTIFY pgrst` (si no, PGRST202). E2E verde con block-mishi:
+> yo/guardar_partida/ranking contra la BD efímera. Bache corregido de paso:
+> la readiness del backend ahora pega a `/salud` (estándar 2026-08-09), no a
+> `/health` (block no lo servía en raíz y el rollout nunca convergía).
+
 > Diseño, 2026-08-11. Opt-in (`mke preview up <app> <rama> --v2`); NO reemplaza
 > v1. Estado de lo construido: `AI_REPO_STATE.md`.
 

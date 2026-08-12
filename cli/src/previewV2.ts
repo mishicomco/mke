@@ -7,7 +7,7 @@
 // `mke deploy`, y el motor nuevo COMPARTIDO `volumenEstatico.ts` para el carril
 // front (pensado también para `mke artifact publicar`, ver el diseño).
 
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { appsRoot, ENVS, identityOrigin, NPM_TOKEN_SECRET, PREVIEW } from "./mkeConfig.js";
@@ -106,6 +106,59 @@ function caddyfileV2(forma: { frontend: boolean; backend: boolean }): string {
 `;
 }
 
+// ─── Plano de datos PostgREST en preview (estándar nuevo, AI_GRADUACION.md) ───
+// Una app convergida sirve sus datos por /datos → puerta → PostgREST → RLS.
+// En preview eso se replica EN MINIATURA dentro del pod: sidecar PostgREST
+// apuntando al sidecar Postgres efímero. Detección: sus migraciones traen RLS.
+
+/** rol/db base de la app (misma derivación que appSpec): block-mishi → block_mishi */
+export function dbDeApp(app: string): string {
+  return app.replaceAll("-", "_");
+}
+
+/** ¿la app está convergida al estándar PostgREST? (migraciones con RLS) */
+export function detectarDatosPostgrest(wt: string): boolean {
+  const dir = join(wt, "apps", "backend", "drizzle");
+  if (!existsSync(dir)) return false;
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith(".sql")) continue;
+    if (/ROW LEVEL SECURITY/i.test(readFileSync(join(dir, f), "utf8"))) return true;
+  }
+  return false;
+}
+
+/** JWKS de AMBOS emisores vivos (la cookie es de dominio compartido). */
+export async function jwksAmbosEmisores(): Promise<string> {
+  const urls = ["https://identity.mishi.com.co/v1/llaves", "https://identity-stage.mishi.com.co/v1/llaves"];
+  const keys: unknown[] = [];
+  for (const u of urls) {
+    try {
+      const r = await fetch(u, { signal: AbortSignal.timeout(5000) });
+      if (r.ok) keys.push(...((await r.json()) as { keys?: unknown[] }).keys ?? []);
+    } catch {
+      // un emisor caído no tumba el preview: con un JWKS alcanza
+    }
+  }
+  if (!keys.length) throw new Error("no pude leer el JWKS de ningún emisor del IdP");
+  return JSON.stringify({ keys });
+}
+
+/** initdb del sidecar: los roles del mundo PostgREST que las migraciones
+ * esperan (guards `IF EXISTS rol`). Corre en cada pod nuevo (emptyDir fresco),
+ * como superusuario `dev`, ANTES de que nada se conecte. Password fija:
+ * loopback del pod efímero, no cruza el pod. */
+function sqlRolesPreview(db: string): string {
+  return [
+    `CREATE ROLE ${db}_web NOLOGIN;`,
+    `CREATE ROLE ${db}_pgrst LOGIN NOINHERIT PASSWORD 'preview';`,
+    `GRANT ${db}_web TO ${db}_pgrst;`,
+    `GRANT CONNECT ON DATABASE dev TO ${db}_pgrst;`,
+  ].join("\n") + "\n";
+}
+
+const PGRST_PORT = 3010;
+const PGRST_ADMIN_PORT = 3011;
+
 interface ManifiestosV2Input {
   app: string;
   rama: string;
@@ -115,6 +168,8 @@ interface ManifiestosV2Input {
   leaseToken?: string;
   config: Record<string, string>;
   forma: { frontend: boolean; backend: boolean };
+  /** app convergida al estándar PostgREST: db base + JWKS para el sidecar */
+  datos?: { db: string; jwks: string } | null;
 }
 
 /** Namespace + Secret(lease) + ConfigMap(Caddyfile) + Deployment + Service + Ingress. */
@@ -148,7 +203,14 @@ export function manifiestosPreviewV2(inp: ManifiestosV2Input): Record<string, un
   const configMapObj = {
     apiVersion: "v1", kind: "ConfigMap",
     metadata: { name: `${name}-scripts`, namespace, labels },
-    data: { Caddyfile: caddyfileV2(inp.forma) },
+    data: {
+      Caddyfile: caddyfileV2(inp.forma),
+      // initdb del sidecar postgres (solo apps convergidas): crea los roles
+      // que las migraciones esperan por guard. Se monta el ConfigMap entero en
+      // /docker-entrypoint-initdb.d — postgres solo ejecuta *.sql, el
+      // Caddyfile lo ignora.
+      ...(inp.datos ? { "01-roles-pgrst.sql": sqlRolesPreview(inp.datos.db) } : {}),
+    },
   };
 
   const configEnv = Object.entries(inp.config).map(([k, value]) => ({ name: k, value }));
@@ -174,7 +236,9 @@ export function manifiestosPreviewV2(inp: ManifiestosV2Input): Record<string, un
       image: inp.imagenRef,
       imagePullPolicy: "IfNotPresent",
       env: backendEnv,
-      readinessProbe: { httpGet: { path: "/health", port: DEV_BACKEND_PORT }, periodSeconds: 3, failureThreshold: 60 },
+      // /salud = el health estándar del ecosistema (ley 2026-08-09); /health
+      // era el del molde viejo y apps como block no lo sirven en raíz.
+      readinessProbe: { httpGet: { path: "/salud", port: DEV_BACKEND_PORT }, periodSeconds: 3, failureThreshold: 60 },
     });
   }
   if (inp.forma.frontend) {
@@ -214,7 +278,31 @@ export function manifiestosPreviewV2(inp: ManifiestosV2Input): Record<string, un
       ],
       ports: [{ containerPort: 5432 }],
       readinessProbe: { exec: { command: ["pg_isready", "-U", "dev", "-d", "dev"] }, periodSeconds: 3, failureThreshold: 40 },
-      volumeMounts: [{ name: "pgdata", mountPath: "/var/lib/postgresql/data" }],
+      volumeMounts: [
+        { name: "pgdata", mountPath: "/var/lib/postgresql/data" },
+        ...(inp.datos ? [{ name: "scripts", mountPath: "/docker-entrypoint-initdb.d" }] : []),
+      ],
+    });
+  }
+
+  if (inp.datos) {
+    // la miniatura del plano de datos real: mismo binario, misma cadena
+    // puerta→PostgREST→RLS, contra el sidecar efímero. k8s lo reinicia hasta
+    // que postgres esté listo; la readiness (admin /ready) gatea el rollout.
+    containers.push({
+      name: "postgrest",
+      image: "postgrest/postgrest:v12.2.12",
+      env: [
+        { name: "PGRST_DB_URI", value: `postgres://${inp.datos.db}_pgrst:preview@127.0.0.1:5432/dev` },
+        { name: "PGRST_DB_SCHEMAS", value: "public" },
+        { name: "PGRST_DB_ANON_ROLE", value: `${inp.datos.db}_web` },
+        { name: "PGRST_JWT_SECRET", value: inp.datos.jwks },
+        { name: "PGRST_SERVER_PORT", value: String(PGRST_PORT) },
+        { name: "PGRST_ADMIN_SERVER_PORT", value: String(PGRST_ADMIN_PORT) },
+        { name: "PGRST_DB_POOL", value: "2" },
+      ],
+      ports: [{ containerPort: PGRST_PORT }],
+      readinessProbe: { httpGet: { path: "/ready", port: PGRST_ADMIN_PORT }, periodSeconds: 3, failureThreshold: 60 },
     });
   }
 
@@ -243,13 +331,46 @@ export function manifiestosPreviewV2(inp: ManifiestosV2Input): Record<string, un
   const serviceObj = {
     apiVersion: "v1", kind: "Service",
     metadata: { name, namespace, labels },
-    spec: { selector: { app: name }, ports: [{ port: 80, targetPort: DEV_CADDY_PORT }] },
+    spec: {
+      selector: { app: name },
+      ports: [
+        { name: "web", port: 80, targetPort: DEV_CADDY_PORT },
+        ...(inp.datos ? [{ name: "datos", port: PGRST_PORT, targetPort: PGRST_PORT }] : []),
+      ],
+    },
   };
 
   const ingressObj = {
     apiVersion: "networking.k8s.io/v1", kind: "Ingress",
     metadata: { name, namespace, labels },
     spec: { rules: [{ host, http: { paths: [{ path: "/", pathType: "Prefix", backend: { service: { name, port: { number: 80 } } } }] } }] },
+  };
+
+  // /datos del host preview → puerta (ForwardAuth) → sidecar PostgREST del pod.
+  // Ingress SEPARADO (no IngressRoute) a propósito: `preview down` borra por
+  // labels los kinds estándar (ingress incluido) — un CRD quedaría huérfano.
+  // Los Middlewares son FIXTURES compartidos del ns preview (se aplican
+  // idempotentes acá, no llevan labels de preview para que down no los toque).
+  const middlewarePuerta = {
+    apiVersion: "traefik.io/v1alpha1", kind: "Middleware",
+    metadata: { name: "pgrst-puerta", namespace, labels: { "app.kubernetes.io/part-of": "mke-postgrest" } },
+    spec: { forwardAuth: { address: "http://pgrst-puerta.stage.svc.cluster.local:3000/", authResponseHeaders: ["Authorization"] } },
+  };
+  const middlewareStrip = {
+    apiVersion: "traefik.io/v1alpha1", kind: "Middleware",
+    metadata: { name: "pgrst-strip-datos", namespace, labels: { "app.kubernetes.io/part-of": "mke-postgrest" } },
+    spec: { stripPrefix: { prefixes: ["/datos"] } },
+  };
+  const ingressDatosObj = {
+    apiVersion: "networking.k8s.io/v1", kind: "Ingress",
+    metadata: {
+      name: `${name}-datos`, namespace, labels,
+      annotations: {
+        "traefik.ingress.kubernetes.io/router.middlewares":
+          `${namespace}-pgrst-puerta@kubernetescrd,${namespace}-pgrst-strip-datos@kubernetescrd`,
+      },
+    },
+    spec: { rules: [{ host, http: { paths: [{ path: "/datos", pathType: "Prefix", backend: { service: { name, port: { number: PGRST_PORT } } } }] } }] },
   };
 
   return [
@@ -259,6 +380,7 @@ export function manifiestosPreviewV2(inp: ManifiestosV2Input): Record<string, un
     deploymentObj,
     serviceObj,
     ingressObj,
+    ...(inp.datos ? [middlewarePuerta, middlewareStrip, ingressDatosObj] : []),
   ];
 }
 
@@ -329,6 +451,16 @@ async function destinoPod(name: string, contenedor: string): Promise<DestinoPod 
   return { context: CTX, namespace: NS, recurso: pod, contenedor };
 }
 
+/** El sidecar PostgREST carga su schema cache al conectar — si la migración
+ * corrió después, las funciones/tablas nuevas dan PGRST202. NOTIFY lo recarga
+ * en caliente (canal de fábrica de PostgREST). */
+async function recargarSchemaPostgrest(name: string, opts: { json?: boolean }): Promise<void> {
+  const r = await paso("NOTIFY pgrst 'reload schema' (recarga el cache del sidecar)", () =>
+    run("kubectl", ["--context", CTX, "-n", NS, "exec", `deploy/${name}`, "-c", "postgres", "--",
+      "psql", "-U", "dev", "-d", "dev", "-c", "NOTIFY pgrst, 'reload schema'"]), { json: opts.json });
+  if (r.code !== 0 && !opts.json) console.log(warn(`no pude recargar el schema de PostgREST (sigo): ${r.stderr || r.stdout}`));
+}
+
 async function migrarV2(name: string, opts: { json?: boolean }): Promise<boolean> {
   const code = await pasoStreamCmd(
     "migrando (MIGRATE_ONLY=true, imagen real) dentro del pod",
@@ -381,6 +513,13 @@ export async function previewUpV2(app: string, rama: string, opts: PreviewV2UpOp
   const manifiesto = await leerManifiestoPreview(app, wt);
   const lease = await adquirirLease(app, rama, manifiesto, { json: opts.json, ttlSegundos: opts.ttlSegundos });
 
+  // app convergida al estándar PostgREST → sidecar de datos en miniatura
+  let datos: { db: string; jwks: string } | null = null;
+  if (forma.backend && detectarDatosPostgrest(wt)) {
+    datos = { db: dbDeApp(app), jwks: await jwksAmbosEmisores() };
+    if (!opts.json) console.log(info(`app convergida al estándar PostgREST — sidecar de datos + ruta /datos ${dim(`(rol ${datos.db}_web)`)}`));
+  }
+
   const sha = (await run("git", ["-C", wt, "rev-parse", "--short", "HEAD"])).stdout.trim() || Date.now().toString(36);
   const imagen = `${app}-preview-v2:${sha}`;
   const imagenRef = CARGA_ENV.registry ? `${CARGA_ENV.registry.ref}/${imagen}` : imagen;
@@ -398,7 +537,7 @@ export async function previewUpV2(app: string, rama: string, opts: PreviewV2UpOp
   const items = manifiestosPreviewV2({
     app, rama, imagenRef, sha,
     leaseId: lease.leaseId, leaseToken: lease.leaseToken,
-    config: manifiesto.config, forma,
+    config: manifiesto.config, forma, datos,
   });
   const manifiestos = JSON.stringify({ apiVersion: "v1", kind: "List", items }, null, 2);
   const apply = await run("kubectl", ["--context", CTX, "apply", "-f", "-"], manifiestos);
@@ -431,6 +570,7 @@ export async function previewUpV2(app: string, rama: string, opts: PreviewV2UpOp
 
   if (listo && forma.backend) {
     if (!(await migrarV2(name, { json: opts.json })) && !opts.json) console.log(warn("MIGRATE_ONLY falló (sigo)"));
+    if (datos) await recargarSchemaPostgrest(name, { json: opts.json });
   }
 
   let tFront = 0;
@@ -504,6 +644,7 @@ export async function previewPushV2(app: string, rama: string, opts: PreviewV2Pu
     const roll = await pasoStreamCmd(`rollout status deploy/${name}`, "kubectl", ["--context", CTX, "-n", NS, "rollout", "status", `deploy/${name}`, "--timeout=180s"], { json: opts.json });
     if (roll !== 0) throw new Error("rollout del backend no convergió");
     await migrarV2(name, { json: opts.json });
+    if (detectarDatosPostgrest(wt)) await recargarSchemaPostgrest(name, { json: opts.json });
     tBack = Date.now() - tb0;
   }
   if (carriles.front && forma.frontend) {
