@@ -318,12 +318,16 @@ de cada escritura — un solo pod, sin carreras) · rate limit = token bucket
 **por usuario×artifact** en memoria del backend (un pod; Redis = YAGNI).
 Al pasarse: `413`/`429` con mensaje claro.
 
-## Fase 3 — graduacion (NO construida; con el primer caso real)
+## Fase 3 — graduacion (REDISEÑADA 2026-08-12; dueño: `AI_GRADUACION.md`)
 
-`mke artifact graduar <nombre>` genera del manifiesto el `schema.ts` de drizzle,
-la migracion `CREATE TABLE` y el volcado de los `jsonb` a columnas tipadas — **y
-punto: el frontend se reescribe a mano** (esta escrito contra `mishi.datos.*`,
-no contra una API tipada). Prometer menos hoy evita creerselo en seis meses.
+La Fase 3 original (generar schema del manifiesto + reescribir el front a mano)
+MURIÓ: el rediseño elimina el salto brutal. Un artifact con datos serios
+declara `esquema.sql` (SQL plano — la tabla ES el contrato) → BD lógica propia
+en postgres-mishi servida por la flota PostgREST de mke (RLS por sub, puerta
+cookie→Bearer), y graduar = repo propio con historia filtrada + stage, SIN
+tocar código ni mover datos. Escalera completa, decisiones y pendientes:
+`AI_GRADUACION.md`. El plano jsonb de artifact-mishi (Fase 2) sigue vivo como
+Nivel 0 (prototipo puro); el escalón tipado nuevo lo reemplaza para lo serio.
 
 ## Lo que un artifact NO hace (deliberado)
 
