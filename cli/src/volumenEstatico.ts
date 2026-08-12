@@ -15,7 +15,8 @@ import { run } from "./sh.js";
 export interface DestinoPod {
   context: string;
   namespace: string;
-  /** nombre de pod O `deploy/<nombre>` (kubectl cp acepta ambos como target). */
+  /** nombre de un POD real — `kubectl cp` NO acepta `deploy/<nombre>` (a
+   *  diferencia de `kubectl exec`); resolvé el pod antes (ver previewV2.ts). */
   recurso: string;
   contenedor: string;
 }
