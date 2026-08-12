@@ -143,15 +143,29 @@ export async function jwksAmbosEmisores(): Promise<string> {
   return JSON.stringify({ keys });
 }
 
-/** initdb del sidecar: los roles del mundo PostgREST que las migraciones
- * esperan (guards `IF EXISTS rol`). Corre en cada pod nuevo (emptyDir fresco),
- * como superusuario `dev`, ANTES de que nada se conecte. Password fija:
+/** initdb del sidecar (como superusuario `dev`, antes de que nada se conecte).
+ * Crea los roles del mundo PostgREST que las migraciones esperan MÁS el rol de
+ * APP `${db}` no-superusuario que ESPEJA a stage: las migraciones corren como
+ * él (DATABASE_URL abajo), así los objetos SECURITY DEFINER y las vistas
+ * quedan de dueño rol-de-app y NO bypassan RLS como lo haría el superusuario —
+ * si no, el preview sería MÁS permisivo que stage y un bug de grants se
+ * escondería (prueba de fuego 2026-08-12, fricción #1). Password fija:
  * loopback del pod efímero, no cruza el pod. */
 function sqlRolesPreview(db: string): string {
   return [
+    // rol de app dueño del schema (espeja al rol que en stage crea
+    // provision-app-db, donde la app es DUEÑA de su propia BD). Acá la BD es
+    // `dev`, así que le damos CREATE en ella para que el migrador de drizzle
+    // pueda crear su schema `drizzle` de tracking (fricción #2 de la prueba).
+    `CREATE ROLE ${db} LOGIN PASSWORD 'preview';`,
+    `GRANT CONNECT, CREATE ON DATABASE dev TO ${db};`,
+    `ALTER SCHEMA public OWNER TO ${db};`,
+    `GRANT ALL ON SCHEMA public TO ${db};`,
+    // roles del plano PostgREST
     `CREATE ROLE ${db}_web NOLOGIN;`,
     `CREATE ROLE ${db}_pgrst LOGIN NOINHERIT PASSWORD 'preview';`,
     `GRANT ${db}_web TO ${db}_pgrst;`,
+    `GRANT ${db}_web TO ${db};`, // el owner puede GRANTear al web en la migración
     `GRANT CONNECT ON DATABASE dev TO ${db}_pgrst;`,
   ].join("\n") + "\n";
 }
@@ -222,7 +236,15 @@ export function manifiestosPreviewV2(inp: ManifiestosV2Input): Record<string, un
     { name: "RAMA_ENCENDIDA", value: "true" },
     { name: "NODE_ENV", value: "production" },
     { name: "PORT", value: String(DEV_BACKEND_PORT) },
-    { name: "DATABASE_URL", value: "postgres://dev:dev@127.0.0.1:5432/dev" },
+    // App convergida: MIGRATE_ONLY corre como el rol de app `${db}` (no el
+    // superusuario `dev`), para que los objetos queden de dueño rol-de-app y
+    // el preview espeje la RLS de stage (ver sqlRolesPreview / fricción #1).
+    {
+      name: "DATABASE_URL",
+      value: inp.datos
+        ? `postgres://${inp.datos.db}:preview@127.0.0.1:5432/dev`
+        : "postgres://dev:dev@127.0.0.1:5432/dev",
+    },
     ...configEnv,
     ...leaseTokenEnv,
   ];
