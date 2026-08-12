@@ -11,6 +11,16 @@
 > yo/guardar_partida/ranking contra la BD efímera. Bache corregido de paso:
 > la readiness del backend ahora pega a `/salud` (estándar 2026-08-09), no a
 > `/health` (block no lo servía en raíz y el rollout nunca convergía).
+>
+> **Prueba de fuego 2026-08-12** (3 calores sobre previews): aislamiento de
+> stage VERIFICADO (un write en la efímera no toca stage), 8/8 fronteras
+> anónimas cerradas, cross-user RLS SE SOSTIENE. Fricción de FIDELIDAD hallada
+> y arreglada de raíz: las migraciones corrían como el superusuario `dev` →
+> objetos SECURITY DEFINER y vistas bypassaban RLS, haciendo el preview MÁS
+> permisivo que stage. Fix: initdb crea el rol de app `<db>` (CONNECT+CREATE en
+> `dev`, dueño del schema) y `DATABASE_URL` de MIGRATE_ONLY apunta a él →
+> objetos de dueño rol-de-app, RLS idéntica a stage. Bonus: el examen a ciegas
+> cazó un bug real en memoria-mishi (crear_lista con null id → migración 0008).
 
 > Diseño, 2026-08-11. Opt-in (`mke preview up <app> <rama> --v2`); NO reemplaza
 > v1. Estado de lo construido: `AI_REPO_STATE.md`.
