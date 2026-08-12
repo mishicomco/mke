@@ -120,24 +120,24 @@ const PREVIEW_HELP = `mke preview — VERBO DEFINITIVO de iteración: rama efím
   vault aún no tiene el escenario 4, arranca SIN lease (warning) para probar
   pod+DB+HMR en vivo.
 
-  mke preview up <app> <rama>      crea la rama local si falta (desde main) + git worktree en
-                                    \`<app>.wt-<rama-slug>\` + push; pide el lease del vault acotado a
-                                    los secretos de mke.preview.yaml; aplica el pod; migra (db:migrate)
-                                    y siembra (db:sembrar) o restaura el espejo. IDEMPOTENTE.
-        --espejo                   en vez de sembrar, restaura datos de STAGE en el SIDECAR (TRUNCATE +
-                                    pg_dump --data-only --disable-triggers excluyendo cada tabla de
-                                    apps/backend/db/tablas-sensibles.txt del repo — si falta, ABORTA)
-        --live                      modo EMBED: vite bajo /live/<app>/ (Studio embebe same-origen)
+  mke preview up <app> <rama>      ESTÁNDAR (v2 desde 2026-08-12): imagen REAL (docker build del
+                                    Dockerfile del repo) + actualizador silencioso del molde
+                                    (/version.json) en vez de clone+install+HMR. Apps convergidas al
+                                    plano de datos nuevo (RLS en migraciones) traen sidecar PostgREST +
+                                    /datos con la puerta. Crea rama+worktree+push, lease del vault,
+                                    aplica el pod y migra (MIGRATE_ONLY). IDEMPOTENTE. Detalle: AI_PREVIEW_V2.md
+        --espejo                   [baja a v1] en vez de solo migrar, restaura datos de STAGE en el
+                                    SIDECAR (TRUNCATE + pg_dump --data-only --disable-triggers
+                                    excluyendo apps/backend/db/tablas-sensibles.txt — si falta, ABORTA)
+        --v1                        fuerza el camino viejo (HMR + db:sembrar). Escape hatch hasta
+                                    hornear SEED_ONLY en el molde; entonces v1 muere.
+        --live                      [baja a v1] modo EMBED: vite bajo /live/<app>/
         --ttl-segundos <n>          TTL del lease (backstop de vida); default del vault
-        --json  --dry-run  --repo-url <url>
-        --v2                        preview v2 (opt-in, 2026-08-11): imagen REAL (docker build del
-                                    Dockerfile del repo) en vez de clone+install en vivo; sin HMR — el
-                                    front se actualiza por el actualizador silencioso del molde
-                                    (/version.json). Mismo ns/host/lease/DNS que v1. Detalle: AI_PREVIEW_V2.md
-  mke preview push <app> <rama> --v2   SOLO v2: detecta qué cambió (git diff) y corre el carril que
-                                    toque — front (~5-10s: vite build local + kubectl cp) y/o back
-                                    (~30-60s: docker build + carga de imagen + set image + rollout +
-                                    MIGRATE_ONLY). v1 no tiene push: usa \`pull\` (HMR ya recoge solo).
+        --json  --dry-run  --repo-url <url>   (--v2 sigue aceptándose como alias no-op)
+  mke preview push <app> <rama>    detecta qué cambió (git diff) y corre el carril que toque —
+                                    front (~5-10s: vite build local + kubectl cp) y/o back
+                                    (~30-60s: docker build + carga + set image + rollout + MIGRATE_ONLY).
+                                    El camino v1 no tiene push: refresca con \`pull\` (HMR recoge solo).
         --json
   mke preview pull <app> <rama>    git pull DENTRO del pod (HMR recoge solo) + renueva el lease
   mke preview estado <app> <rama> rama + estado del pod + lease + host
@@ -359,15 +359,13 @@ async function main() {
       if (flags.help || action === "help") { console.log(PREVIEW_HELP); break; }
       if (action === "up") {
         const [app, rama] = pargs;
-        if (!app || !rama) return fail("uso: mke preview up <app> <rama> [--v2] [--espejo] [--live] [--ttl-segundos n] [--json] [--dry-run] [--repo-url url]");
-        if (flags.v2 === true) {
-          await previewUpV2(app, rama, {
-            json: flags.json === true,
-            dryRun: flags["dry-run"] === true,
-            repoUrl: typeof flags["repo-url"] === "string" ? flags["repo-url"] : undefined,
-            ttlSegundos: typeof flags["ttl-segundos"] === "string" ? Number(flags["ttl-segundos"]) : undefined,
-          });
-        } else {
+        if (!app || !rama) return fail("uso: mke preview up <app> <rama> [--espejo] [--v1] [--ttl-segundos n] [--json] [--dry-run] [--repo-url url]");
+        // v2 (imagen real + actualizador) ES EL ESTÁNDAR desde 2026-08-12: sin
+        // flag. v1 (HMR + siembra/espejo) sobrevive SOLO como escape explícito
+        // hasta hornear SEED_ONLY en el molde: lo piden `--v1`, `--espejo` o
+        // `--live` (features exclusivas de v1). `--v2` queda como alias no-op.
+        const quiereV1 = flags.v1 === true || flags.espejo === true || flags.live === true;
+        if (quiereV1) {
           await previewUp(app, rama, {
             espejo: flags.espejo === true,
             live: flags.live === true,
@@ -376,11 +374,18 @@ async function main() {
             repoUrl: typeof flags["repo-url"] === "string" ? flags["repo-url"] : undefined,
             ttlSegundos: typeof flags["ttl-segundos"] === "string" ? Number(flags["ttl-segundos"]) : undefined,
           });
+        } else {
+          await previewUpV2(app, rama, {
+            json: flags.json === true,
+            dryRun: flags["dry-run"] === true,
+            repoUrl: typeof flags["repo-url"] === "string" ? flags["repo-url"] : undefined,
+            ttlSegundos: typeof flags["ttl-segundos"] === "string" ? Number(flags["ttl-segundos"]) : undefined,
+          });
         }
       } else if (action === "push") {
         const [app, rama] = pargs;
-        if (!app || !rama) return fail("uso: mke preview push <app> <rama> --v2 [--json]  (--v2 obligatorio: v1 usa `pull` para HMR)");
-        if (flags.v2 !== true) return fail("`mke preview push` es SOLO para --v2 (v1 itera con HMR en vivo, sin push — usá `mke preview pull` para refrescar el git del pod)");
+        if (!app || !rama) return fail("uso: mke preview push <app> <rama> [--json]");
+        // push ES v2 por naturaleza (v1 refresca con `pull`/HMR, sin push).
         await previewPushV2(app, rama, { json: flags.json === true });
       } else if (action === "pull") {
         const [app, rama] = pargs;
