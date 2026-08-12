@@ -73,19 +73,28 @@ son las tablas/API, y esas no cambian al subir de escalón.
    cero. Puede incluso re-implementarse como tabla jsonb en tu propio schema,
    mismo motor.
 
-## Decisión PROPUESTA (2026-08-12 — Santi aún no la toma)
+## Decisión CERRADA (2026-08-12, Santi): dos tiers de datos
 
-- **BD-por-artifact desde que declara `esquema.sql`**. El MOTOR nunca se
-  multiplica: postgres-mishi sigue siendo UN pod con N bases lógicas adentro —
-  BD de artifact = un `CREATE DATABASE` más en ese mismo pod, cero RAM extra.
-  Lo único que se multiplica es PostgREST (el traductor HTTP→SQL, ~30-50MB,
-  una instancia solo puede apuntar a UNA BD), y solo para artifacts que
-  declaran esquema. A cambio: aislamiento del engine (la fuga multi-inquilino
-  — riesgo #1 de AI_ARTIFACTS — imposible por construcción), graduación de
-  datos en CERO absoluto (la BD ya era suya) y UNA sola regla para artifact y
-  app. Alternativa descartable: schema-por-artifact en una BD compartida (un
-  solo pod PostgREST) — ahorra pods comprando de vuelta el riesgo #1.
-  Scale-to-zero de los PostgREST si algún día duele (YAGNI hoy).
+**El tier artifact debe escalar a MILES, no a 200** — el costo por-instancia se
+paga solo al graduarse, que es cuando hay negocio que lo justifica. Somos
+nuestros propios inquilinos: el riesgo multi-tenant se acepta con ojos
+abiertos (las fugas se ARREGLAN, no se toleran) a cambio de esa escala.
+
+- **Tier artifact — `postgrest-mishi` (motor de datos centralizado)**: UNA BD
+  `artifacts_mishi` en postgres-mishi + un SCHEMA de Postgres por artifact
+  (el `esquema.sql` se aplica a SU schema) + UN pod PostgREST para todos
+  (`PGRST_DB_SCHEMAS` lista; el schema se elige por header `Accept-Profile`,
+  que la puerta INYECTA derivándolo del Host — sobrevive la ley de
+  artifact-mishi: el inquilino JAMÁS viene de un parámetro del cliente).
+  Artifact nuevo = mke agrega el schema y NOTIFY reload (sin restart). RLS por
+  `sub` para lo privado; frontera entre artifacts = grants de schema + header
+  de la puerta. Un solo pool (el muro de max_connections no existe).
+- **Tier graduado — instancia propia**: BD propia + PostgREST propio
+  (exactamente lo que el milestone 1 montó para block-mishi — una app ES el
+  tier de arriba). Graduar datos = dump del schema a la BD propia, un
+  movimiento conocido de pg_dump.
+- Válvulas si algo duele: scale-to-zero de instancias graduadas dormidas;
+  PgBouncer el día que un pool se quede corto.
 - **PostgREST es plataforma, una instancia por BD**: la app/artifact no escribe
   ni un byte de PostgREST — mke provisiona pod+rol+ruta igual que hoy
   provisiona BD y Secret. La puerta (`pgrst-puerta`) sí es UNA compartida.
