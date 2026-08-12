@@ -21,6 +21,17 @@
 > `dev`, dueño del schema) y `DATABASE_URL` de MIGRATE_ONLY apunta a él →
 > objetos de dueño rol-de-app, RLS idéntica a stage. Bonus: el examen a ciegas
 > cazó un bug real en memoria-mishi (crear_lista con null id → migración 0008).
+>
+> **Ronda 2 (recolor, 2026-08-12):** examen a ciegas LIMPIO (doc suficiente,
+> limpieza real verificada), fronteras 8/8 (incl. anti-escalada de rol),
+> CONCURRENCIA verificada (3 previews de la misma app coexisten sin colisión —
+> roles en sidecar por-pod, ingresses por-rama, middlewares fixtures 1 copia).
+> LÍMITE de fidelidad conocido y ACEPTADO (no bug): la puerta de preview no
+> inyecta `X-Mishi-Permisos` (eso lo hace la flota de stage vía iam-mishi) →
+> `tiene_permiso`/`esAdmin` SIEMPRE false en preview (dir. segura, nunca
+> sobre-otorga). Authz por permiso se prueba en stage. Fix pendiente para
+> cuando Guarda lo pida: inyectar el catálogo de `mke.iam.yaml` como header
+> (espeja el fake iam de stage).
 
 > Diseño, 2026-08-11. Opt-in (`mke preview up <app> <rama> --v2`); NO reemplaza
 > v1. Estado de lo construido: `AI_REPO_STATE.md`.
