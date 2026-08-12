@@ -34,7 +34,7 @@ import { upsertCname, tunnelTarget } from "./cf.js";
 import { cargarImagenes, describeCarga } from "./cargaImagenes.js";
 import { copiarArbolAPod, escribirVersionJson, type DestinoPod } from "./volumenEstatico.js";
 import { run, ok, warn, info, dim } from "./sh.js";
-import { paso, pasoStreamCmd, esperarConLogs } from "./progresoVivo.js";
+import { paso, pasoStreamCmd } from "./progresoVivo.js";
 
 const CTX = PREVIEW.context;
 const NS = "preview";
@@ -57,15 +57,36 @@ export interface PreviewV2PushOpts {
 function frontContainerName(): string { return "front"; }
 function backendContainerName(): string { return "backend"; }
 
+/** ruta interna que SIEMPRE responde 200 desde caddy mismo (no depende del
+ * contenido del volumen `/srv/front`, que está VACÍO hasta el primer carril
+ * front) — el readinessProbe del contenedor `front` pega acá, nunca a `/`:
+ * si probara `/` con el volumen vacío, `try_files` cae a `/index.html`
+ * (ausente) y el pod nunca converge, dejando el `rollout status` colgado
+ * ANTES de que exista la oportunidad de copiar el primer `dist/`. */
+const RUTA_LISTO = "/_mke/listo";
+
 /** Caddyfile del pod v2: sirve `/srv/front` como SPA + proxea /api|/salud|/health al backend real. */
 function caddyfileV2(forma: { frontend: boolean; backend: boolean }): string {
   if (!forma.frontend) {
     return `:${DEV_CADDY_PORT} {\n\thandle {\n\t\treverse_proxy 127.0.0.1:${DEV_BACKEND_PORT}\n\t}\n}\n`;
   }
   if (!forma.backend) {
-    return `:${DEV_CADDY_PORT} {\n\troot * /srv/front\n\tfile_server\n\ttry_files {path} /index.html\n}\n`;
+    return `:${DEV_CADDY_PORT} {
+\thandle ${RUTA_LISTO} {
+\t\trespond "ok" 200
+\t}
+\thandle {
+\t\troot * /srv/front
+\t\tfile_server
+\t\ttry_files {path} /index.html
+\t}
+}
+`;
   }
   return `:${DEV_CADDY_PORT} {
+\thandle ${RUTA_LISTO} {
+\t\trespond "ok" 200
+\t}
 \thandle /api/* {
 \t\treverse_proxy 127.0.0.1:${DEV_BACKEND_PORT}
 \t}
@@ -161,7 +182,7 @@ export function manifiestosPreviewV2(inp: ManifiestosV2Input): Record<string, un
       image: "caddy:2-alpine",
       command: ["caddy", "run", "--config", "/mke/Caddyfile", "--adapter", "caddyfile"],
       ports: [{ containerPort: DEV_CADDY_PORT }],
-      readinessProbe: { httpGet: { path: "/", port: DEV_CADDY_PORT }, periodSeconds: 3, failureThreshold: 60 },
+      readinessProbe: { httpGet: { path: RUTA_LISTO, port: DEV_CADDY_PORT }, periodSeconds: 3, failureThreshold: 60 },
       volumeMounts: [
         { name: "front", mountPath: "/srv/front" },
         { name: "scripts", mountPath: "/mke" },
@@ -358,13 +379,19 @@ export async function previewUpV2(app: string, rama: string, opts: PreviewV2UpOp
   console.log(ok(apply.stdout.split("\n").join(" · ")));
 
   if (!opts.json) console.log(info("esperando el pod (imagen real, sin clone/install)…"));
-  const rollout = await esperarConLogs(
-    run("kubectl", ["--context", CTX, "-n", NS, "rollout", "status", `deploy/${name}`, "--timeout=300s"]),
-    { cmd: "kubectl", args: ["--context", CTX, "-n", NS, "logs", "-f", `deploy/${name}`, "-c", backendContainerName(), "--pod-running-timeout=20s"] },
+  // OJO: NO usar `esperarConLogs` siguiendo el contenedor `backend` — a
+  // diferencia del `initContainer preparar` de v1 (que TERMINA solo, cerrando
+  // el stream de `kubectl logs -f`), `backend` es un proceso de vida larga:
+  // `-f` nunca cierra y el narrador colgaría la función para siempre incluso
+  // después de que el rollout ya resolvió (bache real, encontrado en el E2E).
+  // `pasoStreamCmd` sobre el propio `rollout status` es auto-terminante.
+  const rolloutCode = await pasoStreamCmd(
+    `rollout status deploy/${name}`,
+    "kubectl",
+    ["--context", CTX, "-n", NS, "rollout", "status", `deploy/${name}`, "--timeout=300s"],
     { json: opts.json },
   );
-  const listo = rollout.code === 0;
-  console.log(listo ? ok(rollout.stdout.split("\n").pop() ?? "pod listo") : warn(`el pod no convergió aún: ${rollout.stderr || rollout.stdout}`));
+  const listo = rolloutCode === 0;
   if (!listo && !opts.json) await diagnosticarPodNoListo(name);
 
   try {
