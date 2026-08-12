@@ -1,5 +1,14 @@
 # platform/postgrest — el plano de datos del estándar nuevo (AI_GRADUACION.md)
 
+> ACTUALIZACIÓN 2026-08-12 (misma noche): nació **`flota/` (postgrest-flota)**
+> y ES el hogar default de todos los inquilinos. El Deployment dedicado
+> `block-mishi-pgrst` se BORRÓ (primer pod ahorrado): `/datos` de block-stage
+> rutea a la flota, que lanza el proceso del inquilino al vuelo (315ms medido)
+> y mata los idle (10 min). Config de inquilinos = Secret
+> `postgrest-flota-config` (inquilinos.json + jwks.json), lo escribe mke.
+> Lo de abajo documenta el milestone 1 (instancia dedicada) — sigue siendo
+> válido como el tier "perilla dedicada" y como referencia del SQL/RLS.
+
 > Milestone 1 VIVO en stage (2026-08-12), aplicado A MANO con block-mishi como
 > primer caso. Destino: verbo `mke` que genere/aplique esto por app. Nada de
 > esto toca prod ni el backend Fastify existente (el rol dueño bypassa RLS).
