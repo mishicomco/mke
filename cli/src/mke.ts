@@ -8,6 +8,7 @@ import { ensureDns } from "./dns.js";
 import { doctor } from "./doctor.js";
 import { deploy } from "./deploy.js";
 import { publish } from "./publish.js";
+import { warn, dim } from "./sh.js";
 import { rollout } from "./rollout.js";
 import { dbProvision } from "./dbProvision.js";
 import { appBorrar } from "./appBorrar.js";
@@ -366,6 +367,11 @@ async function main() {
         // `--live` (features exclusivas de v1). `--v2` queda como alias no-op.
         const quiereV1 = flags.v1 === true || flags.espejo === true || flags.live === true;
         if (quiereV1) {
+          const motivo = flags.v1 === true ? "--v1" : flags.espejo === true ? "--espejo (siembra/espejo de datos)" : "--live (embed)";
+          console.log(warn(`⚠ preview v1 (LEGADO, en camino a MORIR) — estás acá por ${motivo}.`));
+          console.log(dim("  v1 corre clone+install+HMR (dev mode, código distinto al de prod). v2 (el default, sin flag)"));
+          console.log(dim("  usa la imagen REAL. Lo ÚNICO que v1 hace y v2 aún no: sembrar/espejar datos. Si no"));
+          console.log(dim("  necesitás datos precargados, quitá el flag y usá v2. Rastreo del cierre de v1: AI_PREVIEW_V2.md."));
           await previewUp(app, rama, {
             espejo: flags.espejo === true,
             live: flags.live === true,
