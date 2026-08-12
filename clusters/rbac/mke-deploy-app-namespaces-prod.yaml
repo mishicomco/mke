@@ -65,6 +65,12 @@ rules:
   - apiGroups: ["traefik.io"]
     resources: ["middlewares", "ingressroutes"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "apply"]
+  # PVCs: static-mishi (app plataforma) declara `static-www` en su overlay;
+  # su pipeline delgado hace apply -k con este SA (fricción 2026-08-11 en
+  # stage; se empareja prod ANTES de que el primer tag v* de static la pise).
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "create", "patch", "apply"]
   # Diagnóstico.
   - apiGroups: [""]
     resources: ["events"]

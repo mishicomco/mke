@@ -1,0 +1,53 @@
+# Role de MENOR PRIVILEGIO para la LIMPIEZA de previews desde CI (workflow
+# on:delete de cada app → `mke preview down`). Vive en el cluster del gamer
+# (ns `preview`).
+#
+# Causa raíz (2026-08-12): el cleanup corría "verde" pero el SA mke-ci/mke-deploy
+# no tenía NINGÚN Role en `preview` → Forbidden en el delete-por-labels y pods
+# huérfanos. `mke preview down` borra por selector
+# (`kubectl delete deployment,service,ingress,secret,configmap -l mke.preview/...`),
+# y borrar por label exige LIST además de DELETE.
+#
+# Nota sobre `list secrets`: en los ns de apps se niega a propósito (barrido de
+# `<app>-secrets`). Acá se concede porque los Secrets de `preview` son SOLO los
+# efímeros del lease (mueren con el pod y el TTL del vault los revoca) — no hay
+# credenciales durables que barrer. Si algún día un secret durable vive en
+# `preview`, ESO es el bug.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mke-deploy
+  namespace: preview
+  labels:
+    app.kubernetes.io/part-of: mke
+rules:
+  # leaseIdDe: get deploy -l selector (list) + borrar el bundle por labels.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "secrets", "configmaps"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "delete"]
+  # Diagnóstico (doctor/espera de borrado).
+  - apiGroups: [""]
+    resources: ["pods", "events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mke-deploy
+  namespace: preview
+  labels:
+    app.kubernetes.io/part-of: mke
+subjects:
+  - kind: ServiceAccount
+    name: mke-deploy
+    namespace: mke-ci
+roleRef:
+  kind: Role
+  name: mke-deploy
+  apiGroup: rbac.authorization.k8s.io
