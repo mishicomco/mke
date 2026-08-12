@@ -1,0 +1,38 @@
+# postgrest-flota (stage). La config de inquilinos vive en el Secret
+# `postgrest-flota-config` (claves inquilinos.json + jwks.json), que escribe
+# mke — acá NO se declara (contiene credenciales).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgrest-flota
+  namespace: stage
+  labels: { app: postgrest-flota, app.kubernetes.io/part-of: mke-postgrest }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: postgrest-flota }
+  template:
+    metadata:
+      labels: { app: postgrest-flota }
+    spec:
+      containers:
+        - name: flota
+          image: k3d-registry-mishi:5111/postgrest-flota:v1
+          ports: [{ containerPort: 3000 }]
+          volumeMounts:
+            - { name: config, mountPath: /config, readOnly: true }
+          readinessProbe:
+            httpGet: { path: /readyz, port: 3000 }
+      volumes:
+        - name: config
+          secret: { secretName: postgrest-flota-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgrest-flota
+  namespace: stage
+  labels: { app.kubernetes.io/part-of: mke-postgrest }
+spec:
+  selector: { app: postgrest-flota }
+  ports: [{ port: 3000, targetPort: 3000 }]
