@@ -42,6 +42,51 @@ function cargarConfig() {
 
 const jwks = readFileSync(JWKS_PATH, "utf8");
 
+// ── Autorización iam-mishi (opcional por inquilino) ─────────────────────────
+// Ley del ecosistema: las apps chequean PERMISOS, nunca roles. Si el inquilino
+// declara `iam: { app, token, permisos: [...] }` en su config, cada request
+// consulta POST /v1/check (token DE ESE inquilino — token-por-app, sin
+// súper-token compartido; cache 60 s por email|app) y se inyecta
+// `X-Mishi-Permisos: <concedidos separados por coma>` al request upstream —
+// las políticas RLS lo leen vía request.headers de PostgREST. Fail-closed:
+// iam caído o token malo = CERO permisos (la sesión y el RLS por sub siguen).
+// El header entrante SIEMPRE se pisa: el cliente jamás puede traer el suyo.
+const IAM_URL = process.env.IAM_URL ?? "http://iam-mishi.stage.svc.cluster.local";
+const iamCache = new Map(); // email|app -> { permisos, hasta }
+
+function emailDelJwt(auth) {
+  try {
+    const payload = JSON.parse(Buffer.from(String(auth).split(" ")[1].split(".")[1], "base64url").toString());
+    return payload?.usuario?.email ?? payload?.email ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function permisosDe(cfgIam, auth) {
+  const email = emailDelJwt(auth);
+  if (!email) return "";
+  const llave = `${email}|${cfgIam.app}`;
+  const hit = iamCache.get(llave);
+  if (hit && hit.hasta > Date.now()) return hit.permisos;
+  let permisos = "";
+  try {
+    const r = await fetch(`${IAM_URL}/v1/check`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${cfgIam.token}` },
+      body: JSON.stringify({ principal: email, app: cfgIam.app, permisos: cfgIam.permisos }),
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!r.ok) throw new Error(`iam ${r.status}`);
+    const { resultados } = await r.json();
+    permisos = cfgIam.permisos.filter((p) => resultados?.[p] === true).join(",");
+    iamCache.set(llave, { permisos, hasta: Date.now() + 60_000 });
+  } catch (e) {
+    console.error(`iam check falló para ${cfgIam.app} (fail-closed, sin cache): ${e.message}`);
+  }
+  return permisos;
+}
+
 // host -> { port, child, listo: Promise, ultimoUso }
 const procesos = new Map();
 let siguientePuerto = BASE_PORT;
@@ -126,8 +171,14 @@ createServer(async (req, res) => {
     res.writeHead(503, { "content-type": "application/json" });
     return res.end(JSON.stringify({ error: "el motor de datos no arrancó; reintenta" }));
   }
+  const headers = { ...req.headers, host: "127.0.0.1" };
+  delete headers["x-mishi-permisos"]; // jamás se acepta del cliente
+  const cfgIam = inquilinos[host].iam;
+  if (cfgIam?.app && cfgIam?.token && cfgIam?.permisos?.length) {
+    headers["x-mishi-permisos"] = await permisosDe(cfgIam, headers.authorization);
+  }
   const upstream = httpRequest(
-    { host: "127.0.0.1", port: p.port, path: req.url, method: req.method, headers: { ...req.headers, host: "127.0.0.1" } },
+    { host: "127.0.0.1", port: p.port, path: req.url, method: req.method, headers },
     (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); },
   );
   upstream.on("error", () => {

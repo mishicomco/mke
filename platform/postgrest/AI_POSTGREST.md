@@ -45,6 +45,26 @@
   → 200 `[]` (BD stage vacía: dato correcto). `/salud` de la app vieja intacto.
 - `/rpc/guardar_partida` sin sesión → 403 `28000 "sin sesión"`.
 
+## Autorización iam-mishi (flota v2, 2026-08-12)
+
+Ley del ecosistema: permisos, nunca roles. Inquilino que declara
+`iam: { app, token, permisos: [...] }` en `inquilinos.json` → la flota consulta
+`POST /v1/check` de iam-mishi con el token DE ESE inquilino (token-por-app, sin
+súper-token; cache 60s por email|app; fail-closed a cero permisos) e inyecta
+`X-Mishi-Permisos` al request (el del cliente se pisa SIEMPRE). En SQL, una
+política lo lee así:
+
+```sql
+-- helper por app (dueño = rol de la app):
+CREATE FUNCTION tiene_permiso(p text) RETURNS boolean LANGUAGE sql STABLE AS $$
+  SELECT p = ANY(string_to_array(
+    coalesce(current_setting('request.headers', true)::json->>'x-mishi-permisos',''), ','))
+$$;
+-- CREATE POLICY moderar ON cosa FOR DELETE USING (tiene_permiso('app.cosa.moderar'));
+```
+
+Block no lo usa (todo es RLS por sub); el primer caso real será Guarda.
+
 ## Deuda consciente
 
 - Aplicación fue a mano: falta el verbo mke (generar por app: rol+secret+pod
