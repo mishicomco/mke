@@ -3,6 +3,40 @@
 > Diseño, 2026-08-11. Opt-in (`mke preview up <app> <rama> --v2`); NO reemplaza
 > v1. Estado de lo construido: `AI_REPO_STATE.md`.
 
+## E2E real (2026-08-11, dropshipping-mishi, cluster mke-gamer ns preview)
+
+| camino | tiempo medido | qué hizo |
+|---|---|---|
+| `up --v2` (primera vez, imagen ya en caché de docker) | 40.3s | worktree+push, lease, docker build (24.2s, capas cacheadas), push al registry local, apply del pod, rollout, MIGRATE_ONLY, turbo build front (1.6s, caché tibia) + cp |
+| `push --v2` carril front (cambio en `apps/frontend`) | 11.4s | turbo build (contract+frontend, caché fría por el cambio) + kubectl cp + version.json |
+| `push --v2` carril back (cambio en `apps/backend`) | 32.7s | docker build (25s, capas de deps cacheadas) + push al registry + set image + rollout + MIGRATE_ONLY |
+
+Verificado por curl: `/` 200, `/api/iam/yo` 200 `{"authenticated":false}` (fake
+IAM del molde respondiendo, sin sesión), `/salud` 200 `{"ok":true,"dependencias":
+{"db":"ok"}}`, `/version.json` pasó de `29f00a1` → `52a4d0c` (front) →
+`d1a79c4` (back) seleccionos con el sha de cada commit, sin acción del navegador
+más que el poll del actualizador. `mke preview down --forzar` limpió lease +
+bundle k8s + CNAME + worktree + ramas local/remota — mismo código de v1,
+sin cambios.
+
+Tres bugs reales encontrados y corregidos EN el E2E (no en el diseño de
+escritorio) — documentados en el historial de commits de `previewV2.ts`:
+1. `esperarConLogs` siguiendo el contenedor `backend` (vida larga) colgaba
+   `up --v2` para siempre — a diferencia del `initContainer preparar` de v1,
+   que termina solo y cierra el stream de `kubectl logs -f`.
+2. El readinessProbe del contenedor `front` pegaba a `/` con `/srv/front`
+   vacío (el primer `cp` corre DESPUÉS del rollout) → 404 → el pod nunca
+   convergía. Ruta interna `/_mke/listo` que Caddy responde 200 sin tocar el
+   volumen.
+3. El carril front necesita `npm ci` (worktree pelado, sin `node_modules`) y
+   `turbo run build --filter=./apps/frontend` en vez de `npm run build -w
+   apps/frontend` a secas — el frontend importa `@<app>/contract` y ese
+   workspace necesita SU build primero (mismo grafo que ya usa el Dockerfile
+   real). El caché de turbo vive en `tmpdir()`, no en el repo (un
+   `--cache-dir` relativo ensuciaba el worktree con archivos sin trackear).
+4. `kubectl cp` (a diferencia de `kubectl exec`) NO acepta `deploy/<nombre>`
+   como destino — hace falta resolver el pod real por selector primero.
+
 ## El problema
 
 `mke preview up` (v1) clona el repo y corre `tsx watch`/`vite` DENTRO del pod:
