@@ -25,6 +25,10 @@ export interface PreviewManifest {
    * Ej. `/vnc/: 6080` proxya el noVNC del pod por el MISMO host del preview
    * (handle_path: el prefijo se recorta antes de proxear). */
   rutas?: Record<string, number>;
+  /** `sembrar: true` → tras migrar, el preview corre SEED_ONLY (imagen real)
+   * para precargar datos de demo. Opt-in: solo apps con seed real lo declaran
+   * (su imagen debe traer el modo SEED_ONLY del molde). Default false. */
+  sembrar?: boolean;
 }
 
 /** manifiesto vacío (Contrato 2: "Archivo ausente ⇒ arranca sin secretos ni config extra"). */
@@ -48,6 +52,7 @@ export function parsePreviewManifest(text: string, appEsperada?: string): Previe
   const lineasCrudas = text.split(/\r?\n/);
   let app: string | undefined;
   let imagen: string | undefined;
+  let sembrar = false;
   const secretos: string[] = [];
   const config: Record<string, string> = {};
   const rutas: Record<string, number> = {};
@@ -71,6 +76,11 @@ export function parsePreviewManifest(text: string, appEsperada?: string): Previe
         if (!valor.trim()) throw new Error("mke.preview.yaml: 'imagen' vacía (o quita la clave para usar el runner genérico)");
         imagen = valor.trim();
         seccion = null;
+      } else if (clave === "sembrar") {
+        const v = valor.trim().toLowerCase();
+        if (v !== "true" && v !== "false") throw new Error(`mke.preview.yaml: 'sembrar' debe ser true|false, no "${valor}"`);
+        sembrar = v === "true";
+        seccion = null;
       } else if (clave === "secretos") {
         seccion = "secretos";
       } else if (clave === "config") {
@@ -78,7 +88,7 @@ export function parsePreviewManifest(text: string, appEsperada?: string): Previe
       } else if (clave === "rutas") {
         seccion = "rutas";
       } else {
-        throw new Error(`mke.preview.yaml: clave de nivel raíz desconocida "${clave}" (esperado: app|imagen|secretos|config|rutas)`);
+        throw new Error(`mke.preview.yaml: clave de nivel raíz desconocida "${clave}" (esperado: app|imagen|sembrar|secretos|config|rutas)`);
       }
       continue;
     }
@@ -124,5 +134,6 @@ export function parsePreviewManifest(text: string, appEsperada?: string): Previe
     config,
     ...(imagen ? { imagen } : {}),
     ...(Object.keys(rutas).length ? { rutas } : {}),
+    ...(sembrar ? { sembrar } : {}),
   };
 }

@@ -494,6 +494,24 @@ async function migrarV2(name: string, opts: { json?: boolean }): Promise<boolean
   return code === 0;
 }
 
+/** SEED_ONLY en la imagen real (gemelo de migrarV2). Solo si la app declaró
+ * `sembrar: true` en mke.preview.yaml — reemplaza el `db:sembrar` de v1, que no
+ * existía en la imagen de prod. PREVIEW_MODE=true ya está en el env del pod
+ * (backendEnv), así que el guard fail-closed de runSeed pasa. Si la imagen es
+ * vieja (sin el modo SEED_ONLY del molde) el segundo `node dist/index.js`
+ * intenta levantar el server y choca con EADDRINUSE → sale != 0 → warning
+ * suave, no cuelga. */
+async function sembrarV2(name: string, opts: { json?: boolean }): Promise<boolean> {
+  const code = await pasoStreamCmd(
+    "sembrando (SEED_ONLY=true, imagen real) dentro del pod",
+    "kubectl",
+    ["--context", CTX, "-n", NS, "exec", `deploy/${name}`, "-c", backendContainerName(), "--",
+      "sh", "-c", "cd /app && SEED_ONLY=true node dist/index.js"],
+    { json: opts.json },
+  );
+  return code === 0;
+}
+
 // ─── up --v2 ──────────────────────────────────────────────────────────────────
 
 export async function previewUpV2(app: string, rama: string, opts: PreviewV2UpOpts): Promise<void> {
@@ -592,6 +610,9 @@ export async function previewUpV2(app: string, rama: string, opts: PreviewV2UpOp
 
   if (listo && forma.backend) {
     if (!(await migrarV2(name, { json: opts.json })) && !opts.json) console.log(warn("MIGRATE_ONLY falló (sigo)"));
+    if (manifiesto.sembrar) {
+      if (!(await sembrarV2(name, { json: opts.json })) && !opts.json) console.log(warn("SEED_ONLY falló (sigo) — ¿imagen sin el modo SEED_ONLY del molde? rebuildeá o quitá `sembrar: true`"));
+    }
     if (datos) await recargarSchemaPostgrest(name, { json: opts.json });
   }
 
