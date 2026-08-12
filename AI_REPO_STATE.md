@@ -59,3 +59,12 @@ curl -sS -o /dev/null -w "%{http_code}\n" https://hello.mishi.com.co
 - **MeshCentral admins/credenciales** — gestionados por la skill `mesh-central-admin` (passwords en GPG, nunca en repo).
 - **Deploy** — skill `mke-deploy`.
 - Meta CI/CD del ecosistema: loop cerrado con runner self-hosted (build local → k3d import → apply); ver `../CLAUDE.md`.
+
+## Preview v2 (2026-08-11, en main — opt-in)
+
+- `mke preview up|push <app> <rama> --v2`: pod con la IMAGEN REAL + canal de
+  updates del actualizador del molde (carril front ~11s sin Docker vía kubectl
+  cp + version.json; carril back ~33s build cacheado + registry local). Motor
+  compartido `cli/src/volumenEstatico.ts` (plan: converger `mke artifact
+  publicar` a él). Diseño, números E2E y decisiones abiertas (db:sembrar/
+  --espejo no portados; matar v1): `AI_PREVIEW_V2.md`.
