@@ -315,8 +315,13 @@ async function buildFrontend(wt: string, opts: { json?: boolean }): Promise<stri
   return code === 0 && existsSync(dist) ? dist : null;
 }
 
-function destinoPod(name: string, contenedor: string): DestinoPod {
-  return { context: CTX, namespace: NS, recurso: `deploy/${name}`, contenedor };
+/** `kubectl cp` NO acepta `deploy/<nombre>` como target (a diferencia de
+ * `kubectl exec`) — solo un pod real. Resuelve el pod vivo del Deployment. */
+async function destinoPod(name: string, contenedor: string): Promise<DestinoPod | null> {
+  const r = await run("kubectl", ["--context", CTX, "-n", NS, "get", "pod", "-l", `app=${name}`, "-o", "jsonpath={.items[0].metadata.name}"]);
+  const pod = r.stdout.trim();
+  if (r.code !== 0 || !pod) return null;
+  return { context: CTX, namespace: NS, recurso: pod, contenedor };
 }
 
 async function migrarV2(name: string, opts: { json?: boolean }): Promise<boolean> {
@@ -428,10 +433,14 @@ export async function previewUpV2(app: string, rama: string, opts: PreviewV2UpOp
     const tf0 = Date.now();
     const dist = await buildFrontend(wt, { json: opts.json });
     if (dist) {
-      const dp = destinoPod(name, frontContainerName());
-      const cp = await paso("kubectl cp dist/ → volumen del contenedor front", () => copiarArbolAPod(dp, dist, "/srv/front"), { json: opts.json });
-      if (cp.code === 0) await escribirVersionJson(dp, "/srv/front", sha);
-      else if (!opts.json) console.log(warn(`cp del front falló: ${cp.stderr || cp.stdout}`));
+      const dp = await destinoPod(name, frontContainerName());
+      if (!dp) {
+        if (!opts.json) console.log(warn("no encontré el pod vivo del contenedor front — el cp queda para el próximo `preview push --v2`"));
+      } else {
+        const cp = await paso("kubectl cp dist/ → volumen del contenedor front", () => copiarArbolAPod(dp, dist, "/srv/front"), { json: opts.json });
+        if (cp.code === 0) await escribirVersionJson(dp, "/srv/front", sha);
+        else if (!opts.json) console.log(warn(`cp del front falló: ${cp.stderr || cp.stdout}`));
+      }
     } else if (!opts.json) {
       console.log(warn("vite build falló — el pod queda sin front hasta el próximo `preview push --v2`"));
     }
@@ -496,7 +505,8 @@ export async function previewPushV2(app: string, rama: string, opts: PreviewV2Pu
     const tf0 = Date.now();
     const dist = await buildFrontend(wt, { json: opts.json });
     if (!dist) throw new Error("vite build falló");
-    const dp = destinoPod(name, frontContainerName());
+    const dp = await destinoPod(name, frontContainerName());
+    if (!dp) throw new Error(`no encontré el pod vivo de ${name} (¿deploy caído?)`);
     const cp = await paso("kubectl cp dist/ → volumen del contenedor front", () => copiarArbolAPod(dp, dist, "/srv/front"), { json: opts.json });
     if (cp.code !== 0) throw new Error(`cp del front falló: ${cp.stderr || cp.stdout}`);
     await escribirVersionJson(dp, "/srv/front", sha);
