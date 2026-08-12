@@ -73,28 +73,34 @@ son las tablas/API, y esas no cambian al subir de escalón.
    cero. Puede incluso re-implementarse como tabla jsonb en tu propio schema,
    mismo motor.
 
-## Decisión CERRADA (2026-08-12, Santi): dos tiers de datos
+## Decisión CERRADA (2026-08-12, Santi): BD por inquilino + flota de procesos
 
-**El tier artifact debe escalar a MILES, no a 200** — el costo por-instancia se
-paga solo al graduarse, que es cuando hay negocio que lo justifica. Somos
-nuestros propios inquilinos: el riesgo multi-tenant se acepta con ojos
-abiertos (las fugas se ARREGLAN, no se toleran) a cambio de esa escala.
+**Una sola regla en todo el ecosistema: BD lógica propia por app Y por
+artifact** (motor único postgres-mishi — el engine jamás se multiplica).
+Aislamiento del engine (fuga entre inquilinos imposible por construcción) y
+graduación de datos en CERO absoluto (la BD ya era suya). Y para que el techo
+no sean ~200 inquilinos:
 
-- **Tier artifact — `postgrest-mishi` (motor de datos centralizado)**: UNA BD
-  `artifacts_mishi` en postgres-mishi + un SCHEMA de Postgres por artifact
-  (el `esquema.sql` se aplica a SU schema) + UN pod PostgREST para todos
-  (`PGRST_DB_SCHEMAS` lista; el schema se elige por header `Accept-Profile`,
-  que la puerta INYECTA derivándolo del Host — sobrevive la ley de
-  artifact-mishi: el inquilino JAMÁS viene de un parámetro del cliente).
-  Artifact nuevo = mke agrega el schema y NOTIFY reload (sin restart). RLS por
-  `sub` para lo privado; frontera entre artifacts = grants de schema + header
-  de la puerta. Un solo pool (el muro de max_connections no existe).
-- **Tier graduado — instancia propia**: BD propia + PostgREST propio
-  (exactamente lo que el milestone 1 montó para block-mishi — una app ES el
-  tier de arriba). Graduar datos = dump del schema a la BD propia, un
-  movimiento conocido de pg_dump.
-- Válvulas si algo duele: scale-to-zero de instancias graduadas dormidas;
-  PgBouncer el día que un pool se quede corto.
+- **Tier artifact — `postgrest-mishi`, la FLOTA**: UN pod con un supervisor
+  chico (~150-200 líneas, pieza nuestra) que orquesta el binario PostgREST SIN
+  tocarlo: rutea por Host; proceso vivo → pasa; sin proceso → lo LANZA en <1s
+  apuntando a la BD de ESE artifact; mata los que llevan ~10 min sin tráfico.
+  Scale-to-zero a nivel de PROCESO, sin KEDA: la RAM/conexiones las pagan solo
+  los artifacts activos A LA VEZ; miles de artifacts totales en un pod. Costo:
+  1-2 días de plataforma + cold start ~1s en el primer request de un dormido
+  (aceptable para prototipos). Idea anotada como posible open source:
+  cerebro-santi/postgrest-flota-opensource.md (patrón privado en
+  Supabase/DeepLake, nadie lo ha empaquetado abierto — validado 2026-08-12).
+- **Tier graduado — instancia propia siempre viva**: BD propia + Deployment
+  PostgREST propio (exactamente lo que el milestone 1 montó para block-mishi —
+  una app ES el tier de arriba). Graduar = sacar el artifact de la flota a su
+  Deployment: una línea de ruteo, mismo binario, misma BD, cero movimiento de
+  datos y sin cold start.
+- Válvula si algo duele: PgBouncer el día que las conexiones de los ACTIVOS
+  se queden cortas.
+- Descartado: schema-por-artifact en BD compartida (frontera blanda — pagaba
+  un problema de RAM hipotético comprando de vuelta el riesgo de fuga) y
+  parchear PostgREST para multi-DB (fork Haskell eterno).
 - **PostgREST es plataforma, una instancia por BD**: la app/artifact no escribe
   ni un byte de PostgREST — mke provisiona pod+rol+ruta igual que hoy
   provisiona BD y Secret. La puerta (`pgrst-puerta`) sí es UNA compartida.
