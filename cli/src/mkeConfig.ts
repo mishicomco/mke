@@ -208,6 +208,13 @@ export const VAULT = {
   emisorTokenSecret: "vault-mishi-emisor-token",
   /** identidad del runner que MATERIALIZA los Secrets k8s (lee ns de apps; escribe solo DATABASE_URL__*). */
   deployIdentidad: "mke-runner-deploy",
+  /** identidad humana que opera secretos a diario (tipo `humano`); `mke app init`
+   * le asegura grant leer+escribir sobre el ns de CADA app que nace, para que
+   * `vault-mishi set <app>/ALGO__env` nunca vuelva a pegar 403 al primer uso
+   * (post-mortem 2026-08-11: sin este grant el atajo fue guardar el secreto en
+   * el ns de OTRA app — deuda invisible). Override con VAULT_OPERADOR_IDENTIDAD
+   * si algún día opera otro humano. */
+  operadorIdentidad: process.env.VAULT_OPERADOR_IDENTIDAD ?? "santi-cli",
   /** archivo 0600 con el token de esa identidad. NUNCA en el repo ni en logs. */
   deployTokenFile:
     process.env.VAULT_DEPLOY_TOKEN_FILE ?? join(homedir(), ".config", "mishi", "vault-mke.token"),

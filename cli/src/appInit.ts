@@ -60,6 +60,7 @@ export async function appInit(app: string, env: string, opts: AppInitOpts): Prom
     console.log(`  1. BD+rol \`${appSnake}\` en postgres-mishi (${dbNs}, ${execContext(dbNs)}/${POD})`);
     console.log(`     - CREATE ROLE/DATABASE si no existen, password aleatorio (openssl rand -base64 32)`);
     console.log(`     - ALTER SCHEMA public OWNER TO ${appSnake}; ALTER DEFAULT PRIVILEGES → GRANT ALL a ${appSnake}`);
+    console.log(`     grants del vault sobre el ns \`${app}\`: emisor mke-runner (emitir), mke-runner-deploy (leer + escribir DATABASE_URL__*), humano ${VAULT.operadorIdentidad} (leer + escribir)`);
     console.log(`  2. vault-mishi set ${secretNameDb}  (PUT versionado al vault, nunca se imprime)`);
     console.log(`  3. namespace \`${spec.namespace}\` (${spec.context}) — crear si no existe`);
     console.log(`     Secret k8s \`${k8sSecretName}\` con DATABASE_URL + SESSION_SECRET (aleatorio)`);
@@ -116,6 +117,20 @@ export async function appInit(app: string, env: string, opts: AppInitOpts): Prom
     console.log(ok(`grants de deploy del vault asegurados para ${app} (leer + escribir DATABASE_URL__*)`));
   } else {
     console.log(warn(`grant de deploy del vault falló (sigo; re-corre con: kubectl --context ${VAULT.podContext} -n ${VAULT.podNamespace} exec deploy/vault-mishi -- node /app/dist/scripts/grantDeploy.js mke-runner-deploy ${app}): ${(grantDeploy.stderr || grantDeploy.stdout).split("\n")[0]}`));
+  }
+  //   - humano `VAULT.operadorIdentidad` (santi-cli por defecto): leer+escribir
+  //     TODO el ns. Sin esto el primer `vault-mishi set <app>/ALGO__env` de una
+  //     app recien nacida pega 403 sin_permiso (post-mortem 2026-08-11).
+  const grantHumano = await run("kubectl", [
+    "--context", VAULT.podContext, "-n", VAULT.podNamespace,
+    "exec", "deploy/vault-mishi", "--",
+    "node", "/app/dist/scripts/grantHumano.js", VAULT.operadorIdentidad, app,
+  ]);
+  if (grantHumano.code === 0) {
+    steps.push({ name: `grant vault (humano ${VAULT.operadorIdentidad} → ${app})`, already: false });
+    console.log(ok(`grant del operador humano asegurado para ${app} (leer + escribir)`));
+  } else {
+    console.log(warn(`grant del operador humano falló (sigo; re-corre con: kubectl --context ${VAULT.podContext} -n ${VAULT.podNamespace} exec deploy/vault-mishi -- node /app/dist/scripts/grantHumano.js ${VAULT.operadorIdentidad} ${app}): ${(grantHumano.stderr || grantHumano.stdout).split("\n")[0]}`));
   }
 
   // 3) DATABASE_URL al vault (nunca por stdout). Reporta la verdad: si el vault
