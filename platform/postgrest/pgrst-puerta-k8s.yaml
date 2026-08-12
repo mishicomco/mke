@@ -1,0 +1,69 @@
+# pgrst-puerta (stage) + ruteo /datos del host block-stage → PostgREST.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgrst-puerta
+  namespace: stage
+  labels: { app: pgrst-puerta, app.kubernetes.io/part-of: mke-postgrest }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: pgrst-puerta }
+  template:
+    metadata:
+      labels: { app: pgrst-puerta }
+    spec:
+      containers:
+        - name: puerta
+          image: k3d-registry-mishi:5111/pgrst-puerta:v1
+          ports: [{ containerPort: 3000 }]
+          readinessProbe:
+            httpGet: { path: /readyz, port: 3000 }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgrst-puerta
+  namespace: stage
+  labels: { app.kubernetes.io/part-of: mke-postgrest }
+spec:
+  selector: { app: pgrst-puerta }
+  ports: [{ port: 3000, targetPort: 3000 }]
+---
+# ForwardAuth: valida la cookie y COPIA el Authorization al request upstream.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: pgrst-puerta
+  namespace: stage
+spec:
+  forwardAuth:
+    address: http://pgrst-puerta.stage.svc.cluster.local:3000/
+    authResponseHeaders: ["Authorization"]
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: pgrst-strip-datos
+  namespace: stage
+spec:
+  stripPrefix:
+    prefixes: ["/datos"]
+---
+# /datos del host de block-stage → PostgREST (gana por longitud de regla a la
+# ruta del ingress del host).
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: block-mishi-datos
+  namespace: stage
+spec:
+  entryPoints: ["web", "websecure"]
+  routes:
+    - kind: Rule
+      match: Host(`block-stage.mishi.com.co`) && PathPrefix(`/datos`)
+      middlewares:
+        - { name: pgrst-puerta, namespace: stage }
+        - { name: pgrst-strip-datos, namespace: stage }
+      services:
+        - { name: block-mishi-pgrst, namespace: stage, port: 3000 }
