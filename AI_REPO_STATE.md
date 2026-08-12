@@ -74,11 +74,16 @@ curl -sS -o /dev/null -w "%{http_code}\n" https://hello.mishi.com.co
   por RLS), y RBAC preview aplicado por código (se aplicó a mano:
   `clusters/rbac/mke-deploy-preview.yaml` — fix de los pods preview huérfanos).
 
-## Preview v2 (2026-08-11, en main — opt-in)
+## Preview v2 = EL ESTÁNDAR (2026-08-12, sin flag)
 
-- `mke preview up|push <app> <rama> --v2`: pod con la IMAGEN REAL + canal de
-  updates del actualizador del molde (carril front ~11s sin Docker vía kubectl
-  cp + version.json; carril back ~33s build cacheado + registry local). Motor
-  compartido `cli/src/volumenEstatico.ts` (plan: converger `mke artifact
-  publicar` a él). Diseño, números E2E y decisiones abiertas (db:sembrar/
-  --espejo no portados; matar v1): `AI_PREVIEW_V2.md`.
+- `mke preview up|push <app> <rama>` (SIN `--v2`) corre v2: pod con la IMAGEN
+  REAL + actualizador del molde (front ~11s vía kubectl cp + version.json;
+  back ~33s build cacheado + registry local). Apps convergidas → sidecar
+  PostgREST + /datos (endurecido con prueba de fuego: aislamiento+RLS+fidelidad
+  de dueños). `--v2` = alias no-op. **v1 sobrevive como escape** (`--v1`/
+  `--espejo`/`--live`: HMR + siembra/espejo) hasta hornear `SEED_ONLY` en el
+  molde, entonces muere. Motor estático compartido `cli/src/volumenEstatico.ts`
+  (plan: converger `mke artifact publicar` a él). Detalle: `AI_PREVIEW_V2.md`.
+- Frente abierto (fricción #5 de la prueba de fuego): la puerta de preview no
+  inyecta `X-Mishi-Permisos` → authz por permiso (`esAdmin`) no es fiel en
+  preview; fix = inyectar el catálogo de `mke.iam.yaml` (para cuando Guarda lo pida).

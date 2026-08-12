@@ -33,8 +33,10 @@
 > cuando Guarda lo pida: inyectar el catálogo de `mke.iam.yaml` como header
 > (espeja el fake iam de stage).
 
-> Diseño, 2026-08-11. Opt-in (`mke preview up <app> <rama> --v2`); NO reemplaza
-> v1. Estado de lo construido: `AI_REPO_STATE.md`.
+> Diseño, 2026-08-11. **DESDE 2026-08-12 v2 ES EL ESTÁNDAR sin flag**:
+> `mke preview up|push <app> <rama>` corre v2 por default (`--v2` = alias
+> no-op). v1 sobrevive SOLO como escape (`--v1`/`--espejo`/`--live`) hasta
+> hornear `SEED_ONLY` en el molde, entonces muere. Estado: `AI_REPO_STATE.md`.
 
 ## E2E real (2026-08-11, dropshipping-mishi, cluster mke-gamer ns preview)
 
