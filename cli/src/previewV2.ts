@@ -298,10 +298,17 @@ async function buildFrontend(wt: string, opts: { json?: boolean }): Promise<stri
     if (install !== 0) return null;
   }
   process.env.VITE_IDENTITY_URL = identityOrigin("stage");
+  // `npm run build -w apps/frontend` a secas NO alcanza: el frontend importa
+  // `@<app>/contract` (packages/contract) y ese workspace necesita SU build
+  // (tsc) primero — encontrado en el E2E real ("Cannot find module
+  // '@dropshipping-mishi/contract'"). El Dockerfile real lo resuelve con
+  // `turbo run build --filter=@<app>/frontend` (grafo `dependsOn: ["^build"]`);
+  // acá usamos el filtro POR PATH (`./apps/frontend`) para no tener que saber
+  // el scope npm de cada app — turbo igual arma el mismo grafo.
   const code = await pasoStreamCmd(
-    "vite build (local, carril front)",
-    "npm",
-    ["run", "build", "-w", "apps/frontend"],
+    "turbo build ./apps/frontend (local, carril front — arma primero packages/contract)",
+    "npx",
+    ["turbo", "run", "build", "--filter=./apps/frontend", "--cache-dir=.turbo-mke-preview"],
     { json: opts.json, cwd: wt },
   );
   const dist = join(wt, "apps", "frontend", "dist");
