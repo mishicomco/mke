@@ -91,11 +91,19 @@ no sean ~200 inquilinos:
   (aceptable para prototipos). Idea anotada como posible open source:
   cerebro-santi/postgrest-flota-opensource.md (patrón privado en
   Supabase/DeepLake, nadie lo ha empaquetado abierto — validado 2026-08-12).
-- **Tier graduado — instancia propia siempre viva**: BD propia + Deployment
-  PostgREST propio (exactamente lo que el milestone 1 montó para block-mishi —
-  una app ES el tier de arriba). Graduar = sacar el artifact de la flota a su
-  Deployment: una línea de ruteo, mismo binario, misma BD, cero movimiento de
-  datos y sin cold start.
+- **La flota es el hogar DEFAULT de TODOS los inquilinos — artifacts Y apps**
+  (2026-08-12, Santi): la frontera no es artifact-vs-app sino tolera-cold-start
+  vs siempre-caliente. La BD nunca duerme (postgres-mishi siempre vivo); lo
+  que duerme es el traductor de ~40MB, <1s de despertar UNA vez tras el idle —
+  nadie lo nota, y el nodo deja de pagar decenas de pods idle. Una app CRUD
+  con pocos usuarios vive en la flota tranquilamente.
+- **Instancia dedicada = PERILLA explícita por inquilino, no categoría**: mke
+  lo saca de la flota a su Deployment propio cuando hay una razón (prod con
+  clientes pagando, cero cold start, recursos garantizados sin vecinos
+  ruidosos). Misma BD, mismo binario, una línea de ruteo, reversible.
+  Graduar deja de implicar pod propio: el pod llega cuando el NEGOCIO lo pide,
+  no el rito. (El `block-mishi-pgrst` dedicado del milestone 1 es esta perilla
+  encendida; puede volver a la flota cuando exista.)
 - Válvula si algo duele: PgBouncer el día que las conexiones de los ACTIVOS
   se queden cortas.
 - Descartado: schema-por-artifact en BD compartida (frontera blanda — pagaba
