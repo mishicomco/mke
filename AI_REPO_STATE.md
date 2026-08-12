@@ -60,6 +60,20 @@ curl -sS -o /dev/null -w "%{http_code}\n" https://hello.mishi.com.co
 - **Deploy** — skill `mke-deploy`.
 - Meta CI/CD del ecosistema: loop cerrado con runner self-hosted (build local → k3d import → apply); ver `../CLAUDE.md`.
 
+## Estándar nuevo de datos: PostgREST+RLS (2026-08-12, en main; VIVO en stage)
+
+- Diseño y decisiones: `AI_GRADUACION.md` (dueño). Piezas vivas:
+  `platform/postgrest/` — **flota** `postgrest-flota` (UN pod, procesos
+  PostgREST por inquilino, spawn ~315ms, idle-kill 10m, iam opcional por
+  inquilino vía X-Mishi-Permisos) + **puerta** `pgrst-puerta` (ForwardAuth
+  cookie→Bearer) + SQL de provisión. Config = Secret `postgrest-flota-config`
+  (ns stage). Inquilinos vivos: block (CONVERGIDO, front en /datos), links,
+  memoria, recolor, travelhabit (ramas mergeadas; sus /datos con puerta).
+  PENDIENTE de plataforma: verbo mke que provisione inquilinos (hoy a mano),
+  inquilino PÚBLICO (travelhabit no tiene login — ruta sin puerta, solo-INSERT
+  por RLS), y RBAC preview aplicado por código (se aplicó a mano:
+  `clusters/rbac/mke-deploy-preview.yaml` — fix de los pods preview huérfanos).
+
 ## Preview v2 (2026-08-11, en main — opt-in)
 
 - `mke preview up|push <app> <rama> --v2`: pod con la IMAGEN REAL + canal de
