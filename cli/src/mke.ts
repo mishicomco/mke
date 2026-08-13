@@ -18,7 +18,7 @@ import { iamLint } from "./iamLint.js";
 import { ensureStaticHostPaso } from "./staticHost.js";
 import { ls } from "./ls.js";
 import { artifactPublicar, artifactLs, artifactVer, artifactRollback, artifactBorrar, artifactNacer, artifactAcceso, guardiaDeploy } from "./artifact.js";
-import { previewUp, previewPull, previewEstado, previewLs, previewMerge, previewDown, previewLimpiar } from "./preview.js";
+import { previewEstado, previewLs, previewMerge, previewDown, previewLimpiar } from "./preview.js";
 import { previewUpV2, previewPushV2 } from "./previewV2.js";
 import { hostFor } from "./mkeConfig.js";
 
@@ -98,8 +98,8 @@ const HELP = `mke — CLI de plataforma MKE
   mke expose <app> <env> --host-port <N>        expone un servicio del HOST (systemd) en <app><suffix>.mishi.com.co
   mke expose <app> <env> --svc <name:port>      expone un servicio del CLUSTER ya existente
         opciones: --host <fqdn>  (override del subdominio)   --path </>
-  mke preview up <app> <rama>                    VERBO DEFINITIVO de iteración: rama efímera (worktree local + push, pod HMR con SIDECAR postgres, lease de secretos del vault); CNAME <app>-<rama-slug>  ·  detalle: mke preview --help
-  mke preview pull|estado|ls|merge|down|limpiar … traer cambios / estado / listar / MERGE (final feliz) / down (ABORTO) / red de seguridad  ·  detalle: mke preview --help
+  mke preview up|push <app> <rama>               VERBO DEFINITIVO de iteración: rama efímera (worktree local + push, pod IMAGEN REAL con SIDECAR postgres, lease de secretos del vault); CNAME <app>-<rama-slug>  ·  detalle: mke preview --help
+  mke preview estado|ls|merge|down|limpiar …     estado / listar / MERGE (final feliz) / down (ABORTO) / red de seguridad  ·  detalle: mke preview --help
   mke dns <host|app> <env>                       crea/repara/REPUNTA el CNAME al tunnel del entorno vía API Cloudflare (env: local|stage|prod|preview; con preview pasá el host completo)
   mke doctor <host> [path]                       diagnostica la cadena pública y dice qué capa está rota
   mke ls [env]                                    inventario de ingresses (host → servicio) por entorno
@@ -121,26 +121,20 @@ const PREVIEW_HELP = `mke preview — VERBO DEFINITIVO de iteración: rama efím
   vault aún no tiene el escenario 4, arranca SIN lease (warning) para probar
   pod+DB+HMR en vivo.
 
-  mke preview up <app> <rama>      ESTÁNDAR (v2 desde 2026-08-12): imagen REAL (docker build del
-                                    Dockerfile del repo) + actualizador silencioso del molde
-                                    (/version.json) en vez de clone+install+HMR. Apps convergidas al
-                                    plano de datos nuevo (RLS en migraciones) traen sidecar PostgREST +
-                                    /datos con la puerta. Crea rama+worktree+push, lease del vault,
-                                    aplica el pod y migra (MIGRATE_ONLY). IDEMPOTENTE. Detalle: AI_PREVIEW_V2.md
-        --espejo                   [baja a v1] en vez de solo migrar, restaura datos de STAGE en el
-                                    SIDECAR (TRUNCATE + pg_dump --data-only --disable-triggers
-                                    excluyendo apps/backend/db/tablas-sensibles.txt — si falta, ABORTA)
-        --v1                        fuerza el camino viejo (HMR + db:sembrar). Escape hatch hasta
-                                    hornear SEED_ONLY en el molde; entonces v1 muere.
-        --live                      [baja a v1] modo EMBED: vite bajo /live/<app>/
+  mke preview up <app> <rama>      IMAGEN REAL (docker build del Dockerfile del repo) + actualizador
+                                    silencioso del molde (/version.json). Apps convergidas al plano de
+                                    datos nuevo (RLS en migraciones) traen sidecar PostgREST + /datos con
+                                    la puerta. Crea rama+worktree+push, lease del vault, aplica el pod,
+                                    migra (MIGRATE_ONLY) y siembra si 'sembrar: true'. IDEMPOTENTE. Detalle: AI_PREVIEW_V2.md
+        --espejo                   restaura datos REALES de STAGE en el SIDECAR (TRUNCATE + pg_dump
+                                    --data-only --disable-triggers excluyendo
+                                    apps/backend/db/tablas-sensibles.txt) en vez de sembrar demo
         --ttl-segundos <n>          TTL del lease (backstop de vida); default del vault
         --json  --dry-run  --repo-url <url>   (--v2 sigue aceptándose como alias no-op)
   mke preview push <app> <rama>    detecta qué cambió (git diff) y corre el carril que toque —
                                     front (~5-10s: vite build local + kubectl cp) y/o back
                                     (~30-60s: docker build + carga + set image + rollout + MIGRATE_ONLY).
-                                    El camino v1 no tiene push: refresca con \`pull\` (HMR recoge solo).
         --json
-  mke preview pull <app> <rama>    git pull DENTRO del pod (HMR recoge solo) + renueva el lease
   mke preview estado <app> <rama> rama + estado del pod + lease + host
   mke preview ls [<app>]           lista los previews vivos
   mke preview merge <app> <rama>   FINAL FELIZ (único): verifica worktree limpio → mergea la rama a
@@ -365,38 +359,19 @@ async function main() {
         // flag. v1 (HMR + siembra/espejo) sobrevive SOLO como escape explícito
         // hasta hornear SEED_ONLY en el molde: lo piden `--v1`, `--espejo` o
         // `--live` (features exclusivas de v1). `--v2` queda como alias no-op.
-        const quiereV1 = flags.v1 === true || flags.espejo === true || flags.live === true;
-        if (quiereV1) {
-          const motivo = flags.v1 === true ? "--v1" : flags.espejo === true ? "--espejo (siembra/espejo de datos)" : "--live (embed)";
-          console.log(warn(`⚠ preview v1 (LEGADO, en camino a MORIR) — estás acá por ${motivo}.`));
-          console.log(dim("  v1 corre clone+install+HMR (dev mode, código distinto al de prod). v2 (el default, sin flag)"));
-          console.log(dim("  usa la imagen REAL. Lo ÚNICO que v1 hace y v2 aún no: sembrar/espejar datos. Si no"));
-          console.log(dim("  necesitás datos precargados, quitá el flag y usá v2. Rastreo del cierre de v1: AI_PREVIEW_V2.md."));
-          await previewUp(app, rama, {
-            espejo: flags.espejo === true,
-            live: flags.live === true,
-            json: flags.json === true,
-            dryRun: flags["dry-run"] === true,
-            repoUrl: typeof flags["repo-url"] === "string" ? flags["repo-url"] : undefined,
-            ttlSegundos: typeof flags["ttl-segundos"] === "string" ? Number(flags["ttl-segundos"]) : undefined,
-          });
-        } else {
-          await previewUpV2(app, rama, {
-            json: flags.json === true,
-            dryRun: flags["dry-run"] === true,
-            repoUrl: typeof flags["repo-url"] === "string" ? flags["repo-url"] : undefined,
-            ttlSegundos: typeof flags["ttl-segundos"] === "string" ? Number(flags["ttl-segundos"]) : undefined,
-          });
-        }
+        // v2 es el ÚNICO camino. --espejo (datos reales de stage) es opción de v2.
+        await previewUpV2(app, rama, {
+          json: flags.json === true,
+          dryRun: flags["dry-run"] === true,
+          repoUrl: typeof flags["repo-url"] === "string" ? flags["repo-url"] : undefined,
+          ttlSegundos: typeof flags["ttl-segundos"] === "string" ? Number(flags["ttl-segundos"]) : undefined,
+          espejo: flags.espejo === true,
+        });
       } else if (action === "push") {
         const [app, rama] = pargs;
         if (!app || !rama) return fail("uso: mke preview push <app> <rama> [--json]");
         // push ES v2 por naturaleza (v1 refresca con `pull`/HMR, sin push).
         await previewPushV2(app, rama, { json: flags.json === true });
-      } else if (action === "pull") {
-        const [app, rama] = pargs;
-        if (!app || !rama) return fail("uso: mke preview pull <app> <rama> [--json]");
-        await previewPull(app, rama, { json: flags.json === true });
       } else if (action === "estado") {
         const [app, rama] = pargs;
         if (!app || !rama) return fail("uso: mke preview estado <app> <rama> [--json]");

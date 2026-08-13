@@ -36,6 +36,7 @@ import { cargarImagenes, describeCarga } from "./cargaImagenes.js";
 import { copiarArbolAPod, escribirVersionJson, type DestinoPod } from "./volumenEstatico.js";
 import { run, ok, warn, info, dim } from "./sh.js";
 import { paso, pasoStreamCmd } from "./progresoVivo.js";
+import { truncarSidecar, restaurarEspejo, leerTablasSensibles } from "./previewEspejo.js";
 
 const CTX = PREVIEW.context;
 const NS = "preview";
@@ -49,6 +50,9 @@ export interface PreviewV2UpOpts {
   dryRun?: boolean;
   repoUrl?: string;
   ttlSegundos?: number;
+  /** restaura datos reales de STAGE (sanitizados) en el sidecar en vez de
+   * sembrar demo. Reemplaza a `--espejo` de v1. */
+  espejo?: boolean;
 }
 
 export interface PreviewV2PushOpts {
@@ -610,7 +614,19 @@ export async function previewUpV2(app: string, rama: string, opts: PreviewV2UpOp
 
   if (listo && forma.backend) {
     if (!(await migrarV2(name, { json: opts.json })) && !opts.json) console.log(warn("MIGRATE_ONLY falló (sigo)"));
-    if (manifiesto.sembrar) {
+    if (opts.espejo) {
+      // datos REALES de stage (sanitizados) en el sidecar, en vez de sembrar demo.
+      try {
+        const sensibles = await leerTablasSensibles(app, appsRoot());
+        await paso(`--espejo: TRUNCATE + restaurar datos de stage (sanitizado) en el sidecar${sensibles.length ? ` (excluye ${sensibles.length} tabla(s) sensible(s))` : ""}`, async () => {
+          await truncarSidecar(name);
+          await restaurarEspejo(app, name, sensibles);
+          return { code: 0, stdout: "", stderr: "" };
+        }, { json: opts.json });
+      } catch (e) {
+        if (!opts.json) console.log(warn(`--espejo falló (sigo con la BD migrada vacía): ${e instanceof Error ? e.message : String(e)}`));
+      }
+    } else if (manifiesto.sembrar) {
       if (!(await sembrarV2(name, { json: opts.json })) && !opts.json) console.log(warn("SEED_ONLY falló (sigo) — ¿imagen sin el modo SEED_ONLY del molde? rebuildeá o quitá `sembrar: true`"));
     }
     if (datos) await recargarSchemaPostgrest(name, { json: opts.json });
