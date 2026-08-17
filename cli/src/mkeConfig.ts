@@ -126,21 +126,24 @@ export const ENVS: Record<string, EnvSpec> = aplicarNodo({
     hostGatewayIp: "172.22.0.1",
   },
   prod: {
-    // PROD VIVE EN EL LAPTOP desde 2026-08-06 (migración; ver memoria
-    // handoff-migracion-prod-laptop). El contexto atraviesa el túnel SSH
-    // persistente; el ns prod del cluster del pc gamer quedó congelado a 0
-    // como rollback temporal — NO es prod.
-    // Contexto renombrado a la máquina (2026-08-10): antes `mke-prod-laptop`.
-    context: "mke-laptop",
-    cluster: "mke-prod", // nombre del cluster k3d EN el laptop (histórico; renombrarlo = recrear prod, YAGNI)
+    // PROD VIVE EN SANTI-LENOVO desde 2026-08-17 (migración; ver memoria
+    // handoff-migracion-prod-lenovo). Desde el gamer el contexto `mke-lenovo`
+    // llega por Tailscale (API k3s 100.105.255.73:36321); en el lenovo mismo,
+    // `mke-nodo.json` (envsLocales) lo vuelve local (contexto k3d-mke-lenovo).
+    // El laptop quedó congelado (ns prod a 0, túnel 421fe55c sin DNS) como
+    // rollback temporal — NO es prod.
+    context: "mke-lenovo",
+    cluster: "mke-lenovo",
     namespace: "prod",
-    tunnelUuid: "421fe55c-649e-4df2-baec-7273bd8b7e17", // mke-prod-laptop
+    tunnelUuid: "912ca3b0-fb97-460a-a43b-0a02892e19a8", // mke-prod-lenovo
     hostSuffix: "",
     hostGatewayIp: "172.18.0.1",
     remote: {
-      ssh: "mishi@10.0.0.4",
+      // Tailscale SSH (el alias mishi-server vive en ~/.ssh/config del gamer);
+      // el -i es inerte bajo Tailscale pero cargaImagenes lo exige.
+      ssh: "mishi-server",
       sshKey: "~/.ssh/acceso_laptop_key",
-      nodo: "k3d-mke-prod-server-0",
+      nodo: "k3d-mke-lenovo-server-0",
     },
   },
 });
