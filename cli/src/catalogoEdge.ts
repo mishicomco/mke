@@ -18,6 +18,7 @@
 
 import { entradaDeEnv, type EntradaCatalogo } from "./catalogo.js";
 import { run, ok, warn, dim } from "./sh.js";
+import { accesoDeploy, leerValor } from "./secretosDelVault.js";
 
 const KV_TITLE = "status-mishi-estado";
 const CLAVE = "catalogo";
@@ -66,6 +67,16 @@ async function token(): Promise<string> {
   if (cachedToken) return cachedToken;
   const delEntorno = process.env.CLOUDFLARE_WORKERS_API?.trim();
   if (delEntorno) return (cachedToken = delEntorno);
+  // Camino del RUNNER (fábrica mke-ci, sin CLI vault-mishi): identidad de deploy
+  // por HTTP, igual que MATERIALIZAR. El CLI humano queda como fallback del gamer.
+  const acc = await accesoDeploy();
+  if (acc) {
+    try {
+      return (cachedToken = await leerValor(acc, "santi", "cloudflare-workers-api"));
+    } catch {
+      /* cae al CLI humano */
+    }
+  }
   const r = await run("vault-mishi", ["get", "cloudflare-workers-api"]);
   if (r.code !== 0 || !r.stdout.trim()) {
     throw new Error(`no pude leer cloudflare-workers-api: ${r.stderr || "vacío"} (fallback: env CLOUDFLARE_WORKERS_API)`);

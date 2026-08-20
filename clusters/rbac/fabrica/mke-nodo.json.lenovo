@@ -1,0 +1,6 @@
+{
+  "envsLocales": ["prod"],
+  "registries": {
+    "prod": { "push": "10.0.2.2:5111", "ref": "k3d-registry-mishi:5111" }
+  }
+}

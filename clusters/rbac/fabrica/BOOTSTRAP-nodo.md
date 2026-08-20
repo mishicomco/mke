@@ -36,6 +36,13 @@ que documenta el RENAME de un cluster existente) — hueco conocido de la capa c
 NO de la fábrica. El registry reboot-proof lo cubre la unit `registry-mishi.service`
 (repo `registry-mishi`).
 
+### Gotchas del nodo santi-lenovo (Ubuntu 26.04 nativo, aprendidos 2026-08-17)
+
+- `docker.io` de Ubuntu NO trae el rootless setuptool: instalar `uidmap slirp4netns rootlesskit dbus-user-session` del archive y extraer los scripts de `docker-ce-rootless-extras` (noble) a `/usr/local/bin`. **La versión de los extras DEBE emparejar el dockerd** (dockerd 29.1.3 + scripts 29.7.2 rompe detach-netns → el daemon queda DENTRO del netns y todo netlink/iptables da "you must be root"; con extras 29.1.5 funciona).
+- AppArmor de Ubuntu 26.04 bloquea userns sin perfil: sysctl `kernel.apparmor_restrict_unprivileged_userns=0` persistente (`/etc/sysctl.d/99-rootless-userns.conf`) + perfil `flags=(unconfined)` para `/usr/local/bin/rootlesskit`.
+- **El push al registry NO es `172.17.0.1:5111` en el lenovo**: el docker0 del daemon rootless usa el MISMO 172.17.0.0/16 y la ruta muere adentro del netns. La puerta es **`10.0.2.2:5111`** (gateway slirp al host) y exige `--disable-host-loopback=false` (drop-in `docker.service.d/registry.conf` con `DOCKERD_ROOTLESS_ROOTLESSKIT_FLAGS`). `daemon.json` de mke-ci: `insecure-registries:["10.0.2.2:5111"]`.
+- uid de `mke-ci` en el lenovo = **1001**; subuid base 231072.
+
 ## Fase A — usuario + docker rootless (mecánico)
 
 ```sh

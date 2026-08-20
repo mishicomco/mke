@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export DOCKER_HOST="${DOCKER_HOST:-unix:///run/user/1001/docker.sock}"
+if [ -f "$HOME/.config/mishi/ci.env" ]; then set -a; . "$HOME/.config/mishi/ci.env"; set +a; fi
+cd /home/mke-ci/mke/cli
+exec node --import tsx src/mke.ts "$@"
