@@ -36,6 +36,12 @@ const SPEC = ENVS.prod; // un artifact tiene UN solo lugar: ni stage ni prod
 // `artifact` (laptop); los ARCHIVOS los sigue sirviendo static-mishi desde su
 // PVC en ns prod (el IngressRoute cruza namespaces — allowCrossNamespace).
 const NS_ART = "artifact";
+// artifact-mishi (la capa de DATOS, `mishi.datos`) NO se movio al ns nuevo: sigue
+// siendo una app del molde desplegada en `prod`. Apuntarle a NS_ART hacia que el
+// registro del manifiesto fallara SIEMPRE con exit 6 (curl no resuelve el host) y
+// quedara en un WARN cosmetico: todo artifact con <script type="application/
+// mishi-esquema"> se publicaba SIN contrato registrado. (2026-08-12)
+const NS_DATOS = "prod";
 
 const hostDe = (nombre: string) => `${nombre}${SUFIJO}.${DOMAIN}`;
 const carpetaPvc = (nombre: string) => `/srv/www/${nombre}${SUFIJO}`;
@@ -540,7 +546,7 @@ export async function artifactPublicar(
           const cuerpo = JSON.stringify({ artifact: nombre, manifiesto: JSON.parse(esquema) }).replace(/'/g, "'\\''");
           const reg = await execEnPod(
             pod,
-            `curl -s -m 10 -X POST http://artifact-mishi.${NS_ART}.svc.cluster.local/api/manifiesto ` +
+            `curl -s -m 10 -X POST http://artifact-mishi.${NS_DATOS}.svc.cluster.local/api/manifiesto ` +
               `-H 'content-type: application/json' -d '${cuerpo}'`,
           );
           if (/"ok":true/.test(reg.out)) console.log(ok("manifiesto registrado en artifact-mishi"));

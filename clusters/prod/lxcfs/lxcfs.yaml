@@ -1,0 +1,36 @@
+# Plataforma (prod): lxcfs — /proc/meminfo|cpuinfo filtrados por cgroup,
+# para que los pods reporten la memoria/CPU ASIGNADA y no la del host.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: lxcfs
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: lxcfs
+  template:
+    metadata:
+      labels:
+        app: lxcfs
+    spec:
+      hostPID: true
+      containers:
+        - name: lxcfs
+          image: k3d-registry-mishi:5111/lxcfs-mishi:5.0
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: lxcfs-dir
+              mountPath: /var/lib/lxcfs
+              mountPropagation: Bidirectional
+            - name: cgroup
+              mountPath: /sys/fs/cgroup
+      volumes:
+        - name: lxcfs-dir
+          hostPath:
+            path: /var/lib/lxcfs
+            type: DirectoryOrCreate
+        - name: cgroup
+          hostPath:
+            path: /sys/fs/cgroup

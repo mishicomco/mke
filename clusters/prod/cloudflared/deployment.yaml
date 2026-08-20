@@ -31,6 +31,11 @@ spec:
               port: 2000
             initialDelaySeconds: 10
             periodSeconds: 10
+            # Tolerar blips de red del host (~60s) sin reiniciar el pod:
+            # un roam de WiFi corta el edge unos segundos y cloudflared se
+            # reconecta solo; reiniciarlo alarga el 502 (post-mortem 2026-08-12).
+            timeoutSeconds: 5
+            failureThreshold: 6
           volumeMounts:
             - name: config
               mountPath: /etc/cloudflared
