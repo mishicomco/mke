@@ -26,7 +26,7 @@ spec:
           value: mesh-stage.mishi.com.co
         - name: USE_MONGODB
           value: 'false'
-        image: ghcr.io/ylianst/meshcentral:1.2.1
+        image: ghcr.io/ylianst/meshcentral:1.2.5
         livenessProbe:
           initialDelaySeconds: 30
           periodSeconds: 20
@@ -41,17 +41,27 @@ spec:
           tcpSocket:
             port: 443
         resources:
+          # Plan M vendido: 2 vCPU / 2 Gi. Con lxcfs el pod VE estos limites
+          # en /proc (el panel de MeshCentral reporta lo asignado, no el host).
           limits:
-            cpu: '1'
-            memory: 1Gi
+            cpu: '2'
+            memory: 2Gi
           requests:
-            cpu: 100m
-            memory: 256Mi
+            cpu: 200m
+            memory: 512Mi
         volumeMounts:
         - mountPath: /opt/meshcentral/meshcentral-data
           name: data
         - mountPath: /opt/meshcentral/meshcentral-files
           name: files
+        - mountPath: /proc/meminfo
+          name: lxcfs-meminfo
+        - mountPath: /proc/cpuinfo
+          name: lxcfs-cpuinfo
+        - mountPath: /proc/loadavg
+          name: lxcfs-loadavg
+        - mountPath: /proc/uptime
+          name: lxcfs-uptime
       initContainers:
       - command:
         - sh
@@ -91,6 +101,23 @@ spec:
       - name: files
         persistentVolumeClaim:
           claimName: mesh-central-files
+      # /proc filtrados por cgroup (DaemonSet lxcfs en kube-system)
+      - name: lxcfs-meminfo
+        hostPath:
+          path: /var/lib/lxcfs/proc/meminfo
+          type: File
+      - name: lxcfs-cpuinfo
+        hostPath:
+          path: /var/lib/lxcfs/proc/cpuinfo
+          type: File
+      - name: lxcfs-loadavg
+        hostPath:
+          path: /var/lib/lxcfs/proc/loadavg
+          type: File
+      - name: lxcfs-uptime
+        hostPath:
+          path: /var/lib/lxcfs/proc/uptime
+          type: File
 
 ---
 apiVersion: v1
